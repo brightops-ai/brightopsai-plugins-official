@@ -10,6 +10,12 @@
       "source": "./plugins/1password",
       "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Includes SSH key management via 1Password SSH agent.",
       "version": "1.1.0"
+    },
+    {
+      "name": "agent-teams",
+      "source": "./plugins/agent-teams",
+      "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development.",
+      "version": "1.1.0"
     }
   ]
 }

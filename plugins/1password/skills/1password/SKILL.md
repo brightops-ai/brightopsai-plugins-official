@@ -19,31 +19,23 @@ Follow the official CLI get-started steps. Don't guess install commands.
 - `references/get-started.md` — install + app integration + sign-in flow
 - `references/cli-examples.md` — real `op` command examples
 
-## Existing environment setup
+## Environment hints
 
-The user's shell profile already handles several things before Claude starts.
-Do not duplicate this work — build on it instead.
+If the user's shell profile pre-injects secrets (e.g., via `op read` in a
+wrapper script), check `printenv` before re-reading them with `op`.
 
-**Pre-injected at launch (via `cc` / `cc-dsp` shell wrappers in ~/.zshrc):**
-- `GITHUB_PERSONAL_ACCESS_TOKEN` is exported via `op read` before Claude starts.
-  It's already available in the environment — don't re-read it.
+If `SSH_AUTH_SOCK` points to the 1Password SSH agent socket, SSH operations
+(git clone/push over SSH, etc.) work automatically — no extra setup needed.
 
-**SSH agent:**
-- `SSH_AUTH_SOCK` points to the 1Password SSH agent socket.
-  SSH operations (git clone/push over SSH, etc.) work automatically.
-
-**Default vault:** `agentic_ai`
-- All secret references should use `op://agentic_ai/<Item Name>/<field>` unless
-  the user specifies a different vault.
-- This convention is also documented in `~/.claude/CLAUDE.md`.
+**Default vault convention:** use the vault name from the user's CLAUDE.md or
+project configuration. If none is specified, ask which vault to use.
 
 ## When you need this skill
 
-This skill is for **mid-session** secret operations — things not already handled
-by the shell wrappers above. Examples:
+Use this skill for mid-session secret operations:
 
-- Reading a secret that wasn't pre-injected (e.g., a database password, API key
-  for a new service)
+- Reading a secret not already in the environment (e.g., a database password,
+  API key for a new service)
 - Storing a new secret the user just generated
 - Injecting secrets into a config template (`op inject`)
 - Wrapping a command with secrets (`op run`)

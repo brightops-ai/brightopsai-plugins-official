@@ -17,11 +17,12 @@ The 1Password SSH agent handles all SSH authentication via biometric approval (T
 ## Architecture
 
 - **1Password SSH Agent** handles all SSH auth via `SSH_AUTH_SOCK`
-- **Agent socket:** `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`
+- **Agent socket (macOS):** `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`
+- **Agent socket (Linux):** `~/.1password/agent.sock`
 - **Agent config:** `~/.config/1Password/ssh/agent.toml` — controls which keys the agent offers
 - **SSH config:** `~/.ssh/config` — sets `IdentityAgent` globally to the 1Password socket
-- Every SSH operation requires **Touch ID / biometric approval**
-- Default vault: `agentic_ai`
+- Every SSH operation requires **biometric approval** (Touch ID on macOS, system auth on Linux)
+- Default vault: use the vault name from the user's CLAUDE.md or project configuration
 
 ## Create a new SSH key
 
