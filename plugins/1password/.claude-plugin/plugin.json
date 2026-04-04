@@ -1,0 +1,8 @@
+{
+  "name": "1password",
+  "version": "1.0.0",
+  "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Covers authentication, secret retrieval, credential injection, and new secret storage via the op CLI.",
+  "author": {
+    "name": "BrightOps AI (adapted from openclaw)"
+  }
+}

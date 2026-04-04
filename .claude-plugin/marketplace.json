@@ -1,0 +1,15 @@
+{
+  "name": "brightopsai-plugins-official",
+  "description": "BrightOps AI official plugin marketplace",
+  "owner": {
+    "name": "BrightOps AI"
+  },
+  "plugins": [
+    {
+      "name": "1password",
+      "source": "./plugins/1password",
+      "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session.",
+      "version": "1.0.0"
+    }
+  ]
+}
