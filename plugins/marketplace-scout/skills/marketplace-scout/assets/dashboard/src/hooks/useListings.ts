@@ -57,6 +57,7 @@ export function useListings(csvUrl: string) {
 
     let totalProfit = 0
     let totalInvestment = 0
+    let profitableCount = 0
     for (const l of flippable) {
       const ebayFees = l.marketPriceMedian * 0.13
       const estShipping = l.price > 400 ? 25 : l.price > 100 ? 15 : 10
@@ -64,13 +65,14 @@ export function useListings(csvUrl: string) {
       if (profit > 0) {
         totalProfit += profit
         totalInvestment += l.price
+        profitableCount++
       }
     }
     const avgRoi = totalInvestment > 0 ? Math.round((totalProfit / totalInvestment) * 100) : 0
-    const avgPrice = totalInvestment / flippable.length
+    const avgPrice = profitableCount > 0 ? totalInvestment / profitableCount : 0
     const days = avgPrice < 100 ? '3-5' : avgPrice < 300 ? '5-10' : avgPrice < 600 ? '7-14' : '10-21'
 
-    return { totalProfit: Math.round(totalProfit), totalInvestment: Math.round(totalInvestment), avgRoi, itemCount: flippable.length, estTurnaroundDays: days }
+    return { totalProfit: Math.round(totalProfit), totalInvestment: Math.round(totalInvestment), avgRoi, itemCount: profitableCount, estTurnaroundDays: days }
   }
 
   const top10FlipStats = useMemo(() => {

@@ -23,6 +23,7 @@ allowed-tools:
   - mcp__plugin_playwright_playwright__browser_select_option
   - mcp__plugin_playwright_playwright__browser_run_code
   - mcp__plugin_playwright_playwright__browser_tabs
+  - AskUserQuestion
   - WebSearch
   - WebFetch
   - Write

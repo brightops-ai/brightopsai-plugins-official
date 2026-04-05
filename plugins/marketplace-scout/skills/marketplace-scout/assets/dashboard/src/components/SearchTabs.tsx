@@ -24,6 +24,7 @@ export default function SearchTabs({ activeSearchId, onSelectSearch }: SearchTab
       onSelectSearch(sessions[sessions.length - 1])
     }
   }, [activeSearchId, onSelectSearch, sessions])
+
   if (sessions.length <= 1) return null
 
   return (

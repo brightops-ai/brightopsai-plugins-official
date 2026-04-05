@@ -18,7 +18,7 @@ export function applyFilters(listings: Listing[], filters: FilterState): Listing
     if (filters.priceMin !== null && l.price < filters.priceMin) return false
     if (filters.priceMax !== null && l.price > filters.priceMax) return false
     if (filters.conditions.size > 0 && !filters.conditions.has(l.condition)) return false
-    if (filters.minSellerRating !== null && l.sellerRating !== null && l.sellerRating < filters.minSellerRating) return false
+    if (filters.minSellerRating !== null && (l.sellerRating === null || l.sellerRating < filters.minSellerRating)) return false
     if (!filters.showRedFlagged && l.redFlags.length > 0) return false
     if (filters.searchTerms.size > 0 && !filters.searchTerms.has(l.searchTerm)) return false
     return true

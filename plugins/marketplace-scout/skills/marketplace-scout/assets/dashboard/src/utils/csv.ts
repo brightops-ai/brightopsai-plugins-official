@@ -69,6 +69,11 @@ function rowToListing(row: CsvRow): Listing {
 
 export async function loadListingsFromCsv(url: string): Promise<Listing[]> {
   const response = await fetch(url)
+
+  if (!response.ok) {
+    throw new Error(`Failed to load CSV from ${response.url || url}: ${response.status} ${response.statusText}`)
+  }
+
   const text = await response.text()
 
   return new Promise((resolve, reject) => {
