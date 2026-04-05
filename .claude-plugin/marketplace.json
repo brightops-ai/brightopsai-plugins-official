@@ -16,6 +16,12 @@
       "source": "./plugins/agent-teams",
       "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development.",
       "version": "1.1.0"
+    },
+    {
+      "name": "marketplace-scout",
+      "source": "./plugins/marketplace-scout",
+      "description": "Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard.",
+      "version": "1.0.0"
     }
   ]
 }

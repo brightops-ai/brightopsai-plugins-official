@@ -1,0 +1,16 @@
+{
+  "searches": [
+    {
+      "id": "2026-03-29_16-06",
+      "timestamp": "2026-03-29T16:06:00",
+      "label": "Apple M4 Products",
+      "searchTerms": ["Mac Mini M4", "MacBook Pro M4"],
+      "location": "Snellville, GA",
+      "radius": 25,
+      "maxPrice": 2000,
+      "csvFile": "marketplace_results_2026-03-29_16-06.csv",
+      "listingCount": 3,
+      "gradeDistribution": {"A+": 1, "A": 1, "B": 0, "C": 1, "D": 0, "F": 0}
+    }
+  ]
+}
