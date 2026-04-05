@@ -16,19 +16,29 @@ export default function ViewToggle({ viewMode, onChange }: ViewToggleProps) {
       border: '1px solid var(--color-border)',
       borderRadius: 'var(--radius)',
     }}>
-      <ToggleButton active={viewMode === 'grid'} onClick={() => onChange('grid')}>
+      <ToggleButton
+        active={viewMode === 'grid'}
+        label="Grid view"
+        onClick={() => onChange('grid')}
+      >
         <SquaresFour size={14} weight={viewMode === 'grid' ? 'fill' : 'regular'} />
       </ToggleButton>
-      <ToggleButton active={viewMode === 'table'} onClick={() => onChange('table')}>
+      <ToggleButton
+        active={viewMode === 'table'}
+        label="Table view"
+        onClick={() => onChange('table')}
+      >
         <Table size={14} weight={viewMode === 'table' ? 'fill' : 'regular'} />
       </ToggleButton>
     </div>
   )
 }
 
-function ToggleButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function ToggleButton({ active, label, onClick, children }: { active: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
+      aria-label={label}
+      aria-pressed={active}
       onClick={onClick}
       style={{
         display: 'flex',
