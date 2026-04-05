@@ -1,0 +1,8 @@
+{
+  "name": "marketplace-scout",
+  "version": "1.0.0",
+  "description": "Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports both personal deal-finding and resale arbitrage modes.",
+  "author": {
+    "name": "BrightOps AI"
+  }
+}
