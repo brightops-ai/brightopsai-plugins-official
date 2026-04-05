@@ -15,13 +15,15 @@ export default function SearchTabs({ activeSearchId, onSelectSearch }: SearchTab
       .then(r => r.json())
       .then((data: SearchIndex) => {
         setSessions(data.searches)
-        if (!activeSearchId && data.searches.length > 0) {
-          onSelectSearch(data.searches[data.searches.length - 1])
-        }
       })
       .catch(() => setSessions([]))
   }, [])
 
+  useEffect(() => {
+    if (!activeSearchId && sessions.length > 0) {
+      onSelectSearch(sessions[sessions.length - 1])
+    }
+  }, [activeSearchId, onSelectSearch, sessions])
   if (sessions.length <= 1) return null
 
   return (
