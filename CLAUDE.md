@@ -11,6 +11,7 @@
 
 - 1password (v1.1.0) — 2 skills: 1password, ssh-keys
 - agent-teams (v1.1.0) — 1 skill: agent-teams
+- adversarial-review (v1.2.0) — 1 skill: adversarial-review
 
 ## Adding a New Plugin
 
