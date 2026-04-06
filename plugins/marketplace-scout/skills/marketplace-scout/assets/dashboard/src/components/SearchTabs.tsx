@@ -1,24 +1,14 @@
-import { useState, useEffect } from 'react'
-import type { SearchSession, SearchIndex } from '@/types/listing'
+import { useEffect } from 'react'
+import type { SearchSession } from '@/types/listing'
 import { MagnifyingGlass, Clock } from '@phosphor-icons/react'
 
 interface SearchTabsProps {
+  sessions: SearchSession[]
   activeSearchId: string | null
   onSelectSearch: (session: SearchSession) => void
 }
 
-export default function SearchTabs({ activeSearchId, onSelectSearch }: SearchTabsProps) {
-  const [sessions, setSessions] = useState<SearchSession[]>([])
-
-  useEffect(() => {
-    fetch('/data/searches.json')
-      .then(r => r.json())
-      .then((data: SearchIndex) => {
-        setSessions(data.searches)
-      })
-      .catch(() => setSessions([]))
-  }, [])
-
+export default function SearchTabs({ sessions, activeSearchId, onSelectSearch }: SearchTabsProps) {
   useEffect(() => {
     if (!activeSearchId && sessions.length > 0) {
       onSelectSearch(sessions[sessions.length - 1])
@@ -28,7 +18,7 @@ export default function SearchTabs({ activeSearchId, onSelectSearch }: SearchTab
   if (sessions.length <= 1) return null
 
   return (
-    <div style={{ padding: '0.75rem 1.5rem 0' }}>
+    <div className="search-tabs-wrapper">
       <div className="tab-bar">
         {sessions.map((session) => {
           const isActive = session.id === activeSearchId
@@ -40,11 +30,12 @@ export default function SearchTabs({ activeSearchId, onSelectSearch }: SearchTab
               key={session.id}
               className={`tab ${isActive ? 'active' : ''}`}
               onClick={() => onSelectSearch(session)}
+              tabIndex={0}
             >
               <MagnifyingGlass size={12} weight={isActive ? 'bold' : 'regular'} />
               <span>{session.label}</span>
               <span className="tab-count">{session.listingCount}</span>
-              <span style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 3 }}>
+              <span className="tab-time">
                 <Clock size={9} />
                 {timeStr}
               </span>

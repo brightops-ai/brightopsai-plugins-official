@@ -1,3 +1,6 @@
+import type { GradeLetter } from '@/types/listing'
+import { GradeLetterValues } from '@/types/listing'
+
 const GRADE_COLORS: Record<string, string> = {
   'A+': 'var(--color-grade-aplus)',
   'A': 'var(--color-grade-a)',
@@ -7,14 +10,18 @@ const GRADE_COLORS: Record<string, string> = {
   'F': 'var(--color-grade-f)',
 }
 
-const GRADE_ORDER: string[] = ['A+', 'A', 'B', 'C', 'D', 'F']
+const GRADE_ORDER: readonly GradeLetter[] = GradeLetterValues
+
+export function isGradeLetter(value: string): value is GradeLetter {
+  return (GradeLetterValues as readonly string[]).includes(value)
+}
 
 export function getGradeColor(grade: string): string {
   return GRADE_COLORS[grade] ?? 'var(--color-text-muted)'
 }
 
 export function getGradeOrder(grade: string): number {
-  const idx = GRADE_ORDER.indexOf(grade)
+  const idx = (GRADE_ORDER as readonly string[]).indexOf(grade)
   return idx === -1 ? 99 : idx
 }
 

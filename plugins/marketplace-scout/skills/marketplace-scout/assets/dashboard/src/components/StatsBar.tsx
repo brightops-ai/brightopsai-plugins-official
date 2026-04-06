@@ -15,212 +15,124 @@ export default function StatsBar({ totalCount, gradeDistribution, avgPriceVsMark
   const hasFlipData = allFlipStats.totalProfit > 0
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+    <div className="stats-container">
       {hasFlipData && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '0.75rem',
-          animation: 'fadeInUp 0.4s var(--ease-out) both',
-        }}>
-          <div className="card" style={{
-            padding: '1rem 1.25rem',
-            background: 'linear-gradient(135deg, var(--color-surface) 0%, rgba(34, 197, 94, 0.04) 100%)',
-            border: '1px solid rgba(34, 197, 94, 0.15)',
-            animation: 'fadeInUp 0.4s var(--ease-out) both',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 28, height: 28, borderRadius: 'var(--radius)',
-                background: 'rgba(34, 197, 94, 0.12)',
-              }}>
-                <Rocket size={16} weight="fill" color="var(--color-grade-a)" />
+        <div className="hero-stats-grid">
+          <div className="card hero-stat-card">
+            <div className="hero-stat-header">
+              <div className="hero-stat-icon hero-stat-icon--teal">
+                <Rocket size={18} weight="fill" color="var(--color-teal)" />
               </div>
-              <span className="mono-label">Top 10 Flips</span>
+              <span className="hero-stat-label">Top 10 Flips</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-              <span style={{
-                fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800,
-                color: 'var(--color-grade-a)', letterSpacing: '-0.03em',
-              }}>
+            <div className="hero-stat-value-row">
+              <span className="hero-stat-value hero-stat-value--teal">
                 ${top10FlipStats.totalProfit.toLocaleString()}
               </span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 12,
-                color: 'var(--color-grade-a)', opacity: 0.8,
-              }}>
-                profit
-              </span>
+              <span className="hero-stat-suffix">profit</span>
             </div>
-            <div style={{
-              display: 'flex', gap: 12, flexWrap: 'wrap',
-              fontFamily: 'var(--font-mono)', fontSize: 11,
-            }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-secondary)' }}>
-                <Wallet size={12} color="var(--color-text-secondary)" />
-                ${top10FlipStats.totalInvestment.toLocaleString()} invested
+            <div className="hero-stat-meta">
+              <span className="stat-meta-item">
+                <Wallet size={12} /> ${top10FlipStats.totalInvestment.toLocaleString()} invested
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-accent)' }}>
-                <CurrencyDollar size={12} />
-                {top10FlipStats.avgRoi}% avg ROI
+              <span className="stat-meta-item stat-meta-item--accent">
+                <CurrencyDollar size={12} /> {top10FlipStats.avgRoi}% avg ROI
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-teal)' }}>
-                <Clock size={12} />
-                {top10FlipStats.estTurnaroundDays} days
+              <span className="stat-meta-item">
+                <Clock size={12} /> {top10FlipStats.estTurnaroundDays} days
               </span>
             </div>
           </div>
 
-          <div className="card" style={{
-            padding: '1rem 1.25rem',
-            background: 'linear-gradient(135deg, var(--color-surface) 0%, rgba(245, 158, 11, 0.04) 100%)',
-            border: '1px solid rgba(245, 158, 11, 0.15)',
-            animation: 'fadeInUp 0.4s var(--ease-out) 60ms both',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 28, height: 28, borderRadius: 'var(--radius)',
-                background: 'var(--color-accent-dim)',
-              }}>
-                <CurrencyDollar size={16} weight="fill" color="var(--color-accent)" />
+          <div className="card hero-stat-card">
+            <div className="hero-stat-header">
+              <div className="hero-stat-icon hero-stat-icon--accent">
+                <CurrencyDollar size={18} weight="fill" color="var(--color-accent)" />
               </div>
-              <span className="mono-label">All {allFlipStats.itemCount} Flippable Items</span>
+              <span className="hero-stat-label">All {allFlipStats.itemCount} Flippable</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-              <span style={{
-                fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800,
-                color: 'var(--color-accent)', letterSpacing: '-0.03em',
-              }}>
+            <div className="hero-stat-value-row">
+              <span className="hero-stat-value hero-stat-value--accent">
                 ${allFlipStats.totalProfit.toLocaleString()}
               </span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 12,
-                color: 'var(--color-accent)', opacity: 0.8,
-              }}>
-                total profit
-              </span>
+              <span className="hero-stat-suffix">total profit</span>
             </div>
-            <div style={{
-              display: 'flex', gap: 12, flexWrap: 'wrap',
-              fontFamily: 'var(--font-mono)', fontSize: 11,
-            }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-secondary)' }}>
-                <Wallet size={12} color="var(--color-text-secondary)" />
-                ${allFlipStats.totalInvestment.toLocaleString()} invested
+            <div className="hero-stat-meta">
+              <span className="stat-meta-item">
+                <Wallet size={12} /> ${allFlipStats.totalInvestment.toLocaleString()} invested
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-accent)' }}>
-                <CurrencyDollar size={12} />
-                {allFlipStats.avgRoi}% avg ROI
+              <span className="stat-meta-item stat-meta-item--accent">
+                <CurrencyDollar size={12} /> {allFlipStats.avgRoi}% avg ROI
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-teal)' }}>
-                <Clock size={12} />
-                {allFlipStats.estTurnaroundDays} days
+              <span className="stat-meta-item">
+                <Clock size={12} /> {allFlipStats.estTurnaroundDays} days
               </span>
             </div>
           </div>
         </div>
       )}
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-        gap: '0.75rem',
-        animation: 'fadeInUp 0.4s var(--ease-out) both',
-      }}>
-        <StatCard
-          icon={<Package size={18} weight="duotone" />}
-          label="Listings"
-          value={String(totalCount)}
-          delay={0}
-        />
-        <StatCard
-          icon={<ChartBar size={18} weight="duotone" />}
-          label="Grades"
-          value=""
-          delay={1}
-        >
-          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: 2 }}>
-            {Object.entries(gradeDistribution).map(([grade, count]) => (
-              count > 0 && (
-                <span key={grade} style={{
-                  fontSize: 11,
-                  fontWeight: 500,
-                  fontFamily: 'var(--font-mono)',
-                  color: getGradeColor(grade),
-                  padding: '1px 5px',
-                  borderRadius: 'var(--radius-pill)',
-                  background: `color-mix(in srgb, ${getGradeColor(grade)} 10%, transparent)`,
-                }}>
-                  {grade}:{count}
-                </span>
-              )
-            ))}
+      <div className="stats-secondary">
+        <div className="stats-secondary-item">
+          <span className="stats-secondary-icon"><Package size={16} weight="duotone" /></span>
+          <div>
+            <div className="mono-label">Listings</div>
+            <div className="stats-secondary-value">{totalCount}</div>
           </div>
-        </StatCard>
-        <StatCard
-          icon={<TrendDown size={18} weight="duotone" />}
-          label="Avg vs Market"
-          value={`${avgPriceVsMarket > 0 ? '+' : ''}${avgPriceVsMarket}%`}
-          valueColor={avgPriceVsMarket <= 0 ? 'var(--color-grade-a)' : 'var(--color-grade-f)'}
-          delay={2}
-        />
-        <StatCard
-          icon={<Trophy size={18} weight="duotone" />}
-          label="Best Deal"
-          value={bestDeal ? `$${bestDeal.price}` : 'N/A'}
-          valueColor="var(--color-accent)"
-          subtitle={bestDeal ? bestDeal.title.slice(0, 30) : undefined}
-          delay={3}
-        />
-      </div>
-    </div>
-  )
-}
-
-function StatCard({ icon, label, value, valueColor, subtitle, children, delay }: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  valueColor?: string
-  subtitle?: string
-  children?: React.ReactNode
-  delay: number
-}) {
-  return (
-    <div className="card" style={{
-      display: 'flex', alignItems: 'flex-start', gap: '0.75rem',
-      padding: '0.75rem 1rem',
-      animation: `fadeInUp 0.4s var(--ease-out) ${delay * 60}ms both`,
-    }}>
-      <div style={{
-        color: 'var(--color-accent)',
-        marginTop: 2,
-        opacity: 0.8,
-      }}>{icon}</div>
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div className="mono-label" style={{ marginBottom: 2 }}>
-          {label}
         </div>
-        {value && (
-          <div style={{
-            fontFamily: 'var(--font-display)',
-            fontSize: '1.05rem',
-            fontWeight: 700,
-            color: valueColor ?? 'var(--color-text)',
-            letterSpacing: '-0.02em',
-          }}>
-            {value}
+
+        <div className="stats-secondary-item">
+          <span className="stats-secondary-icon"><ChartBar size={16} weight="duotone" /></span>
+          <div>
+            <div className="mono-label">Grades</div>
+            <div className="stats-grade-pills">
+              {Object.entries(gradeDistribution).map(([grade, count]) => (
+                count > 0 && (
+                  <span
+                    key={grade}
+                    className="stats-grade-pill"
+                    style={{
+                      '--grade-color': getGradeColor(grade),
+                      color: 'var(--grade-color)',
+                      background: `color-mix(in srgb, var(--grade-color) 10%, transparent)`,
+                    } as React.CSSProperties}
+                  >
+                    {grade}:{count}
+                  </span>
+                )
+              ))}
+            </div>
           </div>
-        )}
-        {subtitle && (
-          <div style={{
-            fontSize: 11, color: 'var(--color-text-secondary)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{subtitle}</div>
-        )}
-        {children}
+        </div>
+
+        <div className="stats-secondary-item">
+          <span className="stats-secondary-icon"><TrendDown size={16} weight="duotone" /></span>
+          <div>
+            <div className="mono-label">Avg vs Market</div>
+            <div
+              className="stats-secondary-value"
+              style={{
+                '--value-color': avgPriceVsMarket <= 0 ? 'var(--color-grade-a)' : 'var(--color-grade-f)',
+                color: 'var(--value-color)',
+              } as React.CSSProperties}
+            >
+              {avgPriceVsMarket > 0 ? '+' : ''}{avgPriceVsMarket}%
+            </div>
+          </div>
+        </div>
+
+        <div className="stats-secondary-item">
+          <span className="stats-secondary-icon"><Trophy size={16} weight="duotone" /></span>
+          <div>
+            <div className="mono-label">Best Deal</div>
+            <div className="stats-secondary-value stats-secondary-value--accent">
+              {bestDeal ? `$${bestDeal.price}` : 'N/A'}
+            </div>
+            {bestDeal && (
+              <div className="stats-secondary-subtitle">{bestDeal.title.slice(0, 30)}</div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import Papa from 'papaparse'
-import type { Listing, GradeBreakdown } from '@/types/listing'
+import type { Listing, GradeBreakdown, GradeLetter, Platform } from '@/types/listing'
+import { GradeLetterValues } from '@/types/listing'
 
 interface CsvRow {
   [key: string]: string
@@ -30,7 +31,22 @@ function toNumberOrNull(val: string): number | null {
   return isNaN(n) ? null : n
 }
 
+function parseGrade(raw: string): GradeLetter {
+  const trimmed = raw?.trim() ?? ''
+  if ((GradeLetterValues as readonly string[]).includes(trimmed)) {
+    return trimmed as GradeLetter
+  }
+  return 'F'
+}
+
+function detectPlatform(url: string): Platform {
+  if (url.includes('facebook.com') || url.includes('fb.com')) return 'facebook'
+  if (url.includes('ebay.com') || url.includes('ebay.co')) return 'ebay'
+  return 'other'
+}
+
 function rowToListing(row: CsvRow): Listing {
+  const listingUrl = row.listing_url ?? ''
   return {
     id: row.id ?? '',
     searchTerm: row.search_term ?? '',
@@ -40,7 +56,7 @@ function rowToListing(row: CsvRow): Listing {
     marketPriceHigh: toNumber(row.market_price_high),
     marketPriceMedian: toNumber(row.market_price_median),
     priceVsMarket: toNumber(row.price_vs_market),
-    grade: row.grade ?? '',
+    grade: parseGrade(row.grade),
     gradeBreakdown: parseGradeBreakdown(row.grade_breakdown ?? '{}'),
     summary: row.summary ?? '',
     condition: row.condition ?? '',
@@ -55,7 +71,7 @@ function rowToListing(row: CsvRow): Listing {
     photoCount: toNumber(row.photo_count),
     photosOriginal: row.photos_original === 'true',
     redFlags: row.red_flags ? row.red_flags.split(',').map(s => s.trim()).filter(Boolean) : [],
-    listingUrl: row.listing_url ?? '',
+    listingUrl,
     listingAge: row.listing_age ?? '',
     vendorUrl: row.vendor_url ?? '',
     vendorPrice: toNumberOrNull(row.vendor_price),
@@ -64,6 +80,15 @@ function rowToListing(row: CsvRow): Listing {
     dateScraped: row.date_scraped ?? '',
     searchLocation: row.search_location ?? '',
     searchRadius: toNumber(row.search_radius),
+    platform: detectPlatform(listingUrl),
+    imageUrl: row.image_url || undefined,
+    shippingEstimateLow: toNumber(row.shipping_estimate_low),
+    shippingEstimateHigh: toNumber(row.shipping_estimate_high),
+    ebayFees: toNumber(row.ebay_fees),
+    netProfitLow: toNumber(row.net_profit_low),
+    netProfitHigh: toNumber(row.net_profit_high),
+    roiLow: toNumber(row.roi_low),
+    roiHigh: toNumber(row.roi_high),
   }
 }
 
@@ -81,6 +106,16 @@ export async function loadListingsFromCsv(url: string): Promise<Listing[]> {
       header: true,
       skipEmptyLines: true,
       complete(results) {
+        if (results.errors.length > 0) {
+          const fatal = results.errors.filter(e => e.type === 'Delimiter' || e.type === 'FieldMismatch')
+          for (const err of results.errors) {
+            console.warn(`[CSV] Row ${err.row ?? '?'}: ${err.type} — ${err.message}`)
+          }
+          if (fatal.length > 0 && results.data.length === 0) {
+            reject(new Error(`CSV parsing failed: ${fatal[0].message}`))
+            return
+          }
+        }
         resolve(results.data.map(rowToListing))
       },
       error(err: Error) {

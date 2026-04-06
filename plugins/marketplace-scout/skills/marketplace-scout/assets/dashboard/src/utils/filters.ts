@@ -1,8 +1,9 @@
 import type { Listing, FilterState } from '@/types/listing'
+import { GradeLetterValues } from '@/types/listing'
 
 export function createDefaultFilters(): FilterState {
   return {
-    grades: new Set(['A+', 'A', 'B', 'C', 'D', 'F']),
+    grades: new Set<string>(GradeLetterValues),
     priceMin: null,
     priceMax: null,
     conditions: new Set(),

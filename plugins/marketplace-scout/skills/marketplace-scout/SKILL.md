@@ -3,12 +3,11 @@ name: marketplace-scout
 description: >
   This skill should be used when the user asks to "search Facebook Marketplace",
   "find deals on Marketplace", "compare marketplace listings", "find used products",
-  "search for deals", "find items to flip", "marketplace arbitrage", or "resell for profit".
-  Also trigger when the user mentions secondhand goods, used electronics, local marketplace
-  shopping, price comparisons for items on a marketplace, or wants to find items to buy and
-  resell. Also activates for "check marketplace prices", "browse marketplace near me",
-  or "show me a dashboard of marketplace deals". Covers both personal deal-finding and
-  resale arbitrage workflows.
+  "search for deals", "find items to flip", "marketplace arbitrage", "resell for profit",
+  "check marketplace prices", "browse marketplace near me", or "show me a dashboard of
+  marketplace deals". Also covers mentions of secondhand goods, used electronics, local
+  marketplace shopping, price comparisons, or buying items to resell. Supports both
+  personal deal-finding and resale arbitrage workflows.
 argument-hint: "[product or category to search for]"
 allowed-tools:
   - mcp__plugin_playwright_playwright__browser_navigate
@@ -41,6 +40,8 @@ A marketplace research assistant that searches Facebook Marketplace, analyzes li
 - **`references/grading-algorithm.md`** — Full grading weights, formulas, red flag definitions, and grade boundaries
 - **`references/resale-arbitrage.md`** — Complete resale/flip mode: profitable categories, eBay cross-referencing, modified grading weights
 - **`references/shipping-estimates.md`** — Shipping cost table by item category and eBay fee calculations
+- **`references/image-extraction.md`** — Playwright code pattern for extracting product images from listing pages
+- **`references/dashboard-guidelines.md`** — Accessibility, styling, and responsive rules for dashboard modifications
 
 ## Examples
 
@@ -99,8 +100,14 @@ Sort listings by price attractiveness. Deep-dive priority:
 For each deep-dive listing:
 - Navigate to the listing URL, extract full description, photo count, condition, days listed
 - **Click through ALL photos** — look for "About This Mac" screenshots, spec stickers, serial numbers, system profiler screens
+- **Extract the product image URL** for the dashboard card display (see image extraction below)
 - Check seller profile: name, rating, reviews, account age, response time, other listings
 - For vague listings, escalate: read description, check photos, check structured attributes, visit seller profile. If still unknown, mark "Specs unverified" and grade conservatively.
+
+**Image extraction** — save a product photo locally for each listing. Facebook CDN URLs expire quickly, so images must be downloaded during the scrape and saved to `./data/images/`.
+
+For each listing page already open in Playwright:
+Extract a product image per listing and save to `./data/images/{listing_id}.jpg`. Set `image_url` in the CSV to `/data/images/{listing_id}.jpg`. Leave `image_url` empty if no image can be extracted — the dashboard shows a styled placeholder with the search term. See `references/image-extraction.md` for the browser code pattern and fallback selectors.
 
 Anti-detection: wait 2-5s between listings, 5-15s pause every 5 listings.
 
@@ -110,6 +117,11 @@ Consult `references/grading-algorithm.md` for the full grading algorithm. Apply 
 
 For resale arbitrage mode, consult `references/resale-arbitrage.md` for modified grading weights that prioritize flip profitability, and `references/shipping-estimates.md` for shipping cost estimates and eBay fee calculations.
 
+**Grading output rules:**
+- Only output grades from the `GradeLetter` union: `A+`, `A`, `B`, `C`, `D`, `F`. Never output grade `X` or any other value.
+- If grading fails or specs cannot be determined after full investigation, default to grade `F` with a red flag explanation (e.g. `"Specs unverified — graded conservatively as F"`). Do not use a placeholder grade.
+- `grade_breakdown` must be a JSON object with exactly 5 string fields: `priceValue`, `sellerTrust`, `listingQuality`, `redFlags`, `conditionConsistency`. Each value must be a single letter grade (`A+`, `A`, `B`, `C`, `D`, or `F`) as a string — never a number, array, or nested object.
+
 ### 7. Save to CSV and Update Search Index
 
 Generate timestamped filename: `marketplace_results_{YYYY-MM-DD_HH-mm}.csv`
@@ -117,14 +129,19 @@ Generate timestamped filename: `marketplace_results_{YYYY-MM-DD_HH-mm}.csv`
 Write to `./data/{filename}` with columns:
 
 ```
-id,search_term,title,price,market_price_low,market_price_high,market_price_median,price_vs_market,grade,grade_breakdown,summary,condition,seller_name,seller_rating,seller_reviews,seller_account_age,seller_response_time,location,distance,description,photo_count,photos_original,red_flags,listing_url,listing_age,vendor_url,vendor_price,review_url,review_score,shipping_estimate_low,shipping_estimate_high,ebay_fees,net_profit_low,net_profit_high,roi_low,roi_high,date_scraped,search_location,search_radius
+id,search_term,title,price,market_price_low,market_price_high,market_price_median,price_vs_market,grade,grade_breakdown,summary,condition,seller_name,seller_rating,seller_reviews,seller_account_age,seller_response_time,location,distance,description,photo_count,photos_original,red_flags,listing_url,listing_age,vendor_url,vendor_price,review_url,review_score,shipping_estimate_low,shipping_estimate_high,ebay_fees,net_profit_low,net_profit_high,roi_low,roi_high,platform,image_url,date_scraped,search_location,search_radius
 ```
 
 See `examples/sample-output.csv` for the expected format. Rules:
-- `grade_breakdown` is a JSON string
+- `grade_breakdown` is a JSON string with exactly 5 fields (see Step 6 grading output rules)
 - `red_flags` is comma-separated
 - `price_vs_market` is a signed integer percentage (negative = below market)
 - Escape commas in text fields by wrapping in double quotes
+- Always populate the `platform` column with `"facebook"` or `"ebay"` — the dashboard reads this field directly and must not infer platform from URL parsing
+- Never leave price-like fields (`price`, `market_price_low`, `market_price_high`, `market_price_median`, `vendor_price`, `shipping_estimate_low`, `shipping_estimate_high`, `ebay_fees`, `net_profit_low`, `net_profit_high`) empty — use `0` for unknown values
+- Always include pre-computed `shipping_estimate_low`, `shipping_estimate_high`, `ebay_fees`, `net_profit_low`, `net_profit_high`, `roi_low`, and `roi_high` columns with real calculated values — the dashboard should not re-derive these
+- Only output grades from the `GradeLetter` set (`A+`, `A`, `B`, `C`, `D`, `F`) in the `grade` column — never `X` or other values
+- Validate the final CSV row count matches the expected listing count before writing the file
 
 Update `./data/searches.json` (create if missing) — append a new entry:
 
@@ -161,6 +178,8 @@ cd dashboard && npm run dev
 ```
 
 Summarize findings: total listings per search term, grade distribution, top 3 deals with grades and prices, critical red flags, and changes from prior searches if applicable.
+
+When modifying the dashboard, follow the compatibility rules in `references/dashboard-guidelines.md`.
 
 ## Guardrails
 

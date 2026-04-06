@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 export interface GradeBreakdown {
   priceValue: string
   sellerTrust: string
@@ -5,6 +7,11 @@ export interface GradeBreakdown {
   redFlags: string
   conditionConsistency: string
 }
+
+export type Platform = 'facebook' | 'ebay' | 'other'
+
+export const GradeLetterValues = ['A+', 'A', 'B', 'C', 'D', 'F'] as const
+export type GradeLetter = (typeof GradeLetterValues)[number]
 
 export interface Listing {
   id: string
@@ -15,7 +22,7 @@ export interface Listing {
   marketPriceHigh: number
   marketPriceMedian: number
   priceVsMarket: number
-  grade: string
+  grade: GradeLetter
   gradeBreakdown: GradeBreakdown
   summary: string
   condition: string
@@ -39,9 +46,17 @@ export interface Listing {
   dateScraped: string
   searchLocation: string
   searchRadius: number
+  platform: Platform
+  shippingEstimateLow: number
+  shippingEstimateHigh: number
+  ebayFees: number
+  netProfitLow: number
+  netProfitHigh: number
+  roiLow: number
+  roiHigh: number
+  imageUrl?: string
 }
 
-export type GradeLetter = 'A+' | 'A' | 'B' | 'C' | 'D' | 'F'
 export type ViewMode = 'grid' | 'table'
 
 export interface SearchSession {
@@ -60,6 +75,25 @@ export interface SearchSession {
 export interface SearchIndex {
   searches: SearchSession[]
 }
+
+// --- Zod schemas for runtime validation ---
+
+export const SearchSessionSchema = z.object({
+  id: z.string(),
+  timestamp: z.string(),
+  label: z.string(),
+  searchTerms: z.array(z.string()),
+  location: z.string(),
+  radius: z.number(),
+  maxPrice: z.number().nullable(),
+  csvFile: z.string(),
+  listingCount: z.number(),
+  gradeDistribution: z.record(z.string(), z.number()),
+})
+
+export const SearchIndexSchema = z.object({
+  searches: z.array(SearchSessionSchema),
+})
 
 export interface FlipStats {
   totalProfit: number
