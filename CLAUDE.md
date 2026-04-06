@@ -11,6 +11,7 @@
 
 - 1password (v1.1.0) — 2 skills: 1password, ssh-keys
 - agent-teams (v1.1.0) — 1 skill: agent-teams
+- adversarial-review (v1.2.0) — 1 skill: adversarial-review
 - marketplace-scout (v1.0.0) — 1 skill: marketplace-scout
 
 ## Adding a New Plugin
