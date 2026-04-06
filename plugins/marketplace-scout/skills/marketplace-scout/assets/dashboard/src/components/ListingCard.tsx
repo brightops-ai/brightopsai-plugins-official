@@ -1,4 +1,4 @@
-import { Star, Clock, Warning, ArrowSquareOut, Storefront, Article, MapPin } from '@phosphor-icons/react'
+import { Star, Clock, Warning, ArrowSquareOut, Storefront, Article, MapPin, Crosshair, Package } from '@phosphor-icons/react'
 import type { Listing } from '@/types/listing'
 import GradeBadge from './GradeBadge'
 
@@ -19,112 +19,94 @@ export default function ListingCard({ listing, onClick, index = 0 }: ListingCard
     ? 'var(--color-grade-a)'
     : 'var(--color-grade-f)'
 
+  const hasProfit = listing.netProfitHigh > 0
+
   return (
     <div
       onClick={onClick}
-      className="card"
+      className="listing-card"
       style={{
-        padding: '0.875rem 1rem',
-        cursor: 'pointer',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '0.625rem',
-        animation: `fadeInUp 0.4s var(--ease-out) ${index * 40}ms both`,
-      }}
+        '--fade-delay': `${index * 40}ms`,
+        '--price-color': priceColor,
+        '--pct-color': pctColor,
+      } as React.CSSProperties}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <GradeBadge grade={listing.grade} size="sm" />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {listing.redFlags.length > 0 && (
-            <span style={{
-              color: 'var(--color-grade-f)', display: 'flex', alignItems: 'center',
-              gap: 3, fontSize: 10, fontFamily: 'var(--font-mono)',
-            }}>
-              <Warning size={12} weight="fill" /> {listing.redFlags.length}
-            </span>
-          )}
-          {listing.condition && listing.condition !== 'unknown' && (
-            <span className="badge" style={{
-              background: 'var(--color-surface-hover)',
-              border: '1px solid var(--color-border)',
-              color: 'var(--color-text-secondary)',
-              fontSize: 9,
-            }}>
-              {listing.condition}
-            </span>
-          )}
+      {listing.imageUrl ? (
+        <img
+          src={listing.imageUrl}
+          alt={listing.title}
+          className="listing-card-image"
+        />
+      ) : (
+        <div className="listing-card-image-placeholder">
+          <Package size={24} />
+          <span>{listing.searchTerm}</span>
         </div>
+      )}
+
+      <div className="listing-card-hero">
+        <span className="listing-card-price">
+          ${listing.price.toLocaleString()}
+        </span>
+        <GradeBadge grade={listing.grade} size="sm" />
       </div>
 
-      <h3 style={{
-        fontFamily: 'var(--font-display)',
-        fontSize: 14,
-        fontWeight: 600,
-        lineHeight: 1.35,
-        letterSpacing: '-0.01em',
-        color: 'var(--color-text)',
-        display: '-webkit-box',
-        WebkitLineClamp: 2,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-      }}>
+      <div className="listing-card-pct">
+        {listing.priceVsMarket > 0 ? '+' : ''}{listing.priceVsMarket}% vs market
+      </div>
+
+      {hasProfit && (
+        <div className="listing-card-roi">
+          Est. +${listing.netProfitLow}&ndash;${listing.netProfitHigh} / {listing.roiLow}&ndash;{listing.roiHigh}% ROI
+        </div>
+      )}
+
+      <h3 className="listing-card-title">
         {listing.title}
       </h3>
 
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{
-          fontFamily: 'var(--font-display)',
-          fontSize: 20,
-          fontWeight: 800,
-          color: priceColor,
-          letterSpacing: '-0.03em',
-        }}>
-          ${listing.price.toLocaleString()}
-        </span>
-        <span style={{
-          fontSize: 10,
-          fontFamily: 'var(--font-mono)',
-          color: pctColor,
-          padding: '1px 5px',
-          borderRadius: 'var(--radius-pill)',
-          background: `color-mix(in srgb, ${pctColor} 10%, transparent)`,
-        }}>
-          {listing.priceVsMarket > 0 ? '+' : ''}{listing.priceVsMarket}%
-        </span>
-      </div>
+      <p className="listing-card-summary">
+        {listing.summary}
+      </p>
 
-      <div style={{
-        display: 'flex', gap: '0.625rem', fontSize: 11,
-        color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)',
-        flexWrap: 'wrap',
-      }}>
+      {listing.redFlags.length > 0 && (
+        <span className="listing-card-flags">
+          <Warning size={12} weight="fill" /> {listing.redFlags.length} red flag{listing.redFlags.length > 1 ? 's' : ''}
+        </span>
+      )}
+
+      <div className="listing-card-footer">
         {listing.sellerRating !== null && listing.sellerRating > 0 && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          <span className="listing-card-footer-item">
             <Star size={10} weight="fill" color="var(--color-accent)" /> {listing.sellerRating}
           </span>
         )}
         {listing.sellerAccountAge && listing.sellerAccountAge !== 'unknown' && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          <span className="listing-card-footer-item">
             <Clock size={10} /> {listing.sellerAccountAge}
           </span>
         )}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+        <span className="listing-card-footer-item">
           <MapPin size={10} /> {listing.location}
         </span>
+        {listing.condition && listing.condition !== 'unknown' && (
+          <span className="listing-card-condition">
+            {listing.condition}
+          </span>
+        )}
       </div>
 
-      <p style={{
-        fontSize: 11, color: 'var(--color-text)', lineHeight: 1.5, opacity: 0.85,
-        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-      }}>
-        {listing.summary}
-      </p>
-
-      <div style={{ display: 'flex', gap: '0.375rem', marginTop: 'auto', flexWrap: 'wrap' }}>
+      <div className="listing-card-actions">
         <LinkButton href={listing.listingUrl} icon={<ArrowSquareOut size={11} />} label="View" />
         {listing.vendorUrl && <LinkButton href={listing.vendorUrl} icon={<Storefront size={11} />} label="Retail" />}
         {listing.reviewUrl && <LinkButton href={listing.reviewUrl} icon={<Article size={11} />} label="Review" />}
+        <button
+          type="button"
+          className="scout-btn"
+          onClick={e => e.stopPropagation()}
+        >
+          <Crosshair size={11} /> Scout
+        </button>
       </div>
     </div>
   )
@@ -137,8 +119,7 @@ function LinkButton({ href, icon, label }: { href: string; icon: React.ReactNode
       target="_blank"
       rel="noopener noreferrer"
       onClick={e => e.stopPropagation()}
-      className="btn"
-      style={{ fontSize: 10, padding: '3px 7px', gap: 3 }}
+      className="link-btn"
     >
       {icon} {label}
     </a>

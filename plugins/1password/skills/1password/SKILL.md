@@ -1,12 +1,11 @@
 ---
 name: 1password
 description: >
-  Use the 1Password CLI (op) to read, inject, and manage secrets mid-session.
-  Trigger this skill when you need to authenticate with op, read secrets from
-  1Password vaults, inject credentials into config files, store new secrets,
-  or troubleshoot op CLI issues. Also use when the user mentions 1Password,
-  op CLI, secret rotation, or credential management — even if they don't
-  explicitly say "1password".
+  This skill should be used when the user asks to read, inject, or manage
+  secrets using the 1Password CLI (op). Covers authenticating with op, reading
+  secrets from 1Password vaults, injecting credentials into config files,
+  storing new secrets, troubleshooting op CLI issues, secret rotation, or
+  credential management — even if the user does not explicitly say "1password".
 homepage: https://developer.1password.com/docs/cli/get-started/
 ---
 
@@ -19,16 +18,36 @@ Follow the official CLI get-started steps. Don't guess install commands.
 - `references/get-started.md` — install + app integration + sign-in flow
 - `references/cli-examples.md` — real `op` command examples
 
-## Environment hints
+## Existing environment setup
 
-If the user's shell profile pre-injects secrets (e.g., via `op read` in a
-wrapper script), check `printenv` before re-reading them with `op`.
+The user's shell profile already handles several things before Claude starts.
+Do not duplicate this work — build on it instead.
 
-If `SSH_AUTH_SOCK` points to the 1Password SSH agent socket, SSH operations
-(git clone/push over SSH, etc.) work automatically — no extra setup needed.
+**Pre-injected at launch (via `cc` / `cc-dsp` shell wrappers in ~/.zshrc):**
+- `GITHUB_PERSONAL_ACCESS_TOKEN` is exported via `op read` before Claude starts.
+  It's already available in the environment — don't re-read it.
+- `STITCH_API_KEY` is exported via `op read` before Claude starts.
+  Used by the Stitch AI MCP server — don't re-read it.
 
-**Default vault convention:** use the vault name from the user's CLAUDE.md or
-project configuration. If none is specified, ask which vault to use.
+**SSH agent:**
+- `SSH_AUTH_SOCK` points to the 1Password SSH agent socket.
+  SSH operations (git clone/push over SSH, etc.) work automatically.
+
+**Default vault:** `agentic_ai`
+- All secret references should use `op://agentic_ai/<Item Name>/<field>` unless
+  the user specifies a different vault.
+- This convention is also documented in `~/.claude/CLAUDE.md`.
+
+### Adding secrets for MCP servers
+
+Same pattern as `GITHUB_PERSONAL_ACCESS_TOKEN`:
+
+1. Store in 1Password: `op item create --vault="agentic_ai" ...`
+2. Add `export VAR="$(op read 'op://agentic_ai/...')"` to `cc`/`cc-dsp` in `~/.zshrc`
+3. Reference as `${VAR}` in the `.mcp.json` `env` block
+
+That's it — no wrapper scripts needed. The env var is injected before Claude
+starts, and `.mcp.json` expands `${VAR}` references in `env` values.
 
 ## When you need this skill
 

@@ -1,7 +1,7 @@
 import { CaretUp, CaretDown, Warning } from '@phosphor-icons/react'
 import type { Listing } from '@/types/listing'
 import GradeBadge from './GradeBadge'
-import { compareGrades } from '@/utils/grades'
+import { sortListings } from '@/utils/sort'
 
 interface ListingTableProps {
   listings: Listing[]
@@ -24,34 +24,22 @@ const COLUMNS: SortableField[] = [
   { key: 'redFlags', label: 'Flags', width: '50px' },
 ]
 
-function sortListings(listings: Listing[], field: keyof Listing, asc: boolean): Listing[] {
-  return [...listings].sort((a, b) => {
-    let cmp = 0
-    if (field === 'grade') {
-      cmp = compareGrades(a.grade, b.grade)
-    } else {
-      const va = a[field]
-      const vb = b[field]
-      if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
-      else cmp = String(va ?? '').localeCompare(String(vb ?? ''))
-    }
-    return asc ? cmp : -cmp
-  })
-}
-
 export default function ListingTable({ listings, sortField, sortAsc, onSort, onSelect }: ListingTableProps) {
   const sorted = sortListings(listings, sortField, sortAsc)
 
   if (listings.length === 0) {
-    return (
-      <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-        No listings match your filters.
-      </div>
-    )
+    return <div className="empty-state">No listings match your filters.</div>
+  }
+
+  const handleRowKey = (e: React.KeyboardEvent, listing: Listing) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onSelect(listing)
+    }
   }
 
   return (
-    <div style={{ overflowX: 'auto', animation: 'fadeIn 0.3s var(--ease-out)' }}>
+    <div className="table-wrapper">
       <table className="data-table">
         <thead>
           <tr>
@@ -61,7 +49,7 @@ export default function ListingTable({ listings, sortField, sortAsc, onSort, onS
                 onClick={() => onSort(col.key)}
                 style={{ width: col.width }}
               >
-                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <span className="table-sort-indicator">
                   {col.label}
                   {sortField === col.key && (
                     sortAsc
@@ -82,22 +70,22 @@ export default function ListingTable({ listings, sortField, sortAsc, onSort, onS
                 : 'var(--color-text-secondary)'
 
             return (
-              <tr key={l.id} onClick={() => onSelect(l)}>
+              <tr
+                key={l.id}
+                onClick={() => onSelect(l)}
+                onKeyDown={e => handleRowKey(e, l)}
+                tabIndex={0}
+                role="button"
+              >
                 <td><GradeBadge grade={l.grade} size="sm" /></td>
-                <td style={{
-                  fontFamily: 'var(--font-display)', fontWeight: 500,
-                  maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  letterSpacing: '-0.01em',
-                }}>{l.title}</td>
-                <td style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}>
-                  ${l.price.toLocaleString()}
-                </td>
-                <td style={{ color: pctColor, fontWeight: 500 }}>
+                <td className="table-cell-title">{l.title}</td>
+                <td className="table-cell-price">${l.price.toLocaleString()}</td>
+                <td style={{ '--grade-color': pctColor, color: pctColor, fontWeight: 500 } as React.CSSProperties}>
                   {l.priceVsMarket > 0 ? '+' : ''}{l.priceVsMarket}%
                 </td>
                 <td>{l.sellerRating ?? '-'}</td>
-                <td style={{ fontSize: 11 }}>{l.condition}</td>
-                <td style={{ fontSize: 11 }}>{l.location}</td>
+                <td>{l.condition}</td>
+                <td>{l.location}</td>
                 <td>
                   {l.redFlags.length > 0 && (
                     <Warning size={13} weight="fill" color="var(--color-grade-f)" />
