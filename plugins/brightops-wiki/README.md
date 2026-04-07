@@ -57,8 +57,10 @@ Leave that terminal open. Work in other projects normally. Your captures will be
 | Type | Name | Purpose |
 |---|---|---|
 | Hook | `hooks/scripts/wiki_capture_hook.sh` | Stop hook, fires every N messages, writes nuggets to inbox |
-| Slash command | `commands/wiki-process-inbox.md` | Compiles inbox nuggets into wiki pages |
-| Script | `scripts/regenerate_index.py` | Rebuilds `index.md` from `pages/**` (called by slash command) |
+| Slash command | `commands/wiki-process-inbox.md` | Compiles inbox nuggets into wiki pages (called by `/loop`) |
+| Slash command | `commands/wiki-capture.md` | Manually force a capture for the current session, bypassing the threshold |
+| Slash command | `commands/wiki-status.md` | Read-only snapshot: pending inbox, recent log, page counts, lint status |
+| Script | `scripts/regenerate_index.py` | Rebuilds `index.md` from `pages/**` (called by wiki-process-inbox) |
 | Skill | `skills/wiki-bootstrap/` | Guides first-run setup (clone Ss1024sS, apply patches, verify) |
 
 ## Configuration
