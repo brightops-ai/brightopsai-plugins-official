@@ -22,6 +22,12 @@
       "source": "./plugins/marketplace-scout",
       "description": "Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard.",
       "version": "1.0.0"
+    },
+    {
+      "name": "brightops-wiki",
+      "source": "./plugins/brightops-wiki",
+      "description": "Global auto-capture wiki for Claude Code. Captures durable conclusions from any session via a Stop hook, accumulates them in an inbox, and compiles them into project-organized synthesis pages on a /loop schedule. Hybrid of Karpathy's compile-first wiki and MemPalace's hook-driven capture.",
+      "version": "0.1.0"
     }
   ]
 }

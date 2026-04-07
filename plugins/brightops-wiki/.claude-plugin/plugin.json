@@ -1,0 +1,8 @@
+{
+  "name": "brightops-wiki",
+  "version": "0.1.0",
+  "description": "Global auto-capture wiki for Claude Code. Captures durable conclusions from any session via a Stop hook, accumulates them in an inbox, and compiles them into project-organized synthesis pages on a /loop schedule. Hybrid pattern combining Karpathy's compile-first wiki with MemPalace's hook-driven capture.",
+  "author": {
+    "name": "BrightOps AI"
+  }
+}
