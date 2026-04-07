@@ -18,19 +18,16 @@ function GradeIcon({ grade, size }: { grade: string; size: number }) {
 
 export default function GradeBadge({ grade, size = 'md' }: GradeBadgeProps) {
   const color = getGradeColor(grade)
-  const iconSize = SIZES[size]
-  const fontSize = FONT_SIZES[size]
 
   return (
-    <span className="badge" style={{
-      background: `color-mix(in srgb, ${color} 12%, transparent)`,
-      border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
-      color,
-      fontSize,
-      fontWeight: 600,
-      gap: 3,
-    }}>
-      <GradeIcon grade={grade} size={iconSize} />
+    <span
+      className="grade-badge"
+      style={{
+        '--grade-color': color,
+        fontSize: FONT_SIZES[size],
+      } as React.CSSProperties}
+    >
+      <GradeIcon grade={grade} size={SIZES[size]} />
       {grade}
     </span>
   )

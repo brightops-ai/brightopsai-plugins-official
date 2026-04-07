@@ -8,52 +8,25 @@ interface ViewToggleProps {
 
 export default function ViewToggle({ viewMode, onChange }: ViewToggleProps) {
   return (
-    <div style={{
-      display: 'flex',
-      gap: 2,
-      padding: 2,
-      background: 'var(--color-surface)',
-      border: '1px solid var(--color-border)',
-      borderRadius: 'var(--radius)',
-    }}>
-      <ToggleButton
-        active={viewMode === 'grid'}
-        label="Grid view"
+    <div className="view-toggle">
+      <button
+        className={`view-toggle-btn ${viewMode === 'grid' ? 'view-toggle-btn--active' : ''}`}
+        aria-label="Grid view"
+        aria-pressed={viewMode === 'grid'}
         onClick={() => onChange('grid')}
+        tabIndex={0}
       >
         <SquaresFour size={14} weight={viewMode === 'grid' ? 'fill' : 'regular'} />
-      </ToggleButton>
-      <ToggleButton
-        active={viewMode === 'table'}
-        label="Table view"
+      </button>
+      <button
+        className={`view-toggle-btn ${viewMode === 'table' ? 'view-toggle-btn--active' : ''}`}
+        aria-label="Table view"
+        aria-pressed={viewMode === 'table'}
         onClick={() => onChange('table')}
+        tabIndex={0}
       >
         <Table size={14} weight={viewMode === 'table' ? 'fill' : 'regular'} />
-      </ToggleButton>
+      </button>
     </div>
-  )
-}
-
-function ToggleButton({ active, label, onClick, children }: { active: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      aria-label={label}
-      aria-pressed={active}
-      onClick={onClick}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '5px 9px',
-        border: 'none',
-        borderRadius: 'calc(var(--radius) - 2px)',
-        background: active ? 'var(--color-accent-dim)' : 'transparent',
-        color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
-        cursor: 'pointer',
-        transition: 'all var(--duration-fast) var(--ease-out)',
-      }}
-    >
-      {children}
-    </button>
   )
 }

@@ -51,7 +51,7 @@ export function useListings(csvUrl: string) {
   // Flip profit calculations
   const computeFlipStats = (listings: Listing[]): FlipStats => {
     const flippable = listings.filter(l =>
-      l.marketPriceMedian > 0 && l.price > 0 && l.grade !== 'X' && l.grade !== 'F'
+      l.marketPriceMedian > 0 && l.price > 0 && l.grade !== 'F'
     )
     if (flippable.length === 0) return { totalProfit: 0, totalInvestment: 0, avgRoi: 0, itemCount: 0, estTurnaroundDays: '—' }
 
@@ -77,7 +77,7 @@ export function useListings(csvUrl: string) {
 
   const top10FlipStats = useMemo(() => {
     const sorted = [...filteredListings]
-      .filter(l => l.marketPriceMedian > 0 && l.price > 0 && l.grade !== 'X' && l.grade !== 'F')
+      .filter(l => l.marketPriceMedian > 0 && l.price > 0 && l.grade !== 'F')
       .sort((a, b) => {
         const roiA = (a.marketPriceMedian * 0.87 - a.price) / a.price
         const roiB = (b.marketPriceMedian * 0.87 - b.price) / b.price

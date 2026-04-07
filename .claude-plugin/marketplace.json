@@ -24,6 +24,12 @@
       "version": "1.0.0"
     },
     {
+      "name": "adversarial-review",
+      "source": "./plugins/adversarial-review",
+      "description": "Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation.",
+      "version": "1.2.0"
+    },
+    {
       "name": "brightops-wiki",
       "source": "./plugins/brightops-wiki",
       "description": "Global auto-capture wiki for Claude Code. Captures durable conclusions from any session via a Stop hook, accumulates them in an inbox, and compiles them into project-organized synthesis pages on a /loop schedule. Hybrid of Karpathy's compile-first wiki and MemPalace's hook-driven capture.",
