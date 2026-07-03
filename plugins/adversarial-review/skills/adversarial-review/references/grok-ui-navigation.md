@@ -1,6 +1,6 @@
 # Grok UI Navigation Guide
 
-Playwright-specific instructions for navigating grok.com, managing projects, and interacting with the chat interface. Selectors and patterns verified via live testing.
+Playwright-specific instructions for navigating grok.com, managing projects, and interacting with the chat interface. Selectors and patterns are best-effort based on Grok's UI structure at time of writing — Grok's frontend can change, so treat fixed selectors as a starting point and fall back to `browser_snapshot` inspection if they don't match.
 
 ## URL Patterns
 
@@ -135,12 +135,7 @@ Typical response times for adversarial reviews: 30-60 seconds for a detailed rev
 
 ## Extracting Response Text
 
-Grok's page contains multiple `.prose` / `.markdown` elements:
-- Index 0-1: Usually the user's message (echoed)
-- Index 2: May contain "Thought for Xs" thinking indicator
-- Index 3: The actual assistant response content
-
-To reliably identify the response:
+Grok's page contains multiple `.prose` / `.markdown` elements — the user's echoed message, an optional "Thought for Xs" thinking indicator, and the actual assistant response. The number and order of these elements is not fixed (it varies with conversation length and whether thinking output is shown), so do not hardcode an index. Instead, enumerate and identify by content:
 
 ```javascript
 () => {
@@ -153,12 +148,12 @@ To reliably identify the response:
 }
 ```
 
-Then extract the correct element by index:
+Identify the assistant response as the largest element whose preview does NOT start with the submitted prompt content (matching the rule in SKILL.md Step 9). It often begins with "Thought for Xs" followed by the findings. Then extract that specific element by its index from the enumeration:
 
 ```javascript
 () => {
   const els = document.querySelectorAll('.prose, .markdown');
-  return els[3].innerText;  // Adapt index based on enumeration above
+  return els[/* index identified above */].innerText;
 }
 ```
 

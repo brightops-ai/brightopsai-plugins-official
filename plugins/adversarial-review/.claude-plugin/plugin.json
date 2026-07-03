@@ -1,6 +1,6 @@
 {
   "name": "adversarial-review",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Use Grok (grok.com) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation.",
   "author": {
     "name": "BrightOps AI"

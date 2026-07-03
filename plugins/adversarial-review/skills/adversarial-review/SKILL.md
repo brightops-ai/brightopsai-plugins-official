@@ -38,6 +38,10 @@ allowed-tools:
 
 Send plans, designs, and working documents to Grok (grok.com) for critical adversarial feedback. Automate the full loop: navigate to Grok, match or create the project, upload the document, submit a structured review prompt, extract findings, and integrate approved suggestions back into the source file.
 
+## When to Use This vs. `/code-review`
+
+Use this skill for cross-model review of plans, designs, and documents — it sends content to Grok, a different model, to get an independent second opinion. Use the built-in `/code-review` skill instead when reviewing a code diff with Claude itself; that skill doesn't require browser automation or leaving Claude Code.
+
 ## References
 
 - **`references/grok-ui-navigation.md`** — Playwright selectors, URL patterns, chunked typing strategy, and response detection for Grok's UI

@@ -39,9 +39,13 @@ function parseGrade(raw: string): GradeLetter {
   return 'F'
 }
 
-function detectPlatform(url: string): Platform {
-  if (url.includes('facebook.com') || url.includes('fb.com')) return 'facebook'
-  if (url.includes('ebay.com') || url.includes('ebay.co')) return 'ebay'
+const PLATFORM_VALUES: readonly Platform[] = ['facebook', 'ebay', 'other']
+
+function parsePlatform(raw: string | undefined): Platform {
+  const trimmed = raw?.trim().toLowerCase() ?? ''
+  if ((PLATFORM_VALUES as readonly string[]).includes(trimmed)) {
+    return trimmed as Platform
+  }
   return 'other'
 }
 
@@ -80,7 +84,7 @@ function rowToListing(row: CsvRow): Listing {
     dateScraped: row.date_scraped ?? '',
     searchLocation: row.search_location ?? '',
     searchRadius: toNumber(row.search_radius),
-    platform: detectPlatform(listingUrl),
+    platform: parsePlatform(row.platform),
     imageUrl: row.image_url || undefined,
     shippingEstimateLow: toNumber(row.shipping_estimate_low),
     shippingEstimateHigh: toNumber(row.shipping_estimate_high),
