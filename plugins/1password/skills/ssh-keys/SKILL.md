@@ -27,13 +27,13 @@ The 1Password SSH agent handles all SSH authentication via biometric approval (T
 ## Create a new SSH key
 
 ```bash
-op item create --category "SSH Key" --title "<KEY-NAME>" --vault "agentic_ai" --ssh-generate-key ed25519
+op item create --category "SSH Key" --title "<KEY-NAME>" --vault "<VAULT>" --ssh-generate-key ed25519
 ```
 
 ## Get the public key
 
 ```bash
-op item get "<KEY-NAME>" --vault agentic_ai --field "public key"
+op item get "<KEY-NAME>" --vault <VAULT> --field "public key"
 ```
 
 ## Make a key available in the SSH agent
@@ -43,7 +43,7 @@ Add an entry to `~/.config/1Password/ssh/agent.toml`:
 ```toml
 [[ssh-keys]]
 item = "<KEY-NAME>"
-vault = "agentic_ai"
+vault = "<VAULT>"
 ```
 
 Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
@@ -52,7 +52,7 @@ Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
 
 1. Save public key to disk:
    ```bash
-   op item get "<KEY-NAME>" --vault agentic_ai --field "public key" > ~/.ssh/<KEY-NAME>.pub
+   op item get "<KEY-NAME>" --vault <VAULT> --field "public key" > ~/.ssh/<KEY-NAME>.pub
    ```
 2. Fix permissions:
    ```bash
@@ -66,7 +66,7 @@ Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
 ## Add a key to GitHub (auth + signing)
 
 ```bash
-export GH_TOKEN="$(op read 'op://agentic_ai/GitHub Token/token')"
+export GH_TOKEN="$(op read 'op://<VAULT>/GitHub Token/token')"
 gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>" --type authentication
 gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>-signing" --type signing
 ```
@@ -83,7 +83,7 @@ Git is configured globally to sign with SSH via 1Password:
 To add a new signing key to allowed_signers:
 
 ```bash
-PUBLIC_KEY=$(op item get "<KEY-NAME>" --vault agentic_ai --field "public key")
+PUBLIC_KEY=$(op item get "<KEY-NAME>" --vault <VAULT> --field "public key")
 echo "email@example.com $PUBLIC_KEY" >> ~/.ssh/allowed_signers
 ```
 

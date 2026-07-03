@@ -20,34 +20,30 @@ Follow the official CLI get-started steps. Don't guess install commands.
 
 ## Existing environment setup
 
-The user's shell profile already handles several things before Claude starts.
-Do not duplicate this work — build on it instead.
-
-**Pre-injected at launch (via `cc` / `cc-dsp` shell wrappers in ~/.zshrc):**
-- `GITHUB_PERSONAL_ACCESS_TOKEN` is exported via `op read` before Claude starts.
-  It's already available in the environment — don't re-read it.
-- `STITCH_API_KEY` is exported via `op read` before Claude starts.
-  Used by the Stitch AI MCP server — don't re-read it.
+Before reading a secret, check whether it's already present in the
+environment (`printenv VAR_NAME`). Many users pre-inject secrets via
+`op read` in a shell wrapper or launch script, so the value may already be
+available without needing `op` at all.
 
 **SSH agent:**
-- `SSH_AUTH_SOCK` points to the 1Password SSH agent socket.
-  SSH operations (git clone/push over SSH, etc.) work automatically.
+- `SSH_AUTH_SOCK` may point to the 1Password SSH agent socket.
+  If configured, SSH operations (git clone/push over SSH, etc.) work
+  automatically.
 
-**Default vault:** `agentic_ai`
-- All secret references should use `op://agentic_ai/<Item Name>/<field>` unless
-  the user specifies a different vault.
-- This convention is also documented in `~/.claude/CLAUDE.md`.
+**Default vault:** use the vault specified in the user's `CLAUDE.md` or
+project config. If none is specified, ask the user which vault to use.
+Use `<VAULT>` as a placeholder in `op://` references and commands below.
 
 ### Adding secrets for MCP servers
 
-Same pattern as `GITHUB_PERSONAL_ACCESS_TOKEN`:
+1. Store in 1Password: `op item create --vault="<VAULT>" --title="<ITEM>" ...`
+2. Export it before Claude starts (e.g. in a shell wrapper or launch script):
+   `export MY_SERVICE_API_KEY="$(op read 'op://<VAULT>/<ITEM>/credential')"`
+3. Reference as `${MY_SERVICE_API_KEY}` in the `.mcp.json` `env` block
 
-1. Store in 1Password: `op item create --vault="agentic_ai" ...`
-2. Add `export VAR="$(op read 'op://agentic_ai/...')"` to `cc`/`cc-dsp` in `~/.zshrc`
-3. Reference as `${VAR}` in the `.mcp.json` `env` block
-
-That's it — no wrapper scripts needed. The env var is injected before Claude
-starts, and `.mcp.json` expands `${VAR}` references in `env` values.
+That's it — no wrapper scripts are required by this skill. If the env var is
+injected before Claude starts, `.mcp.json` expands `${VAR}` references in
+`env` values.
 
 ## When you need this skill
 
@@ -102,7 +98,7 @@ sleep 1
 tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -50
 
 # Run your op commands inside the session
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op read 'op://agentic_ai/MyItem/password'" Enter
+tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op read 'op://<VAULT>/MyItem/password'" Enter
 sleep 1
 tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -10
 
@@ -114,18 +110,18 @@ tmux -S "$SOCKET" kill-session -t "$SESSION"
 
 ### Read a secret
 ```bash
-op read 'op://agentic_ai/<Item Name>/<field>'
+op read 'op://<VAULT>/<Item Name>/<field>'
 ```
 
 ### Export as environment variable
 ```bash
-export VAR_NAME="$(op read 'op://agentic_ai/<Item Name>/<field>')"
+export VAR_NAME="$(op read 'op://<VAULT>/<Item Name>/<field>')"
 ```
 
 ### Store a new secret
 Prompt the user — never write the value to disk:
 ```bash
-op item create --category=api-credential --title="<Service Name>" --vault="agentic_ai" '<field>=<value>'
+op item create --category=api-credential --title="<Service Name>" --vault="<VAULT>" '<field>=<value>'
 ```
 
 ### Inject into a config template
@@ -145,7 +141,7 @@ Note: `op run` doesn't allocate a TTY. For interactive tools, prefer
 - Never paste secrets into logs, chat, or code.
 - Never write secrets to disk — prefer `op run` / `op inject` / `op read` + export.
 - If you discover plaintext secrets in any file, flag it immediately and offer
-  to migrate them to the `agentic_ai` vault.
+  to migrate them to the configured vault.
 - If a command returns "account is not signed in", authenticate inside tmux
   and re-try.
 - If tmux is unavailable, ask the user before proceeding — don't attempt `op`
