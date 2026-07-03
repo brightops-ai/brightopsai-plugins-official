@@ -45,7 +45,7 @@ A marketplace research assistant that searches Facebook Marketplace, analyzes li
 
 ## Examples
 
-- **`examples/sample-output.csv`** — 3-row sample demonstrating the 37-column CSV schema with proper escaping, JSON-in-CSV, and signed percentages
+- **`examples/sample-output.csv`** — 3-row sample demonstrating the 41-column CSV schema with proper escaping, JSON-in-CSV, and signed percentages
 - **`examples/sample-searches.json`** — Sample search index entry showing the expected format
 
 ## Dashboard
