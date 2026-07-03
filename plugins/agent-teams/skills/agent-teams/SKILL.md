@@ -23,9 +23,12 @@ inter-agent messaging, and centralized management.
 
 ## Prerequisites
 
-- Claude Code v2.1.32+
+- Claude Code v2.1.178+ (spawns teammates directly via the Agent tool with a
+  `name`; no separate team-creation step, and every session has one implicit
+  team while the flag below is set)
 - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in settings.json `env` section
-- For split panes: tmux or iTerm2 (optional — in-process mode works anywhere)
+- For split panes: tmux or iTerm2 with the `it2` CLI (optional — in-process
+  is the default display mode and works anywhere)
 
 ## Decision: Agent Team vs Subagents vs Single Session
 
@@ -94,11 +97,12 @@ blockers to the lead."
 - If the lead starts implementing instead of delegating, tell it:
   "Wait for your teammates to complete their tasks before proceeding"
 
-### 5. Clean Up
+### 5. Shut Down
 
-Always clean up via the lead (never via teammates):
-1. Shut down all teammates: "Ask [name] to shut down"
-2. Clean up the team: "Clean up the team"
+Shut down via the lead (never via teammates), one at a time by name:
+"Ask [name] to shut down". There is no separate team-cleanup command — the
+team's shared directories are removed automatically when the session ends,
+and the task list persists locally for a resumed session.
 
 ## Guardrails
 
