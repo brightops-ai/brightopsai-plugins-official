@@ -15,13 +15,14 @@ The output is text to copy. This skill never runs the prompt it writes, and neve
 
 - `references/anthropic-guidance.md` — the prompting rules the brief is built to, with sources and capture date
 - `references/clarify-triggers.md` — which gaps justify a question and which do not
+- `references/dictation-repair.md` — artifact versus content, self-correction, mis-transcription
 - `references/prompt-templates.md` — the brief skeleton, and worked examples by task kind
 
 ## Invariants
 
 These override every other instruction here.
 
-**Rewriting is not reinterpreting.** Fix how something was said; never change what was said. Disfluencies, false starts, run-ons and missing punctuation are artifacts of the channel and go. Hedges, priority markers and emphasis are content and stay — never promote "maybe" into "must", never drop a constraint because it arrived mid-ramble. Where the input corrects itself, the later statement wins and the superseded one is not mentioned.
+**Rewriting is not reinterpreting.** Fix how something was said; never change what was said. Disfluencies, false starts, run-ons and missing punctuation are artifacts of the channel and go. Hedges, priority markers and emphasis are content and stay — never promote "maybe" into "must", never drop a constraint because it arrived mid-ramble. Where the input corrects itself, the later statement wins and the superseded one is not named in the brief's objective, constraints, scope or completion criteria — not even as a contrast such as "use this, not that", which invents a rejection the author never made.
 
 **The brief is harness-agnostic.** It will be pasted into Claude Code, Cursor, or another agent. Name no harness-specific tool, slash command, model identifier or API. Add no role line and no XML scaffolding by default — the receiving harness already has a system prompt, and a second one fights it.
 
@@ -41,7 +42,7 @@ Read `references/anthropic-guidance.md`. Compare its `captured` date against tod
 
 ### 3. Extract, then classify every gap
 
-Work out, from the input alone: the deliverable, the subject it acts on, any stated constraints, any stated definition of done, and whether the input is dictated or typed. Dictated input reads as run-on with filler and no punctuation; typed input reads as clipped, abbreviated and lower-case. Infer the mode; do not ask about it.
+Work out, from the input alone: the deliverable, the subject it acts on, any stated constraints, any stated definition of done, and whether the input is dictated or typed. Infer the mode from the text and never ask about it; `references/dictation-repair.md` gives the signals for each, and the rules for separating what the channel introduced from what the author meant. Apply that repair before anything else, so the rest of the work reads intent rather than noise.
 
 Then take every gap to `references/clarify-triggers.md`, which gives the test for each slot. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
 

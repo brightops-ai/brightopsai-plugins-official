@@ -1,0 +1,7 @@
+{
+  "description": "Prohibitions stated mid-run-on are the easiest thing to lose and the most damaging. Both must survive.",
+  "questions": "none",
+  "must_contain_any": ["session"],
+  "must_contain_any_2": ["schema"],
+  "assumptions": "optional"
+}
