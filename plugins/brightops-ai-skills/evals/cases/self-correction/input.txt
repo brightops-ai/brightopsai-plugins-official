@@ -1,0 +1,1 @@
+store the sessions in redis, no wait, actually use postgres, and give it a ttl of like an hour

@@ -1,0 +1,1 @@
+um so the the deploy script yeah it needs a dry run flag basically so you can like see what it would do without it actually doing it you know, python obviously
