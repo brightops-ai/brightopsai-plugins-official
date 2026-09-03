@@ -2,7 +2,7 @@
 name: improve-prompt
 description: Turn rough dictated or hastily typed input into a well-formed prompt for an agentic coding harness.
 disable-model-invocation: true
-argument-hint: "[rough text] [--vocab] [--forget <phrase>] [--export <path>]"
+argument-hint: "[rough text] [--repo <path>] [--vocab] [--forget <phrase>] [--export <path>]"
 ---
 
 # Improve Prompt
@@ -51,7 +51,7 @@ Work out, from the input alone: the deliverable, the subject it acts on, any sta
 
 Consult the vocabulary first: a stored term that resolves a referent turns a blocking gap into a recoverable one, so resolve it rather than asking, and mark it as vocabulary-sourced under **What I assumed** so a stale entry stays visible. Where the input contradicts a stored entry, the input wins and the entry is demoted.
 
-Then take every remaining gap to `references/clarify-triggers.md`, which gives the test for each slot. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
+Then take every remaining gap to `references/clarify-triggers.md`, which gives the test for each slot. `--repo <path>` names a repository up front, so a code referent can be resolved without the ask in step 5. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
 
 Recoverable gaps become one of two things:
 
@@ -70,21 +70,31 @@ Where more than three gaps block, ask about the three whose answers most change 
 
 Fold answers into the brief as though the author had said them first. An answered question is not an assumption and does not appear under **What I assumed**.
 
-### 5. Fill the skeleton
+### 5. Offer a lookup for an unresolved code referent
+
+Only when a referent is still blocking after the round has closed, and only when it looks like a code artifact — a symbol, file name, flag or module. The vocabulary has already been consulted; this is for what it could not resolve.
+
+This is the single escalation exempt from the question budget. It sits outside the round rather than inside it, and is itself one ask. Ask for a repository path, offering the working directory when that is a repository. Declining is a normal outcome, not a failure: leave a placeholder and carry on.
+
+Search for the named referent and nothing else. Do not read further, survey the codebase, or diagnose the problem. This skill writes a prompt and does not attempt the work the prompt describes — with a repository in reach, that is the boundary most easily lost.
+
+Record what it resolved to under **What I assumed**.
+
+### 6. Fill the skeleton
 
 Use the skeleton in `references/prompt-templates.md`: objective, context, scope in and out, constraints, done when, notes. Omit a section only when it would be empty; never pad one to fill it.
 
 Two sections carry the most weight and deserve the most care. **Scope: out** is what prevents an agent expanding a small change into a refactor. **Done when** must be verifiable by the receiving agent — a criterion nobody can check is decoration.
 
-### 6. Add conditional clauses, never boilerplate
+### 7. Add conditional clauses, never boilerplate
 
 `references/anthropic-guidance.md` lists clauses that measurably improve agent behaviour, each with the condition that earns it. Add one only when its condition is met. Adding all of them every time produces the brittle, over-specified prompt the guidance itself warns against, and buries the actual task.
 
-### 7. Record what was confirmed
+### 8. Record what was confirmed
 
 Update the vocabulary only from confirmation: a question the author answered, a correction they made, or a candidate that has now reached its threshold. Everything else is an observation and goes to `Candidates` with a sighting count. Store conventions of expression only — never task content, code or secrets. `references/vocabulary-schema.md` holds the thresholds, the cap and the eviction order.
 
-### 8. Emit
+### 9. Emit
 
 ## Rewrite boundary
 

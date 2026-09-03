@@ -65,6 +65,13 @@ dressed as a behavioural regression sends you debugging the wrong thing.
   the plugin installs or the skill resolves under its namespaced name.
 - **Model variation.** Default is one run per case. Raise `EVAL_RUNS` to sample
   nondeterminism; a single green run is not proof of stability.
+- **The repository escalation.** Resolving a code referent by lookup needs a
+  repository and an interactive path answer, so no case exercises it. Its boundary —
+  that the skill searches for one name and does not start doing the work — is
+  unverified here.
+- **The vocabulary.** Cases run against whatever vocabulary the machine happens to
+  hold, and none asserts on learning, promotion or eviction. A polluted vocabulary
+  would change results without failing a case.
 - **The interactive question experience.** Headless runs render questions as text,
   so option quality and selection behaviour are unverified.
 
