@@ -1,0 +1,7 @@
+{
+  "description": "Bounded task, no blocking gap. Hedged cause must stay hedged, not promoted to a finding.",
+  "questions": "none",
+  "must_contain_any": ["2 second", "2s", "two second"],
+  "must_contain_any_2": ["may", "might", "possib", "unconfirmed", "hypothes", "suspect", "believ"],
+  "assumptions": "optional"
+}

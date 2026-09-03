@@ -1,0 +1,7 @@
+{
+  "description": "Accumulation, not replacement. Both suspected causes survive and both stay hedged; neither is deleted as superseded.",
+  "questions": "none",
+  "must_contain_any": ["image"],
+  "must_contain_any_2": ["script", "third party", "third-party"],
+  "assumptions": "optional"
+}

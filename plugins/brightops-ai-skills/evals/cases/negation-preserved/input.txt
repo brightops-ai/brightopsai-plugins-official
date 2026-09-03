@@ -1,0 +1,1 @@
+add caching to the profile endpoint but dont touch the session code and definitely dont change the db schema

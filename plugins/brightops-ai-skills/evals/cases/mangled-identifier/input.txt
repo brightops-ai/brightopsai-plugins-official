@@ -1,0 +1,1 @@
+the use effect in the dashboard panel component is firing twice on mount, work out why

@@ -22,6 +22,7 @@
 | **[agent-teams](plugins/agent-teams)** | 1.1.0 | Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.0.0 | Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.2.0 | Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation. |
+| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.1.0 | BrightOps AI workflow skills, packaged as one installable set. Currently: turn rough dictated or typed input into a well-formed prompt for an agentic coding harness. |
 
 ## Installation
 
@@ -63,6 +64,13 @@ One skill for finding deals on Facebook Marketplace:
 One skill for cross-model adversarial reviews:
 
 - **adversarial-review** — Send plans, designs, and working documents to Grok (grok.com) for adversarial feedback via Playwright browser automation. Navigates to Grok, creates or finds the matching project, uploads the document, submits a structured review prompt (with 5 template variants: Standard, Architecture, Implementation, Security, UX/Product), extracts findings with severity tags and self-improvement notes, and integrates approved suggestions back into the source file. Supports conservative (default) and aggressive auto-apply modes.
+
+### brightops-ai-skills
+
+The home for BrightOps AI workflow skills — one plugin holding many skills, rather than a plugin per skill. Skills are grouped into category subdirectories and listed explicitly in the plugin manifest.
+
+- **improve-prompt** — Turn rough input, dictated through speech-to-text or typed in a hurry, into a task brief another agentic coding session can act on. Cleans transcription artifacts without altering meaning, reproduces identifiers and quoted values exactly, and returns a harness-agnostic brief covering objective, context, scope, constraints and verifiable completion criteria. Output is text to copy; the skill never runs the prompt it writes. User-invoked only.
+- **calibrate-style** — Optional setup for `improve-prompt`. Collects a handful of dictated and typed samples, derives speaking and typing style, transcription slips, shorthand and standing preferences, shows everything for review before writing, and seeds the vocabulary so the improver asks fewer questions from the start. User-invoked only.
 
 ## Contributing
 
