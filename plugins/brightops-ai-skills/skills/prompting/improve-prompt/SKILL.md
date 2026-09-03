@@ -2,7 +2,7 @@
 name: improve-prompt
 description: Turn rough dictated or hastily typed input into a well-formed prompt for an agentic coding harness.
 disable-model-invocation: true
-argument-hint: "[rough text — or invoke bare and paste when prompted]"
+argument-hint: "[rough text] [--vocab] [--forget <phrase>] [--export <path>]"
 ---
 
 # Improve Prompt
@@ -16,6 +16,7 @@ The output is text to copy. This skill never runs the prompt it writes, and neve
 - `references/anthropic-guidance.md` — the prompting rules the brief is built to, with sources and capture date
 - `references/clarify-triggers.md` — which gaps justify a question and which do not
 - `references/dictation-repair.md` — artifact versus content, self-correction, mis-transcription
+- `references/vocabulary-schema.md` — what the vocabulary stores, and what may act on a brief
 - `references/prompt-templates.md` — the brief skeleton, and worked examples by task kind
 
 ## Invariants
@@ -34,17 +35,23 @@ These override every other instruction here.
 
 ### 1. Take the input
 
-Use the argument if one was passed. Otherwise ask for the rough text and wait for it.
+`--vocab`, `--forget <phrase>` and `--export <path>` are vocabulary operations, not briefs: carry out the one requested, report what happened, and stop. `references/vocabulary-schema.md` defines each.
 
-### 2. Load the guidance and check its age
+Otherwise use the argument as the rough text, or ask for it and wait.
+
+### 2. Load the guidance and the vocabulary
 
 Read `references/anthropic-guidance.md`. Compare its `captured` date against today. Six months or older, append the staleness line described under **Output**. Twelve months or older, also state that any model-specific claim should be re-verified before it is relied on.
+
+Then read `${CLAUDE_PLUGIN_DATA}/vocabulary.md`, creating it from `references/vocabulary.seed.md` if absent. It records how this author phrases things. Only confirmed entries may act on the brief; candidates are observations awaiting a threshold and influence nothing. Working without a vocabulary is normal and changes nothing else about the run.
 
 ### 3. Extract, then classify every gap
 
 Work out, from the input alone: the deliverable, the subject it acts on, any stated constraints, any stated definition of done, and whether the input is dictated or typed. Infer the mode from the text and never ask about it; `references/dictation-repair.md` gives the signals for each, and the rules for separating what the channel introduced from what the author meant. Apply that repair before anything else, so the rest of the work reads intent rather than noise.
 
-Then take every gap to `references/clarify-triggers.md`, which gives the test for each slot. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
+Consult the vocabulary first: a stored term that resolves a referent turns a blocking gap into a recoverable one, so resolve it rather than asking, and mark it as vocabulary-sourced under **What I assumed** so a stale entry stays visible. Where the input contradicts a stored entry, the input wins and the entry is demoted.
+
+Then take every remaining gap to `references/clarify-triggers.md`, which gives the test for each slot. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
 
 Recoverable gaps become one of two things:
 
@@ -73,7 +80,11 @@ Two sections carry the most weight and deserve the most care. **Scope: out** is 
 
 `references/anthropic-guidance.md` lists clauses that measurably improve agent behaviour, each with the condition that earns it. Add one only when its condition is met. Adding all of them every time produces the brittle, over-specified prompt the guidance itself warns against, and buries the actual task.
 
-### 7. Emit
+### 7. Record what was confirmed
+
+Update the vocabulary only from confirmation: a question the author answered, a correction they made, or a candidate that has now reached its threshold. Everything else is an observation and goes to `Candidates` with a sighting count. Store conventions of expression only — never task content, code or secrets. `references/vocabulary-schema.md` holds the thresholds, the cap and the eviction order.
+
+### 8. Emit
 
 ## Rewrite boundary
 
@@ -104,5 +115,7 @@ Then, outside the fence, and only when they have content:
 **Check** — identifiers that may be mis-transcribed, and readings chosen between two coherent alternatives.
 
 **Guidance snapshot** — the staleness line, when step 2 called for it: state the capture date and that a plugin update may carry newer guidance.
+
+**Learned** — one line naming what the vocabulary gained or lost, whenever step 7 wrote anything. Never write silently; a vocabulary the author cannot audit is one they cannot correct.
 
 Say nothing else. No summary of what changed, no offer to iterate, no restatement of the brief in prose. The user reads the brief, not a description of it.
