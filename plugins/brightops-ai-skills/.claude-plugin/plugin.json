@@ -1,0 +1,21 @@
+{
+  "name": "brightops-ai-skills",
+  "version": "1.0.0",
+  "description": "BrightOps AI workflow skills for Claude Code: prompt shaping and other engineering procedures, packaged as one installable set.",
+  "author": {
+    "name": "BrightOps AI"
+  },
+  "homepage": "https://brightopsinc.ai/",
+  "repository": "https://github.com/brightops-ai/brightopsai-plugins-official",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "prompting",
+    "prompt-engineering",
+    "dictation",
+    "workflow"
+  ],
+  "skills": [
+    "./skills/prompting/improve-prompt"
+  ]
+}

@@ -28,6 +28,12 @@
       "source": "./plugins/adversarial-review",
       "description": "Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation.",
       "version": "1.3.0"
+    },
+    {
+      "name": "brightops-ai-skills",
+      "source": "./plugins/brightops-ai-skills",
+      "description": "BrightOps AI workflow skills: turn rough dictated or typed input into a well-formed prompt for an agentic coding harness.",
+      "version": "1.0.0"
     }
   ]
 }
