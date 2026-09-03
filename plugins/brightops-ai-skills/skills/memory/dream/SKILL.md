@@ -62,15 +62,21 @@ Never write run state inside the plugin directory.
 
 ### 2. Analyse recent sessions
 
-Follow the `session-analysis` procedure in `dream` mode, producing
-`analysis.md` in the run directory. Pass `--since` from the previous run's
-timestamp when one exists; otherwise the default window.
+**Read `../../analysis/session-analysis/SKILL.md` and carry out its steps here,
+inline. Do not invoke it with the Skill tool** — it sets
+`disable-model-invocation`, so only a person can invoke it and the call is
+refused. The refusal message reads like a hard stop; it is not. Inline the
+procedure instead.
+
+Produce `analysis.md` in the run directory, in `dream` mode. Pass `--since`
+from the previous run's timestamp when one exists; otherwise the default window.
 
 ### 3. Improve memory
 
-Follow the `improve-memory` procedure, giving it the analysis alongside the
-audit. It snapshots before writing, applies only what is mechanically certain,
-and returns everything else as proposals.
+**Read `../improve-memory/SKILL.md` and carry out its steps here, inline** —
+same reason as step 2. Give it the analysis alongside the audit. It snapshots
+before writing, applies only what is mechanically certain, and returns
+everything else as proposals.
 
 ### 4. Carry forward the previous overview
 
@@ -81,9 +87,10 @@ declined and are dropped.
 
 ### 5. Write the overview and deliver
 
-Write `memory-improvement-overview.md`, then follow the `send-result` procedure
-with a short summary: what was applied, how many items await a decision, and
-where the full document is.
+Write `memory-improvement-overview.md`, then inline
+`../../notifications/send-result/SKILL.md` the same way, with a short summary:
+what was applied, how many items await a decision, and where the full document
+is.
 
 ### 6. Prune
 
@@ -125,6 +132,9 @@ deliver a summary naming each change and the snapshot path.
 
 ## Guardrails
 
+- The three sub-skills are read and inlined, never invoked. The reuse is real
+  but lives in the shared library and in these procedures, because a skill
+  carrying `disable-model-invocation` can only be invoked by a person
 - Never apply an item that was not ticked
 - Never touch an instruction file automatically; those are proposals in both modes
 - A failure in any stage names the stage and leaves memory unchanged
