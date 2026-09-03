@@ -14,6 +14,7 @@ The output is text to copy. This skill never runs the prompt it writes, and neve
 ## References
 
 - `references/anthropic-guidance.md` — the prompting rules the brief is built to, with sources and capture date
+- `references/clarify-triggers.md` — which gaps justify a question and which do not
 - `references/prompt-templates.md` — the brief skeleton, and worked examples by task kind
 
 ## Invariants
@@ -38,28 +39,40 @@ Use the argument if one was passed. Otherwise ask for the rough text and wait fo
 
 Read `references/anthropic-guidance.md`. Compare its `captured` date against today. Six months or older, append the staleness line described under **Output**. Twelve months or older, also state that any model-specific claim should be re-verified before it is relied on.
 
-### 3. Extract before you write
+### 3. Extract, then classify every gap
 
-Work out, from the input alone: the deliverable, the subject it acts on, any stated constraints, any stated definition of done, and whether the input is dictated or typed. Dictated input reads as run-on with filler and no punctuation; typed input reads as clipped, abbreviated and lower-case. Infer it; do not ask.
+Work out, from the input alone: the deliverable, the subject it acts on, any stated constraints, any stated definition of done, and whether the input is dictated or typed. Dictated input reads as run-on with filler and no punctuation; typed input reads as clipped, abbreviated and lower-case. Infer the mode; do not ask about it.
 
-Where something needed by the skeleton is absent, decide between a placeholder and an assumption:
+Then take every gap to `references/clarify-triggers.md`, which gives the test for each slot. A gap is blocking when a wrong guess would read as plausible and pass unnoticed; it is recoverable when a default exists or a wrong guess would be spotted immediately. Missing something is not by itself a reason to ask.
+
+Recoverable gaps become one of two things:
 
 - **Placeholder** when the reader can fill it in seconds and nothing else depends on it. Write it as `[LIKE THIS]` inside the brief.
 - **Assumption** when a reasonable default exists and the brief reads incoherently without it. Take the default, and list it under **What I assumed**.
 
 Prefer the narrower reading of scope. State the reading you took.
 
-### 4. Fill the skeleton
+### 4. Ask once, and only if something blocks
+
+No blocking gap means no questions. Skip this step and write the brief. This is the common case, and asking anyway is the failure this skill exists to avoid — messiness alone never earns a question.
+
+Otherwise ask a single round of at most three questions. Each offers two to four concrete options and names what changes depending on the answer; an open-ended question hands the work back to the author. Use the harness's structured question facility where one exists, otherwise plain numbered text.
+
+Where more than three gaps block, ask about the three whose answers most change the brief and carry the rest as stated assumptions. There is no second round of slot-filling questions; the only thing that may follow the round is a targeted escalation, itself limited to one ask.
+
+Fold answers into the brief as though the author had said them first. An answered question is not an assumption and does not appear under **What I assumed**.
+
+### 5. Fill the skeleton
 
 Use the skeleton in `references/prompt-templates.md`: objective, context, scope in and out, constraints, done when, notes. Omit a section only when it would be empty; never pad one to fill it.
 
 Two sections carry the most weight and deserve the most care. **Scope: out** is what prevents an agent expanding a small change into a refactor. **Done when** must be verifiable by the receiving agent — a criterion nobody can check is decoration.
 
-### 5. Add conditional clauses, never boilerplate
+### 6. Add conditional clauses, never boilerplate
 
 `references/anthropic-guidance.md` lists clauses that measurably improve agent behaviour, each with the condition that earns it. Add one only when its condition is met. Adding all of them every time produces the brittle, over-specified prompt the guidance itself warns against, and buries the actual task.
 
-### 6. Emit
+### 7. Emit
 
 ## Rewrite boundary
 
