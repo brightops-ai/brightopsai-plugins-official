@@ -22,7 +22,7 @@
 | **[agent-teams](plugins/agent-teams)** | 1.2.0 | Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.1.0 | Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.3.0 | Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation. |
-| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.2.0 | BrightOps AI workflow skills, packaged as one installable set: prompt shaping from rough input, and scheduled memory consolidation over past sessions. |
+| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.3.0 | BrightOps AI workflow skills, packaged as one installable set: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief. |
 
 ## Installation
 
@@ -75,6 +75,8 @@ The home for BrightOps AI workflow skills — one plugin holding many skills, ra
 - **improve-memory** — Audit a project's auto memory for the defects that fail silently — an index past its 200-line load limit, entries pointing at deleted files, memory files no index reaches, missing or invalid type frontmatter, stale entries — repair what is certain, and propose what needs a decision. User-invoked only.
 - **session-analysis** — Distil raw session transcripts into candidate episodes (interruptions, repeated tool failures, permission denials, terse turns after an edit) and analyse them for a chosen purpose. The bundled script finds structure and never decides meaning; clustering happens by what was corrected, not by how it was phrased. Runs forked. User-invoked only.
 - **send-result** — Deliver a run summary to a configured destination: a file by default, or a command you configure. Never infers a destination, and never silently substitutes one. Usable by any automation. User-invoked only.
+
+- **spawn-session** — Start a named Claude Code session in tmux with remote control enabled, in a chosen directory and permission posture, then hand it a starter brief. Confirms the session is the one that was launched — by a token it must echo back through its own transcript, not by reading the terminal — and refuses to deliver the brief if it answers from anywhere else. Multi-line briefs are pasted rather than typed, so they arrive whole. A session held at a startup dialog is diagnosed by name with the setting that resolves it; nothing is ever typed at a prompt. User-invoked only.
 
 ## Contributing
 

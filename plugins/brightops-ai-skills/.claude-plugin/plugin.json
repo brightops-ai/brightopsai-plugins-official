@@ -1,6 +1,6 @@
 {
   "name": "brightops-ai-skills",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, and scheduled memory consolidation over past sessions.",
   "author": {
     "name": "BrightOps AI"
@@ -15,7 +15,10 @@
     "dictation",
     "workflow",
     "memory",
-    "consolidation"
+    "consolidation",
+    "tmux",
+    "sessions",
+    "orchestration"
   ],
   "skills": [
     "./skills/prompting/improve-prompt",
@@ -23,6 +26,7 @@
     "./skills/memory/dream",
     "./skills/memory/improve-memory",
     "./skills/analysis/session-analysis",
-    "./skills/notifications/send-result"
+    "./skills/notifications/send-result",
+    "./skills/sessions/spawn-session"
   ]
 }
