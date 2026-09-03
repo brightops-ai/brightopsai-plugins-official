@@ -10,10 +10,23 @@ from pathlib import Path
 EVALS = Path(__file__).resolve().parent
 SKILL = EVALS.parent / "skills" / "prompting" / "improve-prompt"
 MODEL = os.environ.get("EVAL_MODEL", "claude-sonnet-5")
+MAX_TURNS = os.environ.get("EVAL_MAX_TURNS", "8")
 RUNS = int(os.environ.get("EVAL_RUNS", "1"))
 TIMEOUT = int(os.environ.get("EVAL_TIMEOUT", "300"))
 
 FENCE = re.compile(r"^```", re.M)
+
+
+def harness_error(out: str):
+    """Return a reason string when the run failed for a non-behavioural cause."""
+    t = out.strip()
+    if not t:
+        return "empty output from claude -p"
+    if t.startswith("Error:"):
+        return t.splitlines()[0]
+    if "```" not in t and len(t) < 200:
+        return f"no brief emitted; output was {t[:120]!r}"
+    return None
 
 
 def system_prompt() -> str:
@@ -49,15 +62,22 @@ def run_case(name: str, sysprompt: str):
     prompt = (case / "input.txt").read_text()
     exp = json.loads((case / "expect.json").read_text())
     out = subprocess.run(
-        ["claude", "-p", "--model", MODEL, "--max-turns", "3",
+        ["claude", "-p", "--model", MODEL, "--max-turns", MAX_TURNS,
          "--append-system-prompt", sysprompt, prompt],
         capture_output=True, text=True, timeout=TIMEOUT,
     ).stdout
+    # A harness problem is not a behavioural regression. Reporting it as one
+    # sends you debugging the skill when the runner is what is misconfigured.
+    err = harness_error(out)
+    if err:
+        return None, err, out
     inside, outside = split_fences(out)
-    hay = out if exp.get("case_sensitive") else out.lower()
+    cs = exp.get("case_sensitive")
+    brief = inside if cs else inside.lower()
+    whole = out if cs else out.lower()
 
     def norm(s):
-        return s if exp.get("case_sensitive") else s.lower()
+        return s if cs else s.lower()
 
     fails = []
     q = count_questions(outside)
@@ -68,15 +88,18 @@ def run_case(name: str, sysprompt: str):
         fails.append(f"asked {q} question(s); expected 1-3 for a blocking gap")
 
     for s in exp.get("must_contain", []):
-        if norm(s) not in hay:
-            fails.append(f"missing verbatim {s!r}")
+        if norm(s) not in brief:
+            fails.append(f"missing verbatim from brief: {s!r}")
     for key in ("must_contain_any", "must_contain_any_2"):
         opts = exp.get(key)
-        if opts and not any(norm(s) in hay for s in opts):
-            fails.append(f"none of {opts} present")
+        if opts and not any(norm(s) in brief for s in opts):
+            fails.append(f"brief contains none of {opts}")
     for s in exp.get("must_not_contain", []):
-        if norm(s) in hay:
-            fails.append(f"present but should not be: {s!r}")
+        if norm(s) in brief:
+            fails.append(f"present in brief but should not be: {s!r}")
+    for s in exp.get("must_not_contain_anywhere", []):
+        if norm(s) in whole:
+            fails.append(f"present in output but should not be: {s!r}")
 
     a = exp.get("assumptions", "optional")
     has_a = "what i assumed" in out.lower()
@@ -88,7 +111,7 @@ def run_case(name: str, sysprompt: str):
     if want == "none" and len(FENCE.findall(out)) != 2:
         fails.append(f"expected exactly one fenced brief, found {len(FENCE.findall(out))//2}")
 
-    return fails, out
+    return fails, None, out
 
 
 def main():
@@ -97,14 +120,19 @@ def main():
         names = [n for n in names if any(a in n for a in sys.argv[1:])]
     sysprompt = system_prompt()
     print(f"model={MODEL} runs={RUNS} cases={len(names)}\n")
-    failed = 0
+    failed = errored = 0
     for name in names:
         for r in range(RUNS):
             tag = f"{name}" + (f" (run {r+1})" if RUNS > 1 else "")
             try:
-                fails, out = run_case(name, sysprompt)
+                fails, err, out = run_case(name, sysprompt)
             except subprocess.TimeoutExpired:
-                print(f"  FAIL  {tag}: timed out after {TIMEOUT}s"); failed += 1; continue
+                print(f"  ERROR {tag}: timed out after {TIMEOUT}s"); errored += 1; continue
+            if err:
+                print(f"  ERROR {tag}: {err}")
+                print("          harness problem, not a behavioural result")
+                errored += 1
+                continue
             if fails:
                 failed += 1
                 print(f"  FAIL  {tag}")
@@ -115,8 +143,13 @@ def main():
             else:
                 print(f"  PASS  {tag}")
     print()
-    print("ALL CASES PASSED" if not failed else f"{failed} case run(s) FAILED (output in evals/results/)")
-    return 1 if failed else 0
+    if errored:
+        print(f"{errored} run(s) did not produce a result (harness problem — fix before trusting the rest)")
+    if failed:
+        print(f"{failed} case run(s) FAILED (output in evals/results/)")
+    if not failed and not errored:
+        print("ALL CASES PASSED")
+    return 1 if (failed or errored) else 0
 
 
 if __name__ == "__main__":

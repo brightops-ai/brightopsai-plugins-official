@@ -70,6 +70,7 @@ directory during development, which is silent and only found by looking.
 ## Testing Locally
 
 Reload after changes: `/reload-plugins` in Claude Code
+Behavioural evals for brightops-ai-skills: `plugins/brightops-ai-skills/evals/run.sh`
 If changes don't appear, check cache at `~/.claude/plugins/cache/brightopsai-plugins-official/`
 
 ## Gotchas
