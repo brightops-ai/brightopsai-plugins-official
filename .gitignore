@@ -15,3 +15,7 @@ Thumbs.db
 # Temp files
 *.tmp
 *.log
+
+# Python bytecode from bundled plugin scripts
+__pycache__/
+*.py[cod]
