@@ -16,7 +16,7 @@ level of `skills/`
 - agent-teams (v1.2.0) — 1 skill: agent-teams
 - adversarial-review (v1.3.0) — 1 skill: adversarial-review
 - marketplace-scout (v1.1.0) — 1 skill: marketplace-scout
-- brightops-ai-skills (v1.2.0) — 6 skills: improve-prompt, calibrate-style, dream,
+- brightops-ai-skills (v1.3.0) — 7 skills: improve-prompt, calibrate-style, dream, improve-memory, session-analysis, send-result, spawn-session
   improve-memory, session-analysis, send-result
 
 ## Adding a New Skill
