@@ -1,0 +1,7 @@
+{
+  "description": "Dictated, heavy disfluency, unambiguous. Artifacts removed, meaning kept, no questions.",
+  "questions": "none",
+  "must_contain_any": ["dry run", "dry-run"],
+  "must_not_contain": ["um so", "you know", "basically so you can like"],
+  "assumptions": "optional"
+}

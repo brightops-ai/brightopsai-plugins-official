@@ -1,0 +1,1 @@
+the login page takes like 4 seconds to load, i think its the avatar images, get it under 2 seconds, dont touch the auth logic

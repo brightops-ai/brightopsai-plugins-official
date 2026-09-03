@@ -1,0 +1,7 @@
+{
+  "description": "Technical identifiers must survive verbatim, including case.",
+  "questions": "none",
+  "must_contain": ["useEffect", "DashboardPanel.tsx", "--no-cache", "build.sh"],
+  "case_sensitive": true,
+  "assumptions": "optional"
+}

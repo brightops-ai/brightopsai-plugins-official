@@ -156,16 +156,21 @@ def audit(
     )
 
     if not index_path.exists():
-        findings.append(
-            Finding(
-                check="index-missing",
-                detail=(
-                    f"No {INDEX_NAME}. Topic files are never loaded without an "
-                    f"index entry, so all {len(topic_files)} are unreachable."
-                ),
-                file=str(index_path),
+        if topic_files:
+            findings.append(
+                Finding(
+                    check="index-missing",
+                    detail=(
+                        f"No {INDEX_NAME}. Topic files are never loaded without "
+                        f"an index entry, so all {len(topic_files)} memories "
+                        "here are unreachable."
+                    ),
+                    file=str(index_path),
+                    auto_fixable=True,
+                )
             )
-        )
+        # An empty directory with no index is not a defect: there is nothing
+        # for an index to point at, and one is created on the first write.
         index_text = ""
     else:
         index_text = index_path.read_text(encoding="utf-8", errors="replace")

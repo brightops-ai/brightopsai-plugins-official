@@ -1,0 +1,6 @@
+{
+  "description": "Tidy typed input with no gaps. Must not ask anything.",
+  "questions": "none",
+  "must_contain": ["--dry-run"],
+  "assumptions": "optional"
+}

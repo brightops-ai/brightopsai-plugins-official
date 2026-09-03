@@ -98,8 +98,15 @@ class AuditTest(unittest.TestCase):
 
     def test_missing_index_reports_every_topic_file_unreachable(self):
         self.build.memory("a.md", type="user")
-        found = checks(self.audit())
-        self.assertIn("index-missing", found)
+        findings = [f for f in self.audit() if f.check == "index-missing"]
+        self.assertEqual(len(findings), 1)
+        self.assertIn("all 1 memories", findings[0].detail)
+
+    def test_an_entirely_empty_memory_directory_reports_nothing(self):
+        # A directory with no memories and no index is not a defect: there is
+        # nothing for an index to point at. Reported as a finding by an earlier
+        # version, which read as "all 0 are unreachable".
+        self.assertEqual(self.audit(), [])
 
     def test_invalid_type_is_reported(self):
         self.build.index("- [X](x.md) — a\n").memory("x.md", type="notes")

@@ -1,0 +1,7 @@
+{
+  "description": "Later statement supersedes earlier. Superseded option must not surface as a rejected alternative.",
+  "questions": "none",
+  "must_contain": ["postgres"],
+  "must_not_contain": ["redis"],
+  "assumptions": "optional"
+}
