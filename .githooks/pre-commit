@@ -1,0 +1,60 @@
+#!/bin/sh
+# Blocks a commit that would introduce a secret or an infrastructure identifier.
+#
+# Tracked in the repo and activated by `core.hooksPath`. This repo has no
+# package.json yet, so there is no `npm run prepare` to wire it up — a fresh
+# clone activates it with:
+#
+#   ./scripts/install-hooks.sh
+#
+# When package.json does land, give it "prepare": "./scripts/install-hooks.sh"
+# so `npm install` does it automatically and the manual step disappears.
+#
+# Rules live in .gitleaks.toml. See that file for why the infra-identifier rules
+# exist: retrofitting them means rewriting history, so they are enforced from
+# the first commit rather than remembered.
+#
+# There is deliberately no CI scan behind this hook, so it is the only gate.
+# That makes two things matter more than they otherwise would: activating it
+# after a clone, and not reaching for --no-verify.
+#
+# Bypass, if you genuinely must:  git commit --no-verify
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not found on PATH — skipping the secret scan." >&2
+  echo "            Install it, or commit with --no-verify if you accept the risk." >&2
+  echo "            Linux: curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b ~/.local/bin" >&2
+  echo "            macOS: brew install gitleaks" >&2
+  echo "            Nothing else will catch it — there is no CI scan." >&2
+  exit 0
+fi
+
+echo "pre-commit: scanning staged changes for secrets and infrastructure identifiers..."
+
+if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+  cat >&2 <<'MSG'
+
+pre-commit: BLOCKED.
+
+Something staged matches a secret pattern or one of this repo's
+infrastructure-identifier rules (workspace name, tailnet host or ID, tailnet
+IP, home-directory path, LAN IP, AWS account id).
+
+Infrastructure identifiers carry no design meaning — replace them with a
+placeholder such as <tailnet-host> or <workspace>. If the match is a real
+secret, rotate it; do not merely unstage it.
+
+Writing a template's example config? Make the placeholder obviously fake
+(sk_test_REPLACE_ME) rather than realistically shaped — see the note in
+.gitleaks.toml.
+
+If it is a false positive, add a narrow allowlist entry to .gitleaks.toml
+rather than disabling the rule.
+
+MSG
+  exit 1
+fi
+
+echo "pre-commit: clean."
