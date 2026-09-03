@@ -1,0 +1,1 @@
+the checkout page is slow, i think its the image sizes, or it might be the third party scripts too, get it faster

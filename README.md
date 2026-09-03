@@ -22,7 +22,7 @@
 | **[agent-teams](plugins/agent-teams)** | 1.2.0 | Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.1.0 | Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.3.0 | Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation. |
-| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.1.0 | BrightOps AI workflow skills, packaged as one installable set: prompt shaping from rough input, and scheduled memory consolidation over past sessions. |
+| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.2.0 | BrightOps AI workflow skills, packaged as one installable set: prompt shaping from rough input, and scheduled memory consolidation over past sessions. |
 
 ## Installation
 
@@ -70,6 +70,7 @@ One skill for cross-model adversarial reviews:
 The home for BrightOps AI workflow skills — one plugin holding many skills, rather than a plugin per skill. Skills are grouped into category subdirectories and listed explicitly in the plugin manifest.
 
 - **improve-prompt** — Turn rough input, dictated through speech-to-text or typed in a hurry, into a task brief another agentic coding session can act on. Cleans transcription artifacts without altering meaning, reproduces identifiers and quoted values exactly, and returns a harness-agnostic brief covering objective, context, scope, constraints and verifiable completion criteria. Output is text to copy; the skill never runs the prompt it writes. User-invoked only.
+- **calibrate-style** — Optional setup for `improve-prompt`. Collects a handful of dictated and typed samples, derives speaking and typing style, transcription slips, shorthand and standing preferences, shows everything for review before writing, and seeds the vocabulary so the improver asks fewer questions from the start. User-invoked only.
 - **dream** — Consolidate what recent sessions revealed into the memory that loads next time. Runs as two modes a day apart: `full-analysis` mines session transcripts, repairs the memory defects that are mechanically certain, and writes an overview splitting applied changes from proposals awaiting sign-off; `apply-fixes` applies only the proposals that were ticked. Snapshots memory before every change. Model-invocable so a scheduled routine can fire it.
 - **improve-memory** — Audit a project's auto memory for the defects that fail silently — an index past its 200-line load limit, entries pointing at deleted files, memory files no index reaches, missing or invalid type frontmatter, stale entries — repair what is certain, and propose what needs a decision. User-invoked only.
 - **session-analysis** — Distil raw session transcripts into candidate episodes (interruptions, repeated tool failures, permission denials, terse turns after an edit) and analyse them for a chosen purpose. The bundled script finds structure and never decides meaning; clustering happens by what was corrected, not by how it was phrased. Runs forked. User-invoked only.

@@ -1,0 +1,119 @@
+# Secret + infrastructure-identifier scanner config for brightopsai-plugins-official.
+#
+# Installed by bootstrap-repo.sh from the workspace repo bundle. This file is
+# the SINGLE canonical copy of these rules — edit it there, then re-run
+# `bootstrap-repo.sh --all --apply` to converge every repo. Editing a copy in
+# one project is how the rules drifted before: an audit on 2026-08-10 found the
+# infrastructure-identifier rule prescribed globally but present in 2 of 13
+# repos, because it lived in hand-maintained forks.
+#
+# Why a repo gets this at all: it is treated as PUBLIC-BOUND. Retrofitting the
+# scan later means rewriting history, and even four passes of that once missed
+# copies sitting in gitignored worktrees. Install it at commit one.
+#
+# The workspace ops repo deliberately does NOT get this config — it records real
+# ports, real hostnames and real paths on purpose, so these rules would block
+# essentially every commit there and teach the habit of --no-verify, which is
+# worse than no scanner. bootstrap-repo.sh refuses to target it.
+#
+# The distinction these rules enforce:
+#   - Design rationale keeps REAL names. An ADR that cannot say what drove a
+#     decision is a worse ADR. Naming the driving customer or the actual
+#     precedent is the doc doing its job.
+#   - Infrastructure identifiers become PLACEHOLDERS, always. A tailnet host,
+#     an IP, a home-directory path carries no design meaning — `<tailnet-host>`
+#     reads the same and leaks nothing.
+#
+# ── Before allowlisting anything, read this ──────────────────────────────────
+# Repos grow files that *look* like leaks and aren't: `.env.example`, seed data,
+# fixture users. Do NOT reach for a path allowlist — it is not scoped to the rule
+# that misfired, so it blinds the scanner to everything else under that path.
+# Make the placeholder obviously fake instead, so no rule matches at all:
+#
+#   DATABASE_URL=postgres://REPLACE_ME:REPLACE_ME@localhost:5432/app_dev
+#   STRIPE_SECRET_KEY=sk_test_REPLACE_ME
+#
+# A value shaped like a real credential is a value someone eventually commits
+# for real. If a rule genuinely misfires, add a RULE-scoped allowlist
+# ([rules.allowlist] under that one rule), not a top-level path entry.
+
+title = "brightopsai-plugins-official gitleaks config"
+
+[extend]
+useDefault = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Infrastructure-identifier rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[rules]]
+id          = "workspace-name"
+description = "Maintainer's local workspace directory name"
+regex       = '''\bclaudebot\b'''
+tags        = ["pii", "workspace-leak"]
+
+[[rules]]
+id          = "tailnet-id"
+description = "Maintainer's tailnet identifier"
+regex       = '''tailc9eea3'''
+tags        = ["pii", "tailnet-leak"]
+
+[[rules]]
+id          = "tailnet-host"
+description = "Any tailnet hostname"
+regex       = '''[a-z0-9-]+\.ts\.net'''
+tags        = ["pii", "tailnet-leak"]
+
+[[rules]]
+id          = "tailnet-ip"
+description = "Tailscale CGNAT address (100.64/10)"
+regex       = '''\b100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}\b'''
+tags        = ["pii", "tailnet-leak"]
+
+[[rules]]
+id          = "home-path"
+description = "Hardcoded maintainer home directory path"
+regex       = '''/home/dbright(/|\b)'''
+tags        = ["pii", "path-leak"]
+
+[[rules]]
+id          = "macos-home-path"
+description = "Hardcoded maintainer home directory path (macOS)"
+regex       = '''/Users/dbright(/|\b)'''
+tags        = ["pii", "path-leak"]
+
+[[rules]]
+id          = "lan-ip"
+description = "Home LAN address — use <lan-host>"
+regex       = '''\b192\.168\.1\.\d{1,3}\b'''
+tags        = ["pii", "network-leak"]
+
+[[rules]]
+id          = "aws-account-id"
+description = "Bare AWS account id — use <aws-account-id>"
+regex       = '''\b1220154805\d{2}\b'''
+tags        = ["identifier", "aws"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# On bypassing
+# ─────────────────────────────────────────────────────────────────────────────
+# If a generated file trips a rule (e.g. android/local.properties carrying
+# sdk.dir=/home/<user>/Android/Sdk), gitignore the file or replace the
+# identifier with a placeholder. Do NOT use `git commit --no-verify`, which
+# switches the whole scan off for that commit.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Allowlist
+# ─────────────────────────────────────────────────────────────────────────────
+# Generated lockfiles only. All three names are covered rather than guessing a
+# package manager per repo — a lockfile is generated, is not secret-bearing, and
+# produces nothing but false positives.
+
+[allowlist]
+description = "Generated or fixture paths with no secret-bearing content"
+paths = [
+  '''package-lock\.json''',
+  '''pnpm-lock\.yaml''',
+  '''yarn\.lock''',
+  '''(^|/)tests?/fixtures/.*''',
+]

@@ -1,0 +1,6 @@
+{
+  "description": "A likely mis-transcribed identifier must not silently vanish into a corrected form. The input spelling has to survive somewhere so the author can catch a wrong guess.",
+  "questions": "none",
+  "must_contain_anywhere": ["use effect"],
+  "assumptions": "optional"
+}
