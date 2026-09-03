@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from dream import extract_sessions as ex
+from dream.tests.fixtures import secrets
 
 NOW = dt.datetime(2026, 9, 3, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -274,36 +275,38 @@ class BudgetTest(ExtractorTestCase):
 
 
 class RedactionTest(unittest.TestCase):
+    """Inputs live in tests/fixtures/secrets.py: a scanner flagging them here
+    would be the scanner working, and softening them would gut the assertion."""
+
     def test_api_keys_are_removed(self):
-        self.assertNotIn("sk-", ex.redact("key sk-abcdefghijklmnopqrstuvwx"))
+        self.assertNotIn("sk-", ex.redact(f"key {secrets.API_KEY}"))
 
     def test_github_tokens_are_removed(self):
-        self.assertNotIn("ghp_", ex.redact("ghp_0123456789abcdefghij"))
+        self.assertNotIn("ghp_", ex.redact(secrets.GITHUB_TOKEN))
 
     def test_aws_access_keys_are_removed(self):
-        self.assertNotIn("AKIA", ex.redact("AKIAIOSFODNN7EXAMPLE"))
+        self.assertNotIn("AKIA", ex.redact(secrets.AWS_ACCESS_KEY))
 
     def test_bearer_tokens_are_removed(self):
-        out = ex.redact("Authorization: Bearer abcdefghijklmnopqrstuvwxyz")
+        out = ex.redact(secrets.BEARER_HEADER)
         self.assertIn("[redacted]", out)
-        self.assertNotIn("abcdefghijklmnopqrstuvwxyz", out)
+        self.assertNotIn(secrets.BEARER_VALUE, out)
 
     def test_assigned_secrets_are_removed(self):
-        self.assertNotIn("hunter2hunter2", ex.redact("password=hunter2hunter2"))
+        out = ex.redact(secrets.ASSIGNED_PASSWORD)
+        self.assertNotIn(secrets.ASSIGNED_PASSWORD_VALUE, out)
 
     def test_connection_string_credentials_are_removed(self):
-        out = ex.redact("postgres://someuser:somepass@db.internal/app")
-        self.assertNotIn("somepass", out)
+        out = ex.redact(secrets.CONNECTION_STRING)
+        self.assertNotIn(secrets.CONNECTION_PASSWORD, out)
 
     def test_private_keys_are_removed(self):
-        out = ex.redact(
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nsecretbytes\n-----END OPENSSH PRIVATE KEY-----"
-        )
-        self.assertNotIn("secretbytes", out)
+        out = ex.redact(secrets.PRIVATE_KEY)
+        self.assertNotIn(secrets.PRIVATE_KEY_BODY, out)
 
     def test_jwts_are_removed(self):
-        out = ex.redact("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NX0.dBjftJeZ4CVPmB92K")
-        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", out)
+        out = ex.redact(f"token {secrets.JWT}")
+        self.assertNotIn(secrets.JWT_HEADER_SEGMENT, out)
 
     def test_ordinary_prose_is_untouched(self):
         text = "run the build and check the output directory"
@@ -315,10 +318,10 @@ class RedactionReachesStoredEpisodesTest(ExtractorTestCase):
         self.builder().assistant_tool(
             "Bash", {"command": "deploy"}, minutes_ago=5
         ).tool_result(
-            "failed with token ghp_0123456789abcdefghij", is_error=True, minutes_ago=4
+            f"failed with token {secrets.GITHUB_TOKEN}", is_error=True, minutes_ago=4
         ).write()
         serialised = json.dumps(self.extract().as_dict())
-        self.assertNotIn("ghp_0123456789abcdefghij", serialised)
+        self.assertNotIn(secrets.GITHUB_TOKEN, serialised)
 
 
 if __name__ == "__main__":
