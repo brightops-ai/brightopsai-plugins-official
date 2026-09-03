@@ -16,7 +16,8 @@ level of `skills/`
 - agent-teams (v1.2.0) — 1 skill: agent-teams
 - adversarial-review (v1.3.0) — 1 skill: adversarial-review
 - marketplace-scout (v1.1.0) — 1 skill: marketplace-scout
-- brightops-ai-skills (v1.0.0) — 1 skill: improve-prompt
+- brightops-ai-skills (v1.1.0) — 5 skills: improve-prompt, dream, improve-memory,
+  session-analysis, send-result
 
 ## Adding a New Skill
 
@@ -42,11 +43,29 @@ a CLI, browser automation, an MCP server — not for a skill that is mostly a pr
     skill should be used when the user asks to..." The trigger list exists to drive model matching.
   - User-invoked (`disable-model-invocation: true`): a single short line. The model cannot invoke
     the skill, so the description is only a picker label and a trigger list is dead weight.
+  - **Exception — a skill meant to run on a schedule must not set the flag.**
+    `disable-model-invocation` also prevents a scheduled task from firing the skill (Claude Code
+    v2.1.196+), so a scheduled routine would fire and do nothing, reporting no error. `dream` is
+    the case in this repo: it is person-driven but omits the flag and carries a trigger-phrase
+    description deliberately. Do not "correct" it to match the other skills.
 - SKILL.md body uses imperative form, not second person
 - Keep SKILL.md under ~2,000 words; move detailed content to references/
 - No duplication between SKILL.md body and reference files
 - Version bump in both plugin.json AND marketplace.json when updating a plugin
 - After version bump, clear stale cache: `rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>`
+
+## Testing
+
+Bundled Python is tested with the standard library's `unittest` — no third-party
+runner, so a user installing the plugin installs nothing:
+
+```bash
+cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .
+```
+
+Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
+and pass explicit directories. One test leaked into the real plugin data
+directory during development, which is silent and only found by looking.
 
 ## Testing Locally
 

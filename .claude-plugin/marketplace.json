@@ -32,8 +32,8 @@
     {
       "name": "brightops-ai-skills",
       "source": "./plugins/brightops-ai-skills",
-      "description": "BrightOps AI workflow skills: turn rough dictated or typed input into a well-formed prompt for an agentic coding harness.",
-      "version": "1.0.0"
+      "description": "BrightOps AI workflow skills: prompt shaping from rough input, and scheduled memory consolidation over past sessions.",
+      "version": "1.1.0"
     }
   ]
 }
