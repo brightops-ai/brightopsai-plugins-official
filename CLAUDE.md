@@ -52,8 +52,11 @@ a CLI, browser automation, an MCP server — not for a skill that is mostly a pr
 - Keep SKILL.md under ~2,000 words; move detailed content to references/
 - No duplication between SKILL.md body and reference files
 - `plugin.json` is the sole version pin. Bumping it is what makes `/plugin update`
-  see a new release. The README plugin table is a checked mirror (`scripts/check-marketplace.py`);
-  marketplace entries omit `version` — a stale copy there is silent pin drift, not a
+  see a new release. Land the bump and an entry in `plugins/<name>/CHANGELOG.md` in
+  the same change. A marketplace-level change (added or removed plugin, install
+  command, shared tooling) gets an entry in the root `CHANGELOG.md`. The README
+  plugin table is a checked mirror (`scripts/check-marketplace.py`); marketplace
+  entries omit `version` — a stale copy there is silent pin drift, not a
   second source of truth
 - After bumping `plugin.json`, clear stale cache: `rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>`
 
