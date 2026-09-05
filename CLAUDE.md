@@ -51,8 +51,11 @@ a CLI, browser automation, an MCP server — not for a skill that is mostly a pr
 - SKILL.md body uses imperative form, not second person
 - Keep SKILL.md under ~2,000 words; move detailed content to references/
 - No duplication between SKILL.md body and reference files
-- Version bump in both plugin.json AND marketplace.json when updating a plugin
-- After version bump, clear stale cache: `rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>`
+- `plugin.json` is the sole version pin. Bumping it is what makes `/plugin update`
+  see a new release. The README plugin table is a checked mirror (`scripts/check-marketplace.py`);
+  marketplace entries omit `version` — a stale copy there is silent pin drift, not a
+  second source of truth
+- After bumping `plugin.json`, clear stale cache: `rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>`
 
 ## Testing
 
@@ -94,7 +97,7 @@ If changes don't appear, check cache at `~/.claude/plugins/cache/brightopsai-plu
 - Never store user data inside a plugin directory; it is orphaned by the next version bump. Use
   `${CLAUDE_PLUGIN_DATA}`, which survives updates (but is removed when the plugin is uninstalled
   from all scopes)
-- marketplace.json version must match plugin.json version
+- plugin.json is the version pin; marketplace entries omit `version`
 - Remote: `brightops-ai/brightopsai-plugins-official` on GitHub (public)
 
 ## Agent skills

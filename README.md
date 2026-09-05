@@ -105,8 +105,10 @@ automation, an MCP server:
 
 **Before opening a pull request:**
 
-- Bump the version in **both** `plugin.json` and `marketplace.json`; the plugin cache is
-  version-keyed, so an unbumped change is never picked up
+- Bump the version in `plugin.json` only — that pin is what `/plugin update` reads.
+  The README plugin table is a checked mirror of it; do not put `version` on the
+  marketplace entry. The plugin cache is version-keyed, so an unbumped change is
+  never picked up
 - Run `./scripts/install-hooks.sh` once per clone to activate the gitleaks pre-commit gate —
   this repository is public, and git does not clone hooks
 - Run `python3 scripts/check-marketplace.py` when the change touches a plugin

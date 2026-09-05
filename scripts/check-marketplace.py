@@ -48,18 +48,11 @@ def collect_findings(root: Path | str) -> list[str]:
 
         plugin_version = plugin_data.get("version") if isinstance(plugin_data, dict) else None
 
-        if marketplace is not None:
-            entry = _marketplace_entry(marketplace, name)
-            if entry is None:
-                found.append(
-                    f'plugins/{name}/.claude-plugin/plugin.json: '
-                    f'plugin "{name}" is not registered in {MARKETPLACE_FILE}'
-                )
-            else:
-                found.extend(
-                    check_marketplace_plugin_version(name, plugin_version, entry)
-                )
-
+        if marketplace is not None and _marketplace_entry(marketplace, name) is None:
+            found.append(
+                f'plugins/{name}/.claude-plugin/plugin.json: '
+                f'plugin "{name}" is not registered in {MARKETPLACE_FILE}'
+            )
         if readme_error is None:
             if name not in readme_by_slug:
                 found.append(
@@ -85,23 +78,20 @@ def collect_findings(root: Path | str) -> list[str]:
 
 def check_marketplace_plugin_version(
     plugin_name: str,
-    plugin_version: Any,
     marketplace_entry: dict[str, Any],
 ) -> list[str]:
-    """Compare plugin.json version to marketplace.json version when present.
+    """Fail if a marketplace entry sets ``version``; plugin.json is the pin.
 
-    Follow-up #37 will invert this: a marketplace ``version`` field becomes a
-    failure instead of a match requirement. Keep the rule in this one function.
+    The README table is compared to plugin.json separately. A marketplace
+    copy is not a second source of truth — Claude Code does not warn if it
+    drifts.
     """
     if "version" not in marketplace_entry:
         return []
-    marketplace_version = marketplace_entry["version"]
-    if marketplace_version != plugin_version:
-        return [
-            f'{MARKETPLACE_FILE}: plugin "{plugin_name}" version is '
-            f'"{marketplace_version}", plugin.json has "{plugin_version}"'
-        ]
-    return []
+    return [
+        f'{MARKETPLACE_FILE}: plugin "{plugin_name}" has "version"; '
+        f"plugin.json is the sole pin"
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -212,6 +202,7 @@ def _check_marketplace_entries(
         if not isinstance(name, str) or not name:
             found.append(f'{MARKETPLACE_FILE}: plugins[{index}] missing "name"')
             continue
+        found.extend(check_marketplace_plugin_version(name, entry))
         if "source" not in entry:
             found.append(f'{MARKETPLACE_FILE}: plugin "{name}" missing "source"')
             continue
