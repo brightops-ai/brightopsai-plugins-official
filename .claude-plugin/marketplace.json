@@ -6,6 +6,9 @@
     "name": "BrightOps AI",
     "url": "https://brightopsinc.ai/"
   },
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-plugins-official"
+  ],
   "plugins": [
     {
       "name": "1password",

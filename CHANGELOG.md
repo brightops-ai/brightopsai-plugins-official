@@ -11,6 +11,14 @@ rather than numbered.
 
 ## [Unreleased]
 
+## [2026-09-05] - Playwright dependency
+
+### Added
+
+- `allowCrossMarketplaceDependenciesOn` includes `claude-plugins-official`
+  so `marketplace-scout` and `adversarial-review` can declare Playwright as
+  a cross-marketplace dependency.
+
 ## [2026-09-05] - Manifest metadata
 
 ### Added

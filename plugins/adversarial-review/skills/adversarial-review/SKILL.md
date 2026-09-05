@@ -50,6 +50,10 @@ Use this skill for cross-model review of plans, designs, and documents — it se
 
 ## Workflow
 
+### Prerequisites
+
+Confirm the Playwright browser tools (`browser_navigate` and the rest of the `mcp__plugin_playwright_playwright__browser_*` set) are available in this session. If they are missing, stop: tell the user to run `/plugin install playwright@claude-plugins-official`, then `/reload-plugins` or restart, and invoke this skill again. Do not retry the browser loop without those tools.
+
 ### 1. Identify the Document
 
 Read the file path from the skill argument. If no path provided, ask the user via AskUserQuestion. Read the file content with the Read tool. Determine the project name:

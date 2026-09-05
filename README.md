@@ -20,8 +20,8 @@
 |--------|---------|-------------|
 | **[1password](plugins/1password)** | 1.2.1 | Use the 1Password CLI (`op`) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent. |
 | **[agent-teams](plugins/agent-teams)** | 1.2.1 | Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination. |
-| **[marketplace-scout](plugins/marketplace-scout)** | 1.1.1 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
-| **[adversarial-review](plugins/adversarial-review)** | 1.3.1 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
+| **[marketplace-scout](plugins/marketplace-scout)** | 1.1.2 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
+| **[adversarial-review](plugins/adversarial-review)** | 1.3.2 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
 | **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.3.2 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief. |
 
 ## Installation
@@ -44,6 +44,18 @@ claude plugin install brightops-ai-skills@brightopsai-plugins-official
 themselves, clone the repository and add the checkout as a directory marketplace
 instead: `/plugin marketplace add <path-to-clone>`.
 
+`marketplace-scout` and `adversarial-review` need the Playwright plugin from
+`claude-plugins-official` before their browser loops can run. Claude Code
+auto-installs that dependency only when the official marketplace is already
+configured (the default) and this marketplace allowlists it. If auto-install
+is skipped or fails — Claude Code will not pull a plugin from another
+marketplace otherwise — install Playwright first, then `/reload-plugins` or
+restart:
+
+```
+/plugin install playwright@claude-plugins-official
+```
+
 ## Plugin Details
 
 ### 1password
@@ -63,13 +75,13 @@ One skill for orchestrating parallel Claude Code teams:
 
 One skill for finding deals on Facebook Marketplace:
 
-- **marketplace-scout** — Search Facebook Marketplace via Playwright browser automation, grade listings A+ through F using market price research, save results to CSV, and launch an interactive Vite + React dashboard for browsing, filtering, and identifying resale arbitrage opportunities.
+- **marketplace-scout** — Search Facebook Marketplace via Playwright browser automation, grade listings A+ through F using market price research, save results to CSV, and launch an interactive Vite + React dashboard for browsing, filtering, and identifying resale arbitrage opportunities. Install Playwright first (`/plugin install playwright@claude-plugins-official`) if Claude Code does not pull that cross-marketplace dependency automatically.
 
 ### adversarial-review
 
 One skill for cross-model adversarial reviews:
 
-- **adversarial-review** — Send plans, designs, and working documents to Grok (grok.com) for adversarial feedback via Playwright browser automation. Navigates to Grok, creates or finds the matching project, uploads the document, submits a structured review prompt (with 5 template variants: Standard, Architecture, Implementation, Security, UX/Product), extracts findings with severity tags and self-improvement notes, and integrates approved suggestions back into the source file. Supports conservative (default) and aggressive auto-apply modes.
+- **adversarial-review** — Send plans, designs, and working documents to Grok (grok.com) for adversarial feedback via Playwright browser automation. Navigates to Grok, creates or finds the matching project, uploads the document, submits a structured review prompt (with 5 template variants: Standard, Architecture, Implementation, Security, UX/Product), extracts findings with severity tags and self-improvement notes, and integrates approved suggestions back into the source file. Supports conservative (default) and aggressive auto-apply modes. Install Playwright first (`/plugin install playwright@claude-plugins-official`) if Claude Code does not pull that cross-marketplace dependency automatically.
 
 ### brightops-ai-skills
 

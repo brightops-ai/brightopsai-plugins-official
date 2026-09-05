@@ -1,7 +1,7 @@
 {
   "name": "marketplace-scout",
   "displayName": "Marketplace Scout",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage.",
   "author": {
     "name": "BrightOps AI"
@@ -18,5 +18,11 @@
     "research",
     "dashboard",
     "playwright"
+  ],
+  "dependencies": [
+    {
+      "name": "playwright",
+      "marketplace": "claude-plugins-official"
+    }
   ]
 }
