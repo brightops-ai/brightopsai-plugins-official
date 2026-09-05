@@ -2,6 +2,7 @@
 name: spawn-session
 description: Start a named Claude Code session in tmux, verify it, and hand it a starter brief.
 disable-model-invocation: true
+argument-hint: "<name> [--dir <dir>] [--prompt <text>|--prompt-file <path>] [--bypass] [--trust-folder] [--resume] [--dry-run]"
 ---
 
 # Spawn a session
