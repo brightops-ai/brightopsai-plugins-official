@@ -52,7 +52,7 @@ A marketplace research assistant that searches Facebook Marketplace, analyzes li
 
 ## Dashboard
 
-The `assets/dashboard/` directory contains a complete Vite + React + TypeScript dashboard application. On first run, if no `dashboard/` directory exists in the working directory, scaffold it by copying `assets/dashboard/` to `./dashboard/` and running `npm install`. On subsequent runs, just update the data files and tell the user to refresh.
+Run `"${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/scripts/ensure-dashboard.sh"` and relay its output. State lives under `${CLAUDE_PLUGIN_DATA}` (`dashboard/`, `data/`), not the project cwd; pass a path argument only if the user names one. Later runs update data files there.
 
 ## Workflow
 
@@ -110,10 +110,10 @@ Follow `references/anti-detection.md` between listing visits. For each deep-dive
 - Check seller profile: name, rating, reviews, account age, response time, other listings
 - For vague listings, escalate: read description, check photos, check structured attributes, visit seller profile. If still unknown, mark "Specs unverified" and grade conservatively.
 
-**Image extraction** — save a product photo locally for each listing. Facebook CDN URLs expire quickly, so images must be downloaded during the scrape and saved to `./data/images/`.
+**Image extraction** — save a product photo locally for each listing. Facebook CDN URLs expire quickly, so images must be downloaded during the scrape and saved to `${CLAUDE_PLUGIN_DATA}/data/images/`.
 
 For each listing page already open in Playwright:
-Extract a product image per listing and save to `./data/images/{listing_id}.jpg`. Set `image_url` in the CSV to `/data/images/{listing_id}.jpg`. Leave `image_url` empty if no image can be extracted — the dashboard shows a styled placeholder with the search term. See `references/image-extraction.md` for the browser code pattern and fallback selectors.
+Extract a product image per listing and save to `${CLAUDE_PLUGIN_DATA}/data/images/{listing_id}.jpg`. Set `image_url` in the CSV to `/data/images/{listing_id}.jpg`. Leave `image_url` empty if no image can be extracted — the dashboard shows a styled placeholder with the search term. See `references/image-extraction.md` for the browser code pattern and fallback selectors.
 
 ### 6. Grade Each Listing
 
@@ -129,26 +129,17 @@ Read `references/csv-schema.md` before writing the CSV.
 
 Generate timestamped filename: `marketplace_results_{YYYY-MM-DD_HH-mm}.csv`
 
-Write to `./data/{filename}` using that schema. See `examples/sample-output.csv` for a filled example.
+Write to `${CLAUDE_PLUGIN_DATA}/data/{filename}` using that schema. See `examples/sample-output.csv` for a filled example.
 
-Update `./data/searches.json` (create if missing) — append a new entry using the `searches.json` shape in that file.
+Update `${CLAUDE_PLUGIN_DATA}/data/searches.json` (create if missing) — append a new entry using the `searches.json` shape in that file.
 
-Copy both files to `./dashboard/public/data/` and maintain `latest.csv` as a copy of the newest CSV.
+Copy both files to `${CLAUDE_PLUGIN_DATA}/dashboard/public/data/` and maintain `latest.csv` as a copy of the newest CSV.
 
 ### 8. Launch Dashboard
 
-Check if the dashboard exists at `./dashboard/`. If not, scaffold it from the plugin's `assets/dashboard/` directory:
+Run `"${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/scripts/ensure-dashboard.sh"` and relay its output. Stop if it exits non-zero.
 
-```bash
-cp -r "${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/assets/dashboard/" ./dashboard/
-cd dashboard && npm install
-```
-
-Check if the dev server is already running on port 5173. If running, tell the user to refresh. If not:
-
-```bash
-cd dashboard && npm run dev
-```
+Check if the dev server is already running on port 5173. If running, tell the user to refresh. If not, `cd` to the printed path (default `${CLAUDE_PLUGIN_DATA}/dashboard`) and run `npm run dev`.
 
 Summarize findings: total listings per search term, grade distribution, top 3 deals with grades and prices, critical red flags, and changes from prior searches if applicable.
 
@@ -161,4 +152,4 @@ When modifying the dashboard, follow the compatibility rules in `references/dash
 - **Photo investigation:** Always click through all listing photos. Spec details hidden in photos are the difference between a bad grade and a good one.
 - **Conservative grading:** When specs cannot be confirmed after full investigation, assume the lower-end configuration. Note the potential upside.
 - **Data integrity:** Follow `references/csv-schema.md` for CSV escaping, empty-field defaults, and `searches.json` validity.
-- **Dashboard scaffolding:** Only copy `assets/dashboard/` on first run. Never overwrite an existing dashboard directory — the user may have customized it.
+- **Dashboard scaffolding:** Run `ensure-dashboard.sh`. Never overwrite a present dashboard; relay any `mv` instruction (exit 3) and do not delete leftover `./dashboard` or `./data`.
