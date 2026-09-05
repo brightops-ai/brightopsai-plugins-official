@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-09-05
+
+### Changed
+
+- Move CSV schema, grading output rules, `searches.json` shape, and
+  anti-detection timings out of `SKILL.md` into `references/csv-schema.md`
+  and `references/anti-detection.md`.
+
 ## [1.1.2] - 2026-09-05
 
 ### Added

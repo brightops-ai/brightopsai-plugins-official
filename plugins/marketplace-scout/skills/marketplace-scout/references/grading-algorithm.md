@@ -66,8 +66,4 @@ Write a 2-3 sentence summary explaining the grade.
 
 ## Grade Breakdown JSON Format
 
-Store in the CSV `grade_breakdown` column as a JSON string:
-
-```json
-{"priceValue":"B","sellerTrust":"A","listingQuality":"B","redFlags":"A","conditionConsistency":"B"}
-```
+`grade_breakdown` CSV shape lives in `csv-schema.md`.

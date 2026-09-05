@@ -4,7 +4,7 @@ Rules for modifying the marketplace-scout dashboard (`assets/dashboard/`).
 
 ## Data Validation
 
-The dashboard performs runtime validation on CSV and JSON data — malformed data will surface warnings to the user. Ensure CSV schema and `grade_breakdown` JSON shape conform exactly to the specifications in SKILL.md Step 7.
+The dashboard performs runtime validation on CSV and JSON data — malformed data will surface warnings to the user. Ensure CSV schema and `grade_breakdown` JSON shape conform exactly to `csv-schema.md`.
 
 ## Accessibility
 
