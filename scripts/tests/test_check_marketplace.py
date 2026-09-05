@@ -43,7 +43,35 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _readme(rows: list[tuple[str, str]]) -> str:
+PLUGIN_README_HEADINGS = (
+    "Overview",
+    "Install",
+    "Skills",
+    "Prerequisites",
+    "Data",
+    "Update",
+    "Uninstall",
+)
+
+
+def _plugin_readme(name: str) -> str:
+    sections = "\n\n".join(
+        f"## {heading}\n\nText for {name}." for heading in PLUGIN_README_HEADINGS
+    )
+    return (
+        f"# {name}\n\n"
+        f"`/plugin install {name}@brightopsai-plugins-official`\n\n"
+        f"`/{name}:demo`\n\n"
+        "${CLAUDE_PLUGIN_DATA}\n\n"
+        "`/plugin update`\n\n"
+        "See [CHANGELOG.md](CHANGELOG.md).\n\n"
+        f"{sections}\n"
+    )
+
+
+def _readme(
+    rows: list[tuple[str, str]], *, link_plugin_readmes: bool = True
+) -> str:
     lines = [
         "# Fixture",
         "",
@@ -57,6 +85,12 @@ def _readme(rows: list[tuple[str, str]]) -> str:
             f"| **[{name}](plugins/{name})** | {version} | A {name} plugin. |"
         )
     lines.append("")
+    if link_plugin_readmes:
+        for name, _version in rows:
+            lines.append(
+                f"See [{name} README](plugins/{name}/README.md)."
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -124,6 +158,9 @@ def build_clean_tree(root: Path) -> None:
     )
     (root / "README.md").write_text(
         _readme([(PLUGIN, VERSION)]), encoding="utf-8"
+    )
+    (plugin_dir / "README.md").write_text(
+        _plugin_readme(PLUGIN), encoding="utf-8"
     )
 
 
@@ -316,6 +353,114 @@ class MalformedJsonTest(_TreeTest):
         self.assert_finding(
             items, ".claude-plugin/marketplace.json", "malformed JSON"
         )
+
+
+class PluginReadmeTest(_TreeTest):
+    """Each plugin ships a README covering install, skills, data, and uninstall (#40)."""
+
+    def test_missing_plugin_readme_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        path = self.root / "plugins" / PLUGIN / "README.md"
+        if path.is_file():
+            path.unlink()
+        items = self.findings()
+        self.assert_finding(items, f"plugins/{PLUGIN}/README.md", "file not found")
+
+    def test_plugin_readme_missing_required_heading_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        (self.root / "plugins" / PLUGIN / "README.md").write_text(
+            f"# {PLUGIN}\n\n"
+            f"`/plugin install {PLUGIN}@brightopsai-plugins-official`\n\n"
+            "${CLAUDE_PLUGIN_DATA}\n\n"
+            "`/plugin update`\n\n"
+            f"`/{PLUGIN}:demo`\n\n"
+            "See [CHANGELOG.md](CHANGELOG.md).\n",
+            encoding="utf-8",
+        )
+        items = self.findings()
+        self.assert_finding(items, f"plugins/{PLUGIN}/README.md", "## Overview")
+
+    def test_plugin_readme_missing_install_command_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        (self.root / "plugins" / PLUGIN / "README.md").write_text(
+            _plugin_readme(PLUGIN).replace(
+                f"/plugin install {PLUGIN}@brightopsai-plugins-official",
+                "/plugin install other@elsewhere",
+            ),
+            encoding="utf-8",
+        )
+        items = self.findings()
+        self.assert_finding(
+            items,
+            f"plugins/{PLUGIN}/README.md",
+            f"/plugin install {PLUGIN}@brightopsai-plugins-official",
+        )
+
+    def test_plugin_readme_missing_data_dir_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        (self.root / "plugins" / PLUGIN / "README.md").write_text(
+            _plugin_readme(PLUGIN).replace("${CLAUDE_PLUGIN_DATA}", "plugin-data"),
+            encoding="utf-8",
+        )
+        items = self.findings()
+        self.assert_finding(
+            items, f"plugins/{PLUGIN}/README.md", "${CLAUDE_PLUGIN_DATA}"
+        )
+
+    def test_root_readme_missing_plugin_readme_link_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        (self.root / "README.md").write_text(
+            _readme([(PLUGIN, VERSION)], link_plugin_readmes=False),
+            encoding="utf-8",
+        )
+        items = self.findings()
+        self.assert_finding(
+            items, "README.md", f"plugins/{PLUGIN}/README.md"
+        )
+
+    def test_playwright_plugin_readme_missing_install_is_a_finding(self) -> None:
+        _wire_playwright_plugin(
+            self.root,
+            declare_dep=True,
+            skill_prereq=True,
+            allowlist=True,
+            readme_note=True,
+        )
+        path = self.root / "plugins" / PLUGIN / "README.md"
+        path.write_text(_plugin_readme(PLUGIN), encoding="utf-8")
+        items = self.findings()
+        self.assert_finding(
+            items, f"plugins/{PLUGIN}/README.md", PLAYWRIGHT_INSTALL
+        )
+
+
+class PluginReadmeRuleTest(unittest.TestCase):
+    """Isolated tests: known Claude Code version floors (#40)."""
+
+    def test_agent_teams_readme_must_record_version_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp)
+            (plugin_dir / "README.md").write_text(
+                _plugin_readme("agent-teams"), encoding="utf-8"
+            )
+            got = cm.check_plugin_readme("agent-teams", plugin_dir)
+        self.assertTrue(any("v2.1.178" in item for item in got), got)
+
+    def test_brightops_readme_must_record_dream_schedule_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp)
+            (plugin_dir / "README.md").write_text(
+                _plugin_readme("brightops-ai-skills"), encoding="utf-8"
+            )
+            got = cm.check_plugin_readme("brightops-ai-skills", plugin_dir)
+        self.assertTrue(any("v2.1.196" in item for item in got), got)
+
+    def test_complete_readme_with_floors_is_not_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp)
+            text = _plugin_readme("agent-teams") + "\nClaude Code v2.1.178+\n"
+            (plugin_dir / "README.md").write_text(text, encoding="utf-8")
+            self.assertEqual(cm.check_plugin_readme("agent-teams", plugin_dir), [])
 
 
 class ReadmeTableTest(_TreeTest):
@@ -519,6 +664,12 @@ def _wire_playwright_plugin(
         readme = root / "README.md"
         readme.write_text(
             readme.read_text(encoding="utf-8") + f"Install with `{PLAYWRIGHT_INSTALL}`.\n",
+            encoding="utf-8",
+        )
+        plugin_readme = root / "plugins" / PLUGIN / "README.md"
+        plugin_readme.write_text(
+            plugin_readme.read_text(encoding="utf-8")
+            + f"\n`{PLAYWRIGHT_INSTALL}`\n",
             encoding="utf-8",
         )
 

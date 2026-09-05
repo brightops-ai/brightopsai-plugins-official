@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that marketplace metadata, plugin manifests, README, and skills agree."""
+"""Check that marketplace metadata, plugin manifests, READMEs, and skills agree."""
 
 from __future__ import annotations
 
@@ -22,6 +22,19 @@ PLAYWRIGHT_MCP_MARKER = "mcp__plugin_playwright_playwright__"
 PLAYWRIGHT_PLUGIN_NAME = "playwright"
 PLAYWRIGHT_MARKETPLACE = "claude-plugins-official"
 PLAYWRIGHT_INSTALL_COMMAND = "/plugin install playwright@claude-plugins-official"
+PLUGIN_README_HEADINGS = (
+    "Overview",
+    "Install",
+    "Skills",
+    "Prerequisites",
+    "Data",
+    "Update",
+    "Uninstall",
+)
+KNOWN_VERSION_FLOORS = {
+    "agent-teams": "v2.1.178",
+    "brightops-ai-skills": "v2.1.196",
+}
 
 README_ROW = re.compile(
     r"^\|\s*\*\*\[(?P<name>[^\]]+)\]\(plugins/(?P<slug>[^)]+)\)\*\*"
@@ -80,11 +93,17 @@ def collect_findings(root: Path | str) -> list[str]:
 
         found.extend(_check_plugin_skills(root, plugin_dir, plugin_data))
         needed_marketplaces.update(_dependency_marketplaces(plugin_data))
-        if _plugin_uses_playwright_mcp(plugin_dir):
+        uses_this_playwright = _plugin_uses_playwright_mcp(plugin_dir)
+        if uses_this_playwright:
             uses_playwright = True
             found.extend(
                 _check_playwright_plugin(root, name, plugin_dir, plugin_data)
             )
+        found.extend(
+            check_plugin_readme(
+                name, plugin_dir, uses_playwright=uses_this_playwright
+            )
+        )
 
     if marketplace is not None:
         for entry in marketplace.get("plugins", []):
@@ -97,14 +116,16 @@ def collect_findings(root: Path | str) -> list[str]:
             check_cross_marketplace_allowlist(marketplace, needed_marketplaces)
         )
 
-    if uses_playwright and readme_error is None:
+    if readme_error is None:
         readme_text = (root / README_FILE).read_text(encoding="utf-8")
-        if PLAYWRIGHT_INSTALL_COMMAND not in readme_text:
+        if uses_playwright and PLAYWRIGHT_INSTALL_COMMAND not in readme_text:
             found.append(
                 f'{README_FILE}: missing "{PLAYWRIGHT_INSTALL_COMMAND}"'
             )
-
-    if readme_error is None:
+        for name in disk_plugins:
+            needle = f"plugins/{name}/README.md"
+            if needle not in readme_text:
+                found.append(f"{README_FILE}: missing link to {needle}")
         for slug, _version in readme_rows:
             if slug not in disk_plugins:
                 found.append(
@@ -166,6 +187,46 @@ def check_marketplace_entry_metadata(
     )
     if marketplace_entry.get("description") != plugin_desc:
         found.append(f"{prefix} description does not match plugin.json")
+    return found
+
+
+def check_plugin_readme(
+    plugin_name: str,
+    plugin_dir: Path,
+    *,
+    uses_playwright: bool = False,
+) -> list[str]:
+    """Fail if a plugin README is missing or omits the #40 sections."""
+    rel = f"plugins/{plugin_name}/README.md"
+    path = plugin_dir / "README.md"
+    if not path.is_file():
+        return [f"{rel}: file not found"]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"{rel}: cannot read ({exc})"]
+
+    found: list[str] = []
+    headings = _markdown_h2_headings(text)
+    for heading in PLUGIN_README_HEADINGS:
+        if heading not in headings:
+            found.append(f'{rel}: missing "## {heading}" heading')
+    install = f"/plugin install {plugin_name}@brightopsai-plugins-official"
+    if install not in text:
+        found.append(f'{rel}: missing "{install}"')
+    if f"/{plugin_name}:" not in text:
+        found.append(f'{rel}: missing namespaced invoke "/{plugin_name}:..."')
+    if "${CLAUDE_PLUGIN_DATA}" not in text:
+        found.append(f'{rel}: missing "${{CLAUDE_PLUGIN_DATA}}"')
+    if "/plugin update" not in text:
+        found.append(f'{rel}: missing "/plugin update"')
+    if "CHANGELOG.md" not in text:
+        found.append(f"{rel}: missing CHANGELOG.md link")
+    floor = KNOWN_VERSION_FLOORS.get(plugin_name)
+    if floor is not None and floor not in text:
+        found.append(f'{rel}: missing Claude Code version floor "{floor}"')
+    if uses_playwright and PLAYWRIGHT_INSTALL_COMMAND not in text:
+        found.append(f'{rel}: missing "{PLAYWRIGHT_INSTALL_COMMAND}"')
     return found
 
 
@@ -265,6 +326,14 @@ def _nonempty_string_list(value: Any) -> bool:
         and bool(value)
         and all(isinstance(item, str) and bool(item.strip()) for item in value)
     )
+
+
+def _markdown_h2_headings(text: str) -> set[str]:
+    found: set[str] = set()
+    for line in text.splitlines():
+        if line.startswith("## "):
+            found.add(line[3:].strip())
+    return found
 
 
 def _plugin_data_for_source(root: Path, source: Any) -> dict[str, Any] | None:

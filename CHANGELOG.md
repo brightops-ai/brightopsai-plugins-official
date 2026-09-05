@@ -11,6 +11,22 @@ rather than numbered.
 
 ## [Unreleased]
 
+## [2026-09-05] - Plugin READMEs
+
+### Added
+
+- `plugins/<name>/README.md` for every plugin: install command, namespaced
+  invoke names, prerequisites, `${CLAUDE_PLUGIN_DATA}` contents, update, and
+  uninstall. Version floors: `agent-teams` needs Claude Code v2.1.178+; `dream`
+  scheduling needs v2.1.196+.
+- `scripts/check-marketplace.py` fails when a plugin README is missing, omits
+  the required headings, or when the catalog README does not link to it.
+
+### Changed
+
+- Root README Plugin Details sections are short summaries that point at those
+  files, so prerequisite lists are not copied in a second place.
+
 ## [2026-09-05] - Playwright dependency
 
 ### Added
