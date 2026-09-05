@@ -12,11 +12,11 @@ level of `skills/`
 
 ## Current Plugins
 
-- 1password (v1.2.1) — 2 skills: 1password, ssh-keys
-- agent-teams (v1.2.1) — 1 skill: agent-teams
-- adversarial-review (v1.3.1) — 1 skill: adversarial-review
-- marketplace-scout (v1.1.1) — 1 skill: marketplace-scout
-- brightops-ai-skills (v1.3.2) — 7 skills: improve-prompt, calibrate-style, dream,
+- 1password — 2 skills: 1password, ssh-keys
+- agent-teams — 1 skill: agent-teams
+- adversarial-review — 1 skill: adversarial-review
+- marketplace-scout — 1 skill: marketplace-scout
+- brightops-ai-skills — 7 skills: improve-prompt, calibrate-style, dream,
   improve-memory, session-analysis, send-result, spawn-session
 
 ## Adding a New Skill
