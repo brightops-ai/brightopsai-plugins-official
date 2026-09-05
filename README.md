@@ -24,6 +24,10 @@
 | **[adversarial-review](plugins/adversarial-review)** | 1.4.0 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
 | **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.3.2 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief. |
 
+Install commands, namespaced invoke names, prerequisites, data directories, and
+uninstall behaviour are in each plugin's `README.md` (linked under Plugin
+Details).
+
 ## Installation
 
 Add the marketplace, then install the plugins you want — inside Claude Code:
@@ -60,43 +64,32 @@ restart:
 
 ### 1password
 
-Two skills for managing secrets and SSH keys through 1Password CLI:
-
-- **1password** — Read, inject, store, and rotate secrets mid-session using `op`. Supports persistent auth via tmux, environment variable injection, and config template rendering.
-- **ssh-keys** — Create and manage SSH keys stored exclusively in 1Password. Covers key creation, remote server setup, GitHub integration, and git commit signing — all backed by biometric approval (Touch ID).
+Two skills for managing secrets and SSH keys through the 1Password CLI (`op`).
+See [plugins/1password/README.md](plugins/1password/README.md).
 
 ### agent-teams
 
-One skill for orchestrating parallel Claude Code teams:
-
-- **agent-teams** — Guides team creation, task decomposition, file ownership partitioning, and inter-agent coordination. Includes ready-to-use templates for parallel code review, competing debug hypotheses, cross-layer feature development, and large-scale refactoring.
+One skill for orchestrating parallel Claude Code teams (Claude Code v2.1.178+).
+See [plugins/agent-teams/README.md](plugins/agent-teams/README.md).
 
 ### marketplace-scout
 
-One skill for finding deals on Facebook Marketplace:
-
-- **marketplace-scout** — Search Facebook Marketplace via Playwright browser automation, grade listings A+ through F using market price research, save results to CSV, and launch an interactive Vite + React dashboard for browsing, filtering, and identifying resale arbitrage opportunities. Install Playwright first (`/plugin install playwright@claude-plugins-official`) if Claude Code does not pull that cross-marketplace dependency automatically.
+Search Facebook Marketplace, grade listings, and browse them on a local
+dashboard. Needs Playwright — install order is under Installation above.
+See [plugins/marketplace-scout/README.md](plugins/marketplace-scout/README.md).
 
 ### adversarial-review
 
-One skill for cross-model adversarial reviews:
-
-- **adversarial-review** — Send plans, designs, and working documents to Grok (grok.com) for adversarial feedback via Playwright browser automation. Navigates to Grok, creates or finds the matching project, uploads the document, submits a structured review prompt (with 5 template variants: Standard, Architecture, Implementation, Security, UX/Product), extracts findings with severity tags and self-improvement notes, and integrates approved suggestions back into the source file. Supports conservative (default) and aggressive auto-apply modes. Install Playwright first (`/plugin install playwright@claude-plugins-official`) if Claude Code does not pull that cross-marketplace dependency automatically.
+Cross-model adversarial review of plans and designs via Grok in the browser.
+Needs Playwright — install order is under Installation above.
+See [plugins/adversarial-review/README.md](plugins/adversarial-review/README.md).
 
 ### brightops-ai-skills
 
-The home for BrightOps AI workflow skills — one plugin holding many skills, rather than a plugin per skill. Skills are grouped into category subdirectories and listed explicitly in the plugin manifest.
-
-Invoke a skill by its namespaced name, for example `/brightops-ai-skills:improve-prompt`. All
-are user-invoked except `dream`, which stays model-invocable so a scheduled routine can fire it.
-
-- **improve-prompt** — Turn rough input, dictated through speech-to-text or typed in a hurry, into a task brief another agentic coding session can act on. Cleans transcription artifacts without altering meaning, reproduces identifiers and quoted values exactly, and returns a harness-agnostic brief covering objective, context, scope, constraints and verifiable completion criteria. Output is text to copy; the skill never runs the prompt it writes. User-invoked only.
-- **calibrate-style** — Optional setup for `improve-prompt`. Collects a handful of dictated and typed samples, derives speaking and typing style, transcription slips, shorthand and standing preferences, shows everything for review before writing, and seeds the vocabulary so the improver asks fewer questions from the start. User-invoked only.
-- **dream** — Consolidate what recent sessions revealed into the memory that loads next time. Runs as two modes a day apart: `full-analysis` mines session transcripts, repairs the memory defects that are mechanically certain, and writes an overview splitting applied changes from proposals awaiting sign-off; `apply-fixes` applies only the proposals that were ticked. Snapshots memory before every change. Model-invocable so a scheduled routine can fire it.
-- **improve-memory** — Audit a project's auto memory for the defects that fail silently — an index past its 200-line load limit, entries pointing at deleted files, memory files no index reaches, missing or invalid type frontmatter, stale entries — repair what is certain, and propose what needs a decision. User-invoked only.
-- **session-analysis** — Distil raw session transcripts into candidate episodes (interruptions, repeated tool failures, permission denials, terse turns after an edit) and analyse them for a chosen purpose. The bundled script finds structure and never decides meaning; clustering happens by what was corrected, not by how it was phrased. Runs forked. User-invoked only.
-- **send-result** — Deliver a run summary to a configured destination: a file by default, or a command you configure. Never infers a destination, and never silently substitutes one. Usable by any automation. User-invoked only.
-- **spawn-session** — Start a named Claude Code session in tmux with remote control enabled, in a chosen directory and permission posture, then hand it a starter brief. Confirms the session is the one that was launched — by a token it must echo back through its own transcript, not by reading the terminal — and refuses to deliver the brief if it answers from anywhere else. Multi-line briefs are pasted rather than typed, so they arrive whole. A session held at a startup dialog is diagnosed by name with the setting that resolves it; nothing is ever typed at a prompt. User-invoked only.
+Workflow skills in one plugin: prompt shaping, memory consolidation, and
+verified session spawn. Invoke by namespaced name, for example
+`/brightops-ai-skills:improve-prompt`. Dream scheduling needs Claude Code
+v2.1.196+. See [plugins/brightops-ai-skills/README.md](plugins/brightops-ai-skills/README.md).
 
 ## Contributing
 
@@ -113,7 +106,8 @@ automation, an MCP server:
 1. Create `plugins/<name>/.claude-plugin/plugin.json` with name, version, description, and author
 2. Create `plugins/<name>/skills/<skill>/SKILL.md` with YAML frontmatter
 3. Add optional `references/` for detailed documentation
-4. Register in `.claude-plugin/marketplace.json`
+4. Add `plugins/<name>/README.md` (Overview, Install, Skills, Prerequisites, Data, Update, Uninstall)
+5. Register in `.claude-plugin/marketplace.json`
 
 **Before opening a pull request:**
 
@@ -125,7 +119,8 @@ automation, an MCP server:
 - Run `./scripts/install-hooks.sh` once per clone to activate the gitleaks pre-commit gate —
   this repository is public, and git does not clone hooks
 - Run `python3 scripts/check-marketplace.py` when the change touches a plugin
-  manifest, the marketplace registry, the README plugin table, or adds a skill
+  manifest, the marketplace registry, the README plugin table, a plugin
+  `README.md`, or adds a skill
 - Run the tests: `cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .`
   and `plugins/brightops-ai-skills/tests/run.sh --unit`; run `evals/run.sh` when touching
   `improve-prompt`
