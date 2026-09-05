@@ -13,6 +13,10 @@ rather than numbered.
 
 ### Added
 
+- GitHub Actions workflow `.github/workflows/ci.yml`: plugin validate,
+  marketplace check, unit tests, shellcheck, gitleaks tree scan, and eval
+  index completeness on pull requests and `main`. Behavioural evals stay
+  manual.
 - `CONTRIBUTING.md`: human contributing guide (skill vs plugin, categorised
   `skills` array, `plugin.json` version pin, `/reload-plugins` and the
   version-keyed cache, hooks, tests, packaging gates). Root README
@@ -21,8 +25,9 @@ rather than numbered.
 - `SECURITY.md`: vulnerability reporting via GitHub Security Advisories,
   fake example credentials, `${CLAUDE_PLUGIN_DATA}`, 1Password/`op` handling,
   Facebook Marketplace terms responsibility, grok.com upload plus pre-upload
-  secret scan, and the gitleaks pre-commit gate (inactive until
-  `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing; no CI scan).
+  secret scan, the gitleaks pre-commit gate (inactive until
+  `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing), and CI
+  tree scan on pull requests and `main`.
 
 ## [2026-09-05] - Plugin READMEs
 

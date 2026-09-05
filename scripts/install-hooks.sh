@@ -41,8 +41,8 @@ The hook is installed but will skip its scan (and say so) until you install it:
   Linux:  curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b ~/.local/bin
   macOS:  brew install gitleaks
 
-There is no CI scan behind this hook, so until gitleaks is installed this repo
-has no secret scanning at all.
+CI still scans the checked-out tree on pull requests and main
+(.github/workflows/ci.yml). This hook is the local pre-commit gate.
 
 MSG
 fi

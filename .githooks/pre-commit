@@ -14,9 +14,9 @@
 # exist: retrofitting them means rewriting history, so they are enforced from
 # the first commit rather than remembered.
 #
-# There is deliberately no CI scan behind this hook, so it is the only gate.
-# That makes two things matter more than they otherwise would: activating it
-# after a clone, and not reaching for --no-verify.
+# CI also scans the checked-out tree on pull requests and main
+# (.github/workflows/ci.yml, `gitleaks detect --no-git`). This hook is the
+# local gate: it runs on staged changes before a commit lands.
 #
 # Bypass, if you genuinely must:  git commit --no-verify
 
@@ -27,7 +27,8 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   echo "            Install it, or commit with --no-verify if you accept the risk." >&2
   echo "            Linux: curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b ~/.local/bin" >&2
   echo "            macOS: brew install gitleaks" >&2
-  echo "            Nothing else will catch it — there is no CI scan." >&2
+  echo "            CI will still scan the tree on pull requests and main" >&2
+  echo "            (.github/workflows/ci.yml)." >&2
   exit 0
 fi
 

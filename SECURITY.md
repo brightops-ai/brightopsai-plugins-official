@@ -67,9 +67,11 @@ confidential material.
 
 ## Secret scanning in this repository
 
-The only gate is a pre-commit gitleaks hook in `.githooks/pre-commit`,
-activated by `./scripts/install-hooks.sh` (`core.hooksPath`). Git does not
-clone hooks, so a fresh clone has no scan until that script runs.
+A pre-commit gitleaks hook in `.githooks/pre-commit`, activated by
+`./scripts/install-hooks.sh` (`core.hooksPath`), scans staged changes.
+Git does not clone hooks, so a fresh clone has no local scan until that
+script runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
 
-If `gitleaks` is missing, the hook skips the scan and exits 0. There is no
-CI workflow under `.github/workflows/`.
+CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
+requests and pushes to `main` with `gitleaks detect --no-git` and
+`.gitleaks.toml`. That scan does not depend on the hook.

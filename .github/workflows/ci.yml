@@ -1,0 +1,112 @@
+# Packaging gate for this marketplace. Any step failure fails the job.
+#
+# Behavioural evals (plugins/brightops-ai-skills/evals/run.sh) stay manual:
+# they cost tokens. CI only asserts eval index completeness via check-index.sh.
+#
+# Live bats specs (tmux) are excluded: brightops-ai-skills tests/run.sh --unit
+# uses --filter-tags '!live'.
+#
+# Gitleaks: the git history contains two known findings in an old commit of a
+# test file that has since moved under an allowlisted fixtures path, so a
+# full-history `gitleaks detect` fails on main. A `--no-git` tree scan is the
+# gate. Do not add a `.gitleaksignore` for history. gitleaks-action wraps
+# history detect and does not take `--no-git` as a first-class input, so this
+# job downloads a pinned release binary.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Packaging gates
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Isolate Claude config directory
+        run: mkdir -p "$CLAUDE_CONFIG_DIR"
+
+      - name: Install Claude Code CLI
+        # Pin to 2.x at or above the locally installed CLI (2.1.261).
+        # `claude plugin validate` needs no login — verified with
+        # CLAUDE_CONFIG_DIR pointed at an empty temp dir and credentials
+        # unset. A caret on that 2.x floor tracks patch releases of the
+        # validate command without crossing a breaking 3.x.
+        run: npm install -g '@anthropic-ai/claude-code@^2.1.261'
+
+      - name: Install bats and shellcheck
+        run: sudo apt-get update && sudo apt-get install -y bats shellcheck
+
+      - name: Validate plugins
+        run: claude plugin validate . --strict
+
+      - name: Check marketplace consistency
+        run: python3 scripts/check-marketplace.py
+
+      - name: Marketplace checker tests
+        run: python3 -m unittest discover -s scripts/tests -t scripts
+
+      - name: Dream unit tests
+        run: cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .
+
+      - name: Plugin unit tests
+        # Each plugins/<name>/tests/ holding Python tests is a stdlib unittest
+        # suite rooted at the plugin directory.
+        run: |
+          for d in plugins/*/tests; do
+            if ls "$d"/test_*.py >/dev/null 2>&1; then
+              plugin="${d%/tests}"
+              echo "== $plugin =="
+              (cd "$plugin" && python3 -m unittest discover -s tests -t .)
+            fi
+          done
+
+      - name: Bats unit tests
+        run: |
+          plugins/brightops-ai-skills/tests/run.sh --unit
+          mapfile -t extra < <(git ls-files 'plugins/*/tests/*.bats' | grep -v '^plugins/brightops-ai-skills/' || true)
+          if [ "${#extra[@]}" -gt 0 ]; then
+            bats "${extra[@]}"
+          fi
+
+      - name: Shellcheck
+        run: git ls-files -z -- '*.sh' '*.bash' | xargs -0 -r shellcheck -x -P SCRIPTDIR
+
+      - name: Gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          # --no-git walks the work tree, including untracked bytecode caches
+          # left by the unit-test steps. Drop them before the scan.
+          find . -name __pycache__ -type d -prune -exec rm -rf {} +
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" -o "/tmp/${archive}"
+          echo "${GITLEAKS_SHA256}  /tmp/${archive}" | sha256sum -c -
+          tar -xzf "/tmp/${archive}" -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks detect --no-git --config .gitleaks.toml --redact
+
+      - name: Eval index completeness
+        run: plugins/brightops-ai-skills/evals/check-index.sh
