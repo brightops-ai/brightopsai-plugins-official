@@ -1,6 +1,12 @@
 # Agent Teams — Full Reference
 
-Source: https://code.claude.com/docs/en/agent-teams
+```
+source: https://code.claude.com/docs/en/agent-teams
+captured: 2026-07-03
+```
+
+`captured` is the last-revised date of this snapshot, not a confirmation that
+the live docs still match.
 
 ## Enabling
 
@@ -225,3 +231,9 @@ in later prompts.
 - Permissions set at spawn (changeable after, not during).
 - Split panes require tmux or iTerm2 (not VS Code terminal, Windows Terminal,
   or Ghostty). The default in-process mode works everywhere.
+
+## Refreshing this file
+
+Re-read https://code.claude.com/docs/en/agent-teams, update `captured` to the
+refresh date, and revise only what changed. Ship the change as a plugin version
+bump so installations pick it up.

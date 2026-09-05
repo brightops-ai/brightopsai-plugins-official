@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-05
+
+### Changed
+
+- Date-stamp `references/full-docs.md` with source URL and last-revised date;
+  warn in the skill when the snapshot is older than six months.
+
 ## [1.2.1] - 2026-09-05
 
 ### Added
