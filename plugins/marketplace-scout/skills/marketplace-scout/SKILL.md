@@ -38,9 +38,11 @@ A marketplace research assistant that searches Facebook Marketplace, analyzes li
 ## References
 
 - **`references/grading-algorithm.md`** — Full grading weights, formulas, red flag definitions, and grade boundaries
+- **`references/csv-schema.md`** — 41-column CSV header, per-field rules, grading output shape, and `searches.json` index
 - **`references/resale-arbitrage.md`** — Complete resale/flip mode: profitable categories, eBay cross-referencing, modified grading weights
 - **`references/shipping-estimates.md`** — Shipping cost table by item category and eBay fee calculations
 - **`references/image-extraction.md`** — Playwright code pattern for extracting product images from listing pages
+- **`references/anti-detection.md`** — Wait timings and scroll/wait policy for Marketplace browser loops
 - **`references/dashboard-guidelines.md`** — Accessibility, styling, and responsive rules for dashboard modifications
 
 ## Examples
@@ -76,14 +78,14 @@ Navigate to `https://www.facebook.com/marketplace/` using Playwright. Take a sna
 
 ### 3. Search Facebook Marketplace
 
-For each search term:
+Read `references/anti-detection.md` before navigating or scrolling. Then for each search term:
 
 1. Navigate to `https://www.facebook.com/marketplace/search/?query={encoded_search_term}&exact=false`
-2. Set location and radius on the first search only (clear location field, type slowly, select autocomplete suggestion, set radius, apply)
-3. Scroll 2-3 times (random 1-3s pauses) to load results
+2. Set location and radius on the first search only (clear location field, select autocomplete suggestion, set radius, apply)
+3. Scroll to load results
 4. Extract up to 30 listings: title, price, location, URL, condition
 5. Filter out wrong products, over-budget items, below-condition items
-6. Between search terms, wait 30-60 seconds (use this time for market research)
+6. Between search terms, wait per that file (use this time for market research)
 
 ### 4. Market Research
 
@@ -101,7 +103,7 @@ Sort listings by price attractiveness. Deep-dive priority:
 1. **Vague listings that could be great deals** — titles missing key specs where price suggests a higher-end config. These need investigation first.
 2. **Top 10-15 by price attractiveness** — lowest price relative to market research.
 
-For each deep-dive listing:
+Follow `references/anti-detection.md` between listing visits. For each deep-dive listing:
 - Navigate to the listing URL, extract full description, photo count, condition, days listed
 - **Click through ALL photos** — look for "About This Mac" screenshots, spec stickers, serial numbers, system profiler screens
 - **Extract the product image URL** for the dashboard card display (see image extraction below)
@@ -113,56 +115,23 @@ For each deep-dive listing:
 For each listing page already open in Playwright:
 Extract a product image per listing and save to `./data/images/{listing_id}.jpg`. Set `image_url` in the CSV to `/data/images/{listing_id}.jpg`. Leave `image_url` empty if no image can be extracted — the dashboard shows a styled placeholder with the search term. See `references/image-extraction.md` for the browser code pattern and fallback selectors.
 
-Anti-detection: wait 2-5s between listings, 5-15s pause every 5 listings.
-
 ### 6. Grade Each Listing
 
 Consult `references/grading-algorithm.md` for the full grading algorithm. Apply the five weighted categories (Price Value 35%, Seller Trust 25%, Listing Quality 20%, Red Flags 15%, Condition vs Price 5%) and compute the final grade.
 
 For resale arbitrage mode, consult `references/resale-arbitrage.md` for modified grading weights that prioritize flip profitability, and `references/shipping-estimates.md` for shipping cost estimates and eBay fee calculations.
 
-**Grading output rules:**
-- Only output grades from the `GradeLetter` union: `A+`, `A`, `B`, `C`, `D`, `F`. Never output grade `X` or any other value.
-- If grading fails or specs cannot be determined after full investigation, default to grade `F` with a red flag explanation (e.g. `"Specs unverified — graded conservatively as F"`). Do not use a placeholder grade.
-- `grade_breakdown` must be a JSON object with exactly 5 string fields: `priceValue`, `sellerTrust`, `listingQuality`, `redFlags`, `conditionConsistency`. Each value must be a single letter grade (`A+`, `A`, `B`, `C`, `D`, or `F`) as a string — never a number, array, or nested object.
+Read `references/csv-schema.md` for grading output rules before recording a grade.
 
 ### 7. Save to CSV and Update Search Index
 
+Read `references/csv-schema.md` before writing the CSV.
+
 Generate timestamped filename: `marketplace_results_{YYYY-MM-DD_HH-mm}.csv`
 
-Write to `./data/{filename}` with columns:
+Write to `./data/{filename}` using that schema. See `examples/sample-output.csv` for a filled example.
 
-```
-id,search_term,title,price,market_price_low,market_price_high,market_price_median,price_vs_market,grade,grade_breakdown,summary,condition,seller_name,seller_rating,seller_reviews,seller_account_age,seller_response_time,location,distance,description,photo_count,photos_original,red_flags,listing_url,listing_age,vendor_url,vendor_price,review_url,review_score,shipping_estimate_low,shipping_estimate_high,ebay_fees,net_profit_low,net_profit_high,roi_low,roi_high,platform,image_url,date_scraped,search_location,search_radius
-```
-
-See `examples/sample-output.csv` for the expected format. Rules:
-- `grade_breakdown` is a JSON string with exactly 5 fields (see Step 6 grading output rules)
-- `red_flags` is comma-separated
-- `price_vs_market` is a signed integer percentage (negative = below market)
-- Escape commas in text fields by wrapping in double quotes
-- Always populate the `platform` column with `"facebook"` or `"ebay"` — the dashboard reads this field directly and must not infer platform from URL parsing
-- Never leave price-like fields (`price`, `market_price_low`, `market_price_high`, `market_price_median`, `vendor_price`, `shipping_estimate_low`, `shipping_estimate_high`, `ebay_fees`, `net_profit_low`, `net_profit_high`) empty — use `0` for unknown values
-- Always include pre-computed `shipping_estimate_low`, `shipping_estimate_high`, `ebay_fees`, `net_profit_low`, `net_profit_high`, `roi_low`, and `roi_high` columns with real calculated values — the dashboard should not re-derive these
-- Only output grades from the `GradeLetter` set (`A+`, `A`, `B`, `C`, `D`, `F`) in the `grade` column — never `X` or other values
-- Validate the final CSV row count matches the expected listing count before writing the file
-
-Update `./data/searches.json` (create if missing) — append a new entry:
-
-```json
-{
-  "id": "YYYY-MM-DD_HH-mm",
-  "timestamp": "ISO 8601",
-  "label": "Short summary of search terms",
-  "searchTerms": ["term1", "term2"],
-  "location": "City, ST",
-  "radius": 25,
-  "maxPrice": null,
-  "csvFile": "marketplace_results_YYYY-MM-DD_HH-mm.csv",
-  "listingCount": 32,
-  "gradeDistribution": {"A": 3, "B": 11, "C": 11, "D": 3, "F": 4}
-}
-```
+Update `./data/searches.json` (create if missing) — append a new entry using the `searches.json` shape in that file.
 
 Copy both files to `./dashboard/public/data/` and maintain `latest.csv` as a copy of the newest CSV.
 
@@ -187,9 +156,9 @@ When modifying the dashboard, follow the compatibility rules in `references/dash
 
 ## Guardrails
 
-- **Anti-detection:** Randomize wait times between actions (2-5s between listings, 30-60s between searches, 5-15s every 5 listings). Never navigate in predictable patterns.
+- **Anti-detection:** Follow `references/anti-detection.md` for wait times and scroll/wait policy.
 - **Location persistence:** Only set location once for the first search. Subsequent searches inherit it.
 - **Photo investigation:** Always click through all listing photos. Spec details hidden in photos are the difference between a bad grade and a good one.
 - **Conservative grading:** When specs cannot be confirmed after full investigation, assume the lower-end configuration. Note the potential upside.
-- **Data integrity:** Always escape CSV fields containing commas. Verify `searches.json` has valid JSON before appending.
+- **Data integrity:** Follow `references/csv-schema.md` for CSV escaping, empty-field defaults, and `searches.json` validity.
 - **Dashboard scaffolding:** Only copy `assets/dashboard/` on first run. Never overwrite an existing dashboard directory — the user may have customized it.
