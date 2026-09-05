@@ -18,7 +18,7 @@ inter-agent messaging, and centralized management.
 
 ## References
 
-- `references/full-docs.md` — architecture, tools, config, permissions, and limitations
+- `references/full-docs.md` — architecture, tools, config, permissions, and limitations, with source URL and capture date
 - `references/use-case-templates.md` — ready-to-use prompt templates with spawn examples
 
 ## Prerequisites
@@ -51,6 +51,8 @@ Evaluate the task before creating a team:
 - The task is routine (teams have significant token overhead)
 
 ## Workflow
+
+Read `references/full-docs.md`. Compare its `captured` date against today. Six months or older, warn that the shipped snapshot may be stale: state the capture date and that a plugin update may carry newer docs. Do not fetch the live documentation at run time.
 
 ### 1. Analyze the Task
 

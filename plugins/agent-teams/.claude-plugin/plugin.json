@@ -1,7 +1,7 @@
 {
   "name": "agent-teams",
   "displayName": "Agent Teams",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination.",
   "author": {
     "name": "BrightOps AI"
