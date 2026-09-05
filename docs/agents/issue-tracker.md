@@ -1,3 +1,5 @@
+_See [docs/README.md](../README.md) for what this file is._
+
 # Issue tracker: GitHub
 
 Issues and specs for this repo live as GitHub issues on
