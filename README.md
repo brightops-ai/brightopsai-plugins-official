@@ -97,8 +97,8 @@ v2.1.196+. See [plugins/brightops-ai-skills/README.md](plugins/brightops-ai-skil
 `plugins/brightops-ai-skills/skills/<category>/<skill>/SKILL.md` with YAML frontmatter, add
 `references/` for anything long, and **list the path in the plugin manifest's `skills` array**.
 Skills in category subdirectories are only discovered when listed — a missing entry installs
-cleanly, validates cleanly, and offers nothing, so check the array against the directories
-in both directions.
+cleanly, validates cleanly, and offers nothing (verified 2026-09-05 on Claude Code 2.1.261), so
+check the array against the directories in both directions.
 
 **Adding a plugin** is for a tool integration with heavy external dependencies — a CLI, browser
 automation, an MCP server:

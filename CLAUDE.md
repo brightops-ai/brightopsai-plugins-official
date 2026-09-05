@@ -7,8 +7,9 @@
 `plugins/<name>/skills/<skill>/SKILL.md` — skill definition with YAML frontmatter
 `plugins/<name>/skills/<skill>/references/` — supporting docs loaded on demand
 `plugins/<name>/skills/<category>/<skill>/SKILL.md` — categorised variant; every such path must be
-listed in the plugin manifest's `skills` array, since default discovery only finds skills at the top
-level of `skills/`
+listed in the plugin manifest's `skills` array. Verified 2026-09-05 on Claude Code 2.1.261: default
+discovery only finds skills at the top level of `skills/`, and an omitted nested skill installs,
+validates, and loads with no error — which is why `scripts/check-marketplace.py` fails on it.
 
 ## Current Plugins
 
@@ -99,6 +100,11 @@ If changes don't appear, check cache at `~/.claude/plugins/cache/brightopsai-plu
 ## Gotchas
 
 - Plugin cache is version-keyed — edits to files without a version bump won't be picked up
+- Observed once on Claude Code 2.1.261 (2026-09-05): `claude plugin uninstall` then
+  `claude plugin install` of the same plugin in the same config dir (directory marketplace)
+  left the plugin listed as installed and enabled with no errors, yet subsequent sessions
+  loaded no plugin until a fresh config dir was used. Cause not established; try a fresh
+  config/cache before debugging the manifest.
 - Never store user data inside a plugin directory; it is orphaned by the next version bump. Use
   `${CLAUDE_PLUGIN_DATA}`, which survives updates (but is removed when the plugin is uninstalled
   from all scopes)

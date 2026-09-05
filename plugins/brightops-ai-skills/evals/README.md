@@ -66,7 +66,8 @@ dressed as a behavioural regression sends you debugging the wrong thing.
   template does not fail the suite. The cost is that a genuine wording regression
   can pass.
 - **Packaging.** Cases inject the skill directly, so they say nothing about whether
-  the plugin installs or the skill resolves under its namespaced name.
+  the plugin installs or the skill resolves under its namespaced name. That install
+  proof is recorded in [CLAUDE.md](../../../CLAUDE.md) (Project Structure).
 - **Model variation.** Default is one run per case. Raise `EVAL_RUNS` to sample
   nondeterminism; a single green run is not proof of stability.
 - **The repository escalation.** Resolving a code referent by lookup needs a
