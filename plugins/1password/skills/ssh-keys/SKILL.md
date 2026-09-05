@@ -1,12 +1,13 @@
 ---
 name: ssh-keys
 description: >
-  Manage SSH keys stored in 1Password. Trigger this skill when the user wants to
-  create SSH keys, add keys to remote servers, configure the 1Password SSH agent,
-  set up git commit signing, add SSH keys to GitHub, troubleshoot SSH auth, or
-  manage ~/.ssh/config or agent.toml. Also use when the user mentions SSH, key
-  management, ssh-copy-id, IdentityAgent, git signing, or "add my key to a server"
-  — even if they don't mention 1Password.
+  This skill should be used when the user asks to "create SSH keys", "add keys
+  to remote servers", "configure the 1Password SSH agent", "1Password agent
+  setup", "set up git commit signing", "add SSH keys to GitHub", "troubleshoot
+  SSH auth", "manage ~/.ssh/config", or "manage agent.toml". Also trigger when
+  the user mentions "SSH", "key management", "ssh-copy-id", "IdentityAgent",
+  "git signing", or "add my key to a server" — even if they don't mention
+  1Password.
 ---
 
 # SSH Key Management via 1Password
