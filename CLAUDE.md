@@ -76,6 +76,12 @@ Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
 and pass explicit directories. One test leaked into the real plugin data
 directory during development, which is silent and only found by looking.
 
+### Marketplace consistency
+
+Run `python3 scripts/check-marketplace.py` from the repository root before any
+PR that touches a plugin manifest, the marketplace registry, the README plugin
+table, or adds a skill. Tests: `python3 -m unittest discover -s scripts/tests -t scripts`
+
 ## Testing Locally
 
 Reload after changes: `/reload-plugins` in Claude Code
