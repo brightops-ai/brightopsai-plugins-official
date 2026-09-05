@@ -74,9 +74,11 @@ dependencies; the full run drives a private tmux server and needs `tmux`, `bats`
 `shellcheck`:
 
 ```bash
-plugins/brightops-ai-skills/tests/run.sh --unit   # 23 pure specs
-plugins/brightops-ai-skills/tests/run.sh          # all 39, private tmux socket
+plugins/brightops-ai-skills/tests/run.sh --unit   # 26 pure specs
+plugins/brightops-ai-skills/tests/run.sh          # all 42, private tmux socket
 ```
+
+Eval case index: `plugins/brightops-ai-skills/evals/check-index.sh` compares `evals/cases/` against the table in `evals/README.md`.
 
 Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
 and pass explicit directories. One test leaked into the real plugin data
