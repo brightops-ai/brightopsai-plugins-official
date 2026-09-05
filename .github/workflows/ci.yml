@@ -28,8 +28,6 @@ jobs:
   check:
     name: Packaging gates
     runs-on: ubuntu-latest
-    env:
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,7 +43,11 @@ jobs:
           python-version: "3.12"
 
       - name: Isolate Claude config directory
-        run: mkdir -p "$CLAUDE_CONFIG_DIR"
+        # The `runner` context is not available in job-level `env`, so the
+        # directory is exported to later steps through GITHUB_ENV instead.
+        run: |
+          mkdir -p "$RUNNER_TEMP/claude-config"
+          echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
 
       - name: Install Claude Code CLI
         # Pin to 2.x at or above the locally installed CLI (2.1.261).
