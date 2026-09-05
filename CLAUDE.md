@@ -113,6 +113,10 @@ If changes don't appear, check cache at `~/.claude/plugins/cache/brightopsai-plu
 
 ## Agent skills
 
+`docs/agents/` is in-repo coding-agent configuration (mattpocock-skills issue
+tracker, triage, and domain conventions), not marketplace plugin-user docs —
+see [docs/README.md](docs/README.md).
+
 ### Issue tracker
 
 GitHub Issues on `brightops-ai/brightopsai-plugins-official` via the `gh` CLI. See

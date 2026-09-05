@@ -1,3 +1,5 @@
+_See [docs/README.md](../README.md) for what this file is._
+
 # Domain Docs
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
