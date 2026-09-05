@@ -22,6 +22,7 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
 shell_files() {
   find skills -name '*.sh' -type f
   echo tests/run.sh
+  echo evals/check-index.sh
   find tests/helpers -name '*.bash' -type f
 }
 
@@ -33,7 +34,7 @@ echo "ok"
 echo
 echo "== bats =="
 if [[ "${1:-}" == "--unit" ]]; then
-  bats --filter-tags '!live' tests/spawn-session.bats
+  bats --filter-tags '!live' tests/spawn-session.bats tests/evals-index.bats
 else
-  bats tests/spawn-session.bats
+  bats tests/spawn-session.bats tests/evals-index.bats
 fi

@@ -9,6 +9,7 @@ These cases make the guarantees checkable.
 ```
 ./evals/run.sh              # every case
 ./evals/run.sh referent     # cases whose name matches a substring
+./evals/check-index.sh      # cases on disk vs the table below (any cwd)
 ```
 
 Each case drives the skill through headless `claude -p`, with `SKILL.md` and its
@@ -49,9 +50,12 @@ dressed as a behavioural regression sends you debugging the wrong thing.
 | `clean-typed` | Tidy input with no gaps draws no questions |
 | `dictated-disfluent` | Transcription artifacts removed, meaning kept, still no questions |
 | `self-correction` | A superseded instruction does not resurface as a rejected alternative |
+| `accumulation` | Two hedged causes both survive; neither is dropped as superseded |
 | `identifier-rich` | Identifiers, filenames and flags survive verbatim, including case |
+| `mangled-identifier` | A mangled identifier's input spelling survives rather than being silently corrected |
 | `ambiguous-referent` | A referent with no antecedent draws a question, within budget |
 | `hedge-preserved` | A hedged cause stays hedged rather than being promoted to a finding |
+| `negation-preserved` | Mid-run-on prohibitions both survive rather than being dropped |
 
 ## What it deliberately does not cover
 
