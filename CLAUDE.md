@@ -7,9 +7,10 @@
 `plugins/<name>/skills/<skill>/SKILL.md` — skill definition with YAML frontmatter
 `plugins/<name>/skills/<skill>/references/` — supporting docs loaded on demand
 `plugins/<name>/skills/<category>/<skill>/SKILL.md` — categorised variant; every such path must be
-listed in the plugin manifest's `skills` array. Verified 2026-09-05 on Claude Code 2.1.261: default
-discovery only finds skills at the top level of `skills/`, and an omitted nested skill installs,
-validates, and loads with no error — which is why `scripts/check-marketplace.py` fails on it.
+listed in the plugin manifest's `skills` array. Default discovery only finds top-level `skills/`;
+an omitted nested skill installs, validates, and loads with no error (verified 2026-09-05 on Claude
+Code 2.1.261). Packaging gates and the
+human checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Current Plugins
 
@@ -23,19 +24,10 @@ validates, and loads with no error — which is why `scripts/check-marketplace.p
 ## Adding a New Skill
 
 BrightOps AI workflow skills go into the existing `brightops-ai-skills` plugin, not a new plugin
-each. One author-branded plugin holding many skills is the pattern used by comparable skill
-collections, and it means a user installs once. Add the skill under a category subdirectory and list
-its path in the plugin manifest's `skills` array.
-
-A separate plugin is warranted only for a tool integration carrying heavy external dependencies —
-a CLI, browser automation, an MCP server — not for a skill that is mostly a procedure.
-
-## Adding a New Plugin
-
-1. Create `plugins/<name>/.claude-plugin/plugin.json` with name, version, description, author
-2. Create `plugins/<name>/skills/<skill>/SKILL.md` with frontmatter (name, description required)
-3. Add optional `references/`, `scripts/`, `assets/` subdirs under the skill
-4. Register in `.claude-plugin/marketplace.json` — add entry to the plugins array
+each. Add the skill under a category subdirectory and list its path in the plugin manifest's
+`skills` array. A separate plugin is only for a tool integration with heavy external dependencies
+— a CLI, browser automation, an MCP server. Steps, tests, and the PR checklist:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Conventions
 
@@ -56,46 +48,20 @@ a CLI, browser automation, an MCP server — not for a skill that is mostly a pr
   see a new release. Land the bump and an entry in `plugins/<name>/CHANGELOG.md` in
   the same change. A marketplace-level change (added or removed plugin, install
   command, shared tooling) gets an entry in the root `CHANGELOG.md`. The README
-  plugin table is a checked mirror (`scripts/check-marketplace.py`); marketplace
-  entries omit `version` — a stale copy there is silent pin drift, not a
-  second source of truth
-- After bumping `plugin.json`, clear stale cache: `rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>`
+  plugin table is a checked mirror; marketplace entries omit `version`. Cache
+  eviction and the rest of the bump procedure: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Testing
-
-Bundled Python is tested with the standard library's `unittest` — no third-party
-runner, so a user installing the plugin installs nothing:
-
-```bash
-cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .
-```
-
-The `spawn-session` scripts have a bats suite. `--unit` runs the pure specs with no
-dependencies; the full run drives a private tmux server and needs `tmux`, `bats` and
-`shellcheck`:
-
-```bash
-plugins/brightops-ai-skills/tests/run.sh --unit   # 26 pure specs
-plugins/brightops-ai-skills/tests/run.sh          # all 42, private tmux socket
-```
-
-Eval case index: `plugins/brightops-ai-skills/evals/check-index.sh` compares `evals/cases/` against the table in `evals/README.md`.
 
 Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
 and pass explicit directories. One test leaked into the real plugin data
 directory during development, which is silent and only found by looking.
 
-### Marketplace consistency
-
-Run `python3 scripts/check-marketplace.py` from the repository root before any
-PR that touches a plugin manifest, the marketplace registry, the README plugin
-table, or adds a skill. Tests: `python3 -m unittest discover -s scripts/tests -t scripts`
-
-## Testing Locally
-
-Reload after changes: `/reload-plugins` in Claude Code
-Behavioural evals for brightops-ai-skills: `plugins/brightops-ai-skills/evals/run.sh`
-If changes don't appear, check cache at `~/.claude/plugins/cache/brightopsai-plugins-official/`
+Commands (dream unittest, bats `--unit` and full, `scripts/tests`, evals as
+manual), packaging gates (`python3 scripts/check-marketplace.py`,
+`claude plugin validate . --strict`), `/reload-plugins`, and the PR checklist:
+[CONTRIBUTING.md](CONTRIBUTING.md). No `.github/workflows/` yet — gates run
+locally; CI is [issue #45](https://github.com/brightops-ai/brightopsai-plugins-official/issues/45).
 
 ## Gotchas
 

@@ -93,39 +93,11 @@ v2.1.196+. See [plugins/brightops-ai-skills/README.md](plugins/brightops-ai-skil
 
 ## Contributing
 
-**Adding a skill.** Workflow skills go into `brightops-ai-skills`, not a new plugin each. Create
-`plugins/brightops-ai-skills/skills/<category>/<skill>/SKILL.md` with YAML frontmatter, add
-`references/` for anything long, and **list the path in the plugin manifest's `skills` array**.
-Skills in category subdirectories are only discovered when listed — a missing entry installs
-cleanly, validates cleanly, and offers nothing (verified 2026-09-05 on Claude Code 2.1.261), so
-check the array against the directories in both directions.
+Human checklist (skill vs plugin, `skills` array, version pin, tests, packaging
+gates): [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Adding a plugin** is for a tool integration with heavy external dependencies — a CLI, browser
-automation, an MCP server:
-
-1. Create `plugins/<name>/.claude-plugin/plugin.json` with name, version, description, and author
-2. Create `plugins/<name>/skills/<skill>/SKILL.md` with YAML frontmatter
-3. Add optional `references/` for detailed documentation
-4. Add `plugins/<name>/README.md` (Overview, Install, Skills, Prerequisites, Data, Update, Uninstall)
-5. Register in `.claude-plugin/marketplace.json`
-
-**Before opening a pull request:**
-
-- Bump the version in `plugin.json` only — that pin is what `/plugin update` reads —
-  and add a plugin `CHANGELOG.md` entry in the same change (marketplace-level
-  changes go in the root `CHANGELOG.md`). The README plugin table is a checked
-  mirror of it; do not put `version` on the marketplace entry. The plugin cache
-  is version-keyed, so an unbumped change is never picked up
-- Run `./scripts/install-hooks.sh` once per clone to activate the gitleaks pre-commit gate —
-  this repository is public, and git does not clone hooks
-- Run `python3 scripts/check-marketplace.py` when the change touches a plugin
-  manifest, the marketplace registry, the README plugin table, a plugin
-  `README.md`, or adds a skill
-- Run the tests: `cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .`
-  and `plugins/brightops-ai-skills/tests/run.sh --unit`; run `evals/run.sh` when touching
-  `improve-prompt`
-
-See [CLAUDE.md](CLAUDE.md) for conventions and structure details.
+Agent conventions (description shape, `dream` scheduling exception, word cap,
+`${CLAUDE_PLUGIN_DATA}`): [CLAUDE.md](CLAUDE.md).
 
 ## License
 

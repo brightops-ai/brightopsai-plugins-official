@@ -13,6 +13,11 @@ rather than numbered.
 
 ### Added
 
+- `CONTRIBUTING.md`: human contributing guide (skill vs plugin, categorised
+  `skills` array, `plugin.json` version pin, `/reload-plugins` and the
+  version-keyed cache, hooks, tests, packaging gates). Root README
+  Contributing is a short pointer; `CLAUDE.md` keeps agent rules and links
+  to the checklist.
 - `SECURITY.md`: vulnerability reporting via GitHub Security Advisories,
   fake example credentials, `${CLAUDE_PLUGIN_DATA}`, 1Password/`op` handling,
   Facebook Marketplace terms responsibility, grok.com upload plus pre-upload
