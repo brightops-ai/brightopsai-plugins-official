@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-05
+
+### Changed
+
+- Scaffold the dashboard and store CSVs, `searches.json`, and images under
+  `${CLAUDE_PLUGIN_DATA}` instead of `./dashboard/` and `./data/` in the
+  project cwd. Leftover cwd copies are detected and never deleted.
+
 ## [1.1.3] - 2026-09-05
 
 ### Changed

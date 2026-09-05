@@ -1,6 +1,6 @@
 # CSV schema and search index
 
-Required shapes for `./data/*.csv` and `./data/searches.json`. See `examples/sample-output.csv` and `examples/sample-searches.json` for filled examples.
+Required shapes for `${CLAUDE_PLUGIN_DATA}/data/*.csv` and `${CLAUDE_PLUGIN_DATA}/data/searches.json`. See `examples/sample-output.csv` and `examples/sample-searches.json` for filled examples.
 
 ## CSV header
 

@@ -1,10 +1,10 @@
 # Dashboard Compatibility Guidelines
 
-Rules for modifying the marketplace-scout dashboard (`assets/dashboard/`).
+Rules for modifying the marketplace-scout dashboard (`assets/dashboard/`). The dashboard `package.json` version is an independent app version and is allowed to differ from the plugin version.
 
 ## Data Validation
 
-The dashboard performs runtime validation on CSV and JSON data — malformed data will surface warnings to the user. Ensure CSV schema and `grade_breakdown` JSON shape conform exactly to `csv-schema.md`.
+Canonical CSVs and `searches.json` live in `${CLAUDE_PLUGIN_DATA}/data/` and are copied into the dashboard `public/data/` directory. The dashboard performs runtime validation on that data — malformed files will surface warnings to the user. Ensure CSV schema and `grade_breakdown` JSON shape conform exactly to `csv-schema.md`.
 
 ## Accessibility
 

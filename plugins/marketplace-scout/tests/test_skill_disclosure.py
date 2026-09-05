@@ -25,10 +25,8 @@ TIMING_PHRASES = (
     "5-15s pause every 5 listings",
 )
 
-DASHBOARD_SCAFFOLD = (
-    'cp -r "${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/assets/dashboard/" ./dashboard/',
-    "cd dashboard && npm install",
-    "cd dashboard && npm run dev",
+OLD_DASHBOARD_CP = (
+    'cp -r "${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/assets/dashboard/" ./dashboard/'
 )
 
 
@@ -94,12 +92,13 @@ class TestSkillDisclosure(unittest.TestCase):
         self.assertIn("5-15s", lower)
         self.assertRegex(lower, r"scroll")
 
-    def test_dashboard_scaffolding_paths_unchanged(self) -> None:
-        for snippet in DASHBOARD_SCAFFOLD:
-            with self.subTest(snippet=snippet):
-                self.assertIn(snippet, self.skill)
+    def test_dashboard_scaffolding_uses_plugin_data(self) -> None:
+        self.assertIn("ensure-dashboard.sh", self.skill)
+        self.assertIn("${CLAUDE_PLUGIN_DATA}", self.skill)
+        self.assertIn("${CLAUDE_PLUGIN_DATA}/data/", self.skill)
+        self.assertIn("${CLAUDE_PLUGIN_DATA}/dashboard/public/data/", self.skill)
+        self.assertNotIn(OLD_DASHBOARD_CP, self.skill)
         self.assertIn("port 5173", self.skill)
-        self.assertIn("./dashboard/public/data/", self.skill)
 
 
 if __name__ == "__main__":
