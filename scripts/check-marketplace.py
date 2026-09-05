@@ -18,6 +18,10 @@ PLUGIN_STRING_FIELDS = (
     "repository",
     "license",
 )
+PLAYWRIGHT_MCP_MARKER = "mcp__plugin_playwright_playwright__"
+PLAYWRIGHT_PLUGIN_NAME = "playwright"
+PLAYWRIGHT_MARKETPLACE = "claude-plugins-official"
+PLAYWRIGHT_INSTALL_COMMAND = "/plugin install playwright@claude-plugins-official"
 
 README_ROW = re.compile(
     r"^\|\s*\*\*\[(?P<name>[^\]]+)\]\(plugins/(?P<slug>[^)]+)\)\*\*"
@@ -44,6 +48,8 @@ def collect_findings(root: Path | str) -> list[str]:
         found.extend(_check_marketplace_entries(root, marketplace))
 
     readme_by_slug = {slug: version for slug, version in readme_rows}
+    needed_marketplaces: set[str] = set()
+    uses_playwright = False
 
     for name, plugin_dir in disk_plugins.items():
         plugin_data, plugin_error = _load_plugin_json(root, plugin_dir)
@@ -73,6 +79,30 @@ def collect_findings(root: Path | str) -> list[str]:
                 )
 
         found.extend(_check_plugin_skills(root, plugin_dir, plugin_data))
+        needed_marketplaces.update(_dependency_marketplaces(plugin_data))
+        if _plugin_uses_playwright_mcp(plugin_dir):
+            uses_playwright = True
+            found.extend(
+                _check_playwright_plugin(root, name, plugin_dir, plugin_data)
+            )
+
+    if marketplace is not None:
+        for entry in marketplace.get("plugins", []):
+            if isinstance(entry, dict):
+                needed_marketplaces.update(_dependency_marketplaces(entry))
+        this_name = marketplace.get("name")
+        if isinstance(this_name, str) and this_name:
+            needed_marketplaces.discard(this_name)
+        found.extend(
+            check_cross_marketplace_allowlist(marketplace, needed_marketplaces)
+        )
+
+    if uses_playwright and readme_error is None:
+        readme_text = (root / README_FILE).read_text(encoding="utf-8")
+        if PLAYWRIGHT_INSTALL_COMMAND not in readme_text:
+            found.append(
+                f'{README_FILE}: missing "{PLAYWRIGHT_INSTALL_COMMAND}"'
+            )
 
     if readme_error is None:
         for slug, _version in readme_rows:
@@ -136,6 +166,39 @@ def check_marketplace_entry_metadata(
     )
     if marketplace_entry.get("description") != plugin_desc:
         found.append(f"{prefix} description does not match plugin.json")
+    return found
+
+
+def plugin_declares_playwright_dependency(plugin_data: dict[str, Any]) -> bool:
+    """True when plugin.json depends on playwright from claude-plugins-official."""
+    for name, marketplace in _iter_dependency_refs(plugin_data.get("dependencies")):
+        if name == PLAYWRIGHT_PLUGIN_NAME and marketplace == PLAYWRIGHT_MARKETPLACE:
+            return True
+    return False
+
+
+def check_cross_marketplace_allowlist(
+    marketplace: dict[str, Any],
+    needed: set[str],
+) -> list[str]:
+    """Fail if a named foreign marketplace is not in the allowlist (#39)."""
+    if not needed:
+        return []
+    raw = marketplace.get("allowCrossMarketplaceDependenciesOn")
+    listed: set[str] = set()
+    if isinstance(raw, list):
+        listed = {
+            item.strip()
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        }
+    found: list[str] = []
+    for name in sorted(needed):
+        if name not in listed:
+            found.append(
+                f'{MARKETPLACE_FILE}: cross-marketplace dependency on "{name}" '
+                f'is not in "allowCrossMarketplaceDependenciesOn"'
+            )
     return found
 
 
@@ -334,6 +397,97 @@ def _check_plugin_identity(dir_name: str, plugin_data: dict[str, Any]) -> list[s
     if name != dir_name:
         return [f'{rel}: name is "{name}", expected "{dir_name}"']
     return []
+
+
+def _plugin_uses_playwright_mcp(plugin_dir: Path) -> bool:
+    skills_root = plugin_dir / "skills"
+    if not skills_root.is_dir():
+        return False
+    for skill_md in skills_root.rglob("SKILL.md"):
+        if not skill_md.is_file():
+            continue
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if PLAYWRIGHT_MCP_MARKER in text:
+            return True
+    return False
+
+
+def _check_playwright_plugin(
+    root: Path,
+    name: str,
+    plugin_dir: Path,
+    plugin_data: dict[str, Any],
+) -> list[str]:
+    found: list[str] = []
+    rel = f"plugins/{name}/.claude-plugin/plugin.json"
+    if not plugin_declares_playwright_dependency(plugin_data):
+        found.append(
+            f'{rel}: plugin "{name}" uses Playwright MCP tools but does not '
+            f"declare a playwright@{PLAYWRIGHT_MARKETPLACE} dependency"
+        )
+    skills_root = plugin_dir / "skills"
+    if skills_root.is_dir():
+        for skill_md in sorted(skills_root.rglob("SKILL.md")):
+            if not skill_md.is_file():
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if PLAYWRIGHT_MCP_MARKER not in text:
+                continue
+            if PLAYWRIGHT_INSTALL_COMMAND not in text:
+                found.append(
+                    f'{_rel(root, skill_md)}: uses Playwright MCP tools but does '
+                    f'not mention "{PLAYWRIGHT_INSTALL_COMMAND}"'
+                )
+    return found
+
+
+def _dependency_marketplaces(data: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for _name, marketplace in _iter_dependency_refs(data.get("dependencies")):
+        if marketplace:
+            names.add(marketplace)
+    return names
+
+
+def _iter_dependency_refs(raw: Any) -> list[tuple[str, str | None]]:
+    if not isinstance(raw, list):
+        return []
+    found: list[tuple[str, str | None]] = []
+    for item in raw:
+        parsed = _parse_dependency_ref(item)
+        if parsed is not None:
+            found.append(parsed)
+    return found
+
+
+def _parse_dependency_ref(item: Any) -> tuple[str, str | None] | None:
+    if isinstance(item, str):
+        text = item.strip()
+        if not text:
+            return None
+        version_at = text.find("@^")
+        if version_at != -1:
+            text = text[:version_at]
+        if "@" in text:
+            name, marketplace = text.split("@", 1)
+            if name and marketplace:
+                return name, marketplace
+            return None
+        return text, None
+    if isinstance(item, dict):
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        marketplace = item.get("marketplace")
+        mp = marketplace.strip() if isinstance(marketplace, str) else None
+        return name.strip(), mp or None
+    return None
 
 
 def _load_readme_rows(

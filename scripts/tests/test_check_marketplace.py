@@ -66,6 +66,7 @@ def _plugin_payload(
     *,
     description: str | None = None,
     skills: list[str] | None = None,
+    dependencies: list | None = None,
 ) -> dict:
     payload: dict = {
         "name": name,
@@ -79,6 +80,8 @@ def _plugin_payload(
     }
     if skills is not None:
         payload["skills"] = skills
+    if dependencies is not None:
+        payload["dependencies"] = dependencies
     return payload
 
 
@@ -468,6 +471,184 @@ class MarketplaceVersionRuleTest(unittest.TestCase):
             ),
             [],
         )
+
+
+PLAYWRIGHT_MCP = "mcp__plugin_playwright_playwright__browser_navigate"
+PLAYWRIGHT_DEP = {"name": "playwright", "marketplace": "claude-plugins-official"}
+PLAYWRIGHT_INSTALL = "/plugin install playwright@claude-plugins-official"
+
+
+def _playwright_skill_md(name: str = "demo", *, prereq: bool = False) -> str:
+    body = (
+        f"---\nname: {name}\ndescription: A {name} skill.\n---\n\n"
+        f"# {name}\n\n"
+    )
+    if prereq:
+        body += (
+            "Confirm Playwright browser tools are available. If they are missing, "
+            f"stop and tell the user to run `{PLAYWRIGHT_INSTALL}`.\n\n"
+        )
+    body += f"Use {PLAYWRIGHT_MCP}.\n"
+    return body
+
+
+def _wire_playwright_plugin(
+    root: Path,
+    *,
+    declare_dep: bool = False,
+    skill_prereq: bool = False,
+    allowlist: bool = False,
+    readme_note: bool = False,
+) -> None:
+    build_clean_tree(root)
+    skill = root / "plugins" / PLUGIN / "skills" / "top" / "SKILL.md"
+    skill.write_text(
+        _playwright_skill_md("top", prereq=skill_prereq), encoding="utf-8"
+    )
+    data, path = load_plugin(root)
+    if declare_dep:
+        data["dependencies"] = [dict(PLAYWRIGHT_DEP)]
+        _write_json(path, data)
+    if allowlist:
+        marketplace, mp_path = load_marketplace(root)
+        marketplace["allowCrossMarketplaceDependenciesOn"] = [
+            "claude-plugins-official"
+        ]
+        _write_json(mp_path, marketplace)
+    if readme_note:
+        readme = root / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + f"Install with `{PLAYWRIGHT_INSTALL}`.\n",
+            encoding="utf-8",
+        )
+
+
+class PlaywrightDependencyTest(_TreeTest):
+    """Plugins that call Playwright MCP tools must declare the official plugin (#39)."""
+
+    def test_playwright_mcp_without_dependency_is_a_finding(self) -> None:
+        _wire_playwright_plugin(self.root)
+        items = self.findings()
+        self.assert_finding(
+            items,
+            str(PLUGIN_JSON),
+            "playwright",
+            "claude-plugins-official",
+        )
+
+    def test_bare_playwright_name_is_not_the_official_marketplace(self) -> None:
+        _wire_playwright_plugin(self.root)
+        data, path = load_plugin(self.root)
+        data["dependencies"] = ["playwright"]
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(
+            items,
+            str(PLUGIN_JSON),
+            "playwright",
+            "claude-plugins-official",
+        )
+
+    def test_playwright_dep_without_allowlist_is_a_finding(self) -> None:
+        _wire_playwright_plugin(
+            self.root, declare_dep=True, skill_prereq=True, readme_note=True
+        )
+        items = self.findings()
+        self.assert_finding(
+            items,
+            ".claude-plugin/marketplace.json",
+            "allowCrossMarketplaceDependenciesOn",
+            "claude-plugins-official",
+        )
+
+    def test_playwright_skill_missing_install_command_is_a_finding(self) -> None:
+        _wire_playwright_plugin(
+            self.root, declare_dep=True, allowlist=True, readme_note=True
+        )
+        items = self.findings()
+        self.assert_finding(
+            items,
+            "plugins/alpha/skills/top/SKILL.md",
+            PLAYWRIGHT_INSTALL,
+        )
+
+    def test_playwright_readme_missing_install_command_is_a_finding(self) -> None:
+        _wire_playwright_plugin(
+            self.root, declare_dep=True, skill_prereq=True, allowlist=True
+        )
+        items = self.findings()
+        self.assert_finding(items, "README.md", PLAYWRIGHT_INSTALL)
+
+    def test_declared_playwright_dependency_and_docs_pass(self) -> None:
+        _wire_playwright_plugin(
+            self.root,
+            declare_dep=True,
+            skill_prereq=True,
+            allowlist=True,
+            readme_note=True,
+        )
+        self.assertEqual(self.findings(), [])
+
+
+class CrossMarketplaceAllowlistTest(unittest.TestCase):
+    """Isolated tests: a named marketplace in dependencies must be allowlisted (#39)."""
+
+    def test_missing_allowlist_is_a_finding(self) -> None:
+        got = cm.check_cross_marketplace_allowlist(
+            {"name": "test", "plugins": []},
+            {"claude-plugins-official"},
+        )
+        self.assertEqual(len(got), 1)
+        self.assertIn(".claude-plugin/marketplace.json", got[0])
+        self.assertIn("allowCrossMarketplaceDependenciesOn", got[0])
+        self.assertIn("claude-plugins-official", got[0])
+
+    def test_allowlist_that_includes_the_target_is_not_a_finding(self) -> None:
+        self.assertEqual(
+            cm.check_cross_marketplace_allowlist(
+                {
+                    "name": "test",
+                    "allowCrossMarketplaceDependenciesOn": [
+                        "claude-plugins-official"
+                    ],
+                    "plugins": [],
+                },
+                {"claude-plugins-official"},
+            ),
+            [],
+        )
+
+    def test_no_cross_marketplace_deps_does_not_require_allowlist(self) -> None:
+        self.assertEqual(
+            cm.check_cross_marketplace_allowlist({"name": "test", "plugins": []}, set()),
+            [],
+        )
+
+
+class PlaywrightDependencyParseTest(unittest.TestCase):
+    """Isolated tests: which dependency shapes count as Playwright (#39)."""
+
+    def test_object_with_marketplace_counts(self) -> None:
+        self.assertTrue(
+            cm.plugin_declares_playwright_dependency(
+                {"dependencies": [dict(PLAYWRIGHT_DEP)]}
+            )
+        )
+
+    def test_string_at_marketplace_counts(self) -> None:
+        self.assertTrue(
+            cm.plugin_declares_playwright_dependency(
+                {"dependencies": ["playwright@claude-plugins-official"]}
+            )
+        )
+
+    def test_bare_name_does_not_count(self) -> None:
+        self.assertFalse(
+            cm.plugin_declares_playwright_dependency({"dependencies": ["playwright"]})
+        )
+
+    def test_missing_dependencies_does_not_count(self) -> None:
+        self.assertFalse(cm.plugin_declares_playwright_dependency({}))
 
 
 class MainCliTest(_TreeTest):
