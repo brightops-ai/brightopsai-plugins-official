@@ -60,8 +60,9 @@ directory during development, which is silent and only found by looking.
 Commands (dream unittest, bats `--unit` and full, `scripts/tests`, evals as
 manual), packaging gates (`python3 scripts/check-marketplace.py`,
 `claude plugin validate . --strict`), `/reload-plugins`, and the PR checklist:
-[CONTRIBUTING.md](CONTRIBUTING.md). No `.github/workflows/` yet — gates run
-locally; CI is [issue #45](https://github.com/brightops-ai/brightopsai-plugins-official/issues/45).
+[CONTRIBUTING.md](CONTRIBUTING.md). The packaging gate is
+`.github/workflows/ci.yml` (pull requests and `main`). Behavioural evals stay
+manual.
 
 ## Gotchas
 
@@ -117,5 +118,6 @@ Two consequences for anything written here, including docs:
   realistically shaped. If a rule fires, fix the value or add a *rule-scoped*
   allowlist; don't add a path allowlist and don't use `--no-verify`.
 
-Git never clones hooks and there is no CI scan behind this one, so in a fresh
-clone assume the gate is inactive until `./scripts/install-hooks.sh` has run.
+Git never clones hooks, so in a fresh clone assume the local pre-commit
+gate is inactive until `./scripts/install-hooks.sh` has run. CI still
+scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).

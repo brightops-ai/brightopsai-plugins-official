@@ -98,10 +98,12 @@ the repository root:
 
 That points `core.hooksPath` at `.githooks/` so the gitleaks pre-commit
 scan runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
-Identifier and credential rules are in [CLAUDE.md](CLAUDE.md) (Secret
-scanning) and [SECURITY.md](SECURITY.md). Never write a literal maintainer
-home or workspace path; use `<workspace>`, `<project-root>`. Example
-credentials must look fake (`sk_test_REPLACE_ME`).
+CI (`.github/workflows/ci.yml`) still scans the checked-out tree on pull
+requests and `main`. Identifier and credential rules are in
+[CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).
+Never write a literal maintainer home or workspace path; use
+`<workspace>`, `<project-root>`. Example credentials must look fake
+(`sk_test_REPLACE_ME`).
 
 ## Tests
 
@@ -135,7 +137,7 @@ python3 -m unittest discover -s scripts/tests -t scripts
 
 ### Evals (manual)
 
-Behavioural evals for `improve-prompt` cost tokens and are not a
+Behavioural evals for `improve-prompt` cost tokens and are not a CI or
 pre-commit gate. Run them when changing that skill's `SKILL.md` or
 `references/`:
 
@@ -145,22 +147,28 @@ plugins/brightops-ai-skills/evals/run.sh
 
 When adding or renaming a case under `evals/cases/`, run
 `plugins/brightops-ai-skills/evals/check-index.sh` so the table in
-`evals/README.md` matches disk.
+`evals/README.md` matches disk. CI runs that index check; it does not
+run `evals/run.sh`.
 
 ## Packaging gates
 
-Run both from the repository root before opening a pull request that
-touches a plugin manifest, the marketplace registry, the README plugin
-table, a plugin `README.md`, or that adds a skill — and when in doubt:
+The packaging gate is `.github/workflows/ci.yml`. It runs on pull
+requests and pushes to `main`: plugin validate, the marketplace
+consistency check, unit tests, shellcheck, a gitleaks tree scan, and
+eval index completeness. Behavioural evals (`evals/run.sh`) stay manual.
+
+Run the same commands locally from the repository root before opening a
+pull request that touches a plugin manifest, the marketplace registry, the
+README plugin table, a plugin `README.md`, or that adds a skill — and when
+in doubt:
 
 ```bash
 python3 scripts/check-marketplace.py
 claude plugin validate . --strict
 ```
 
-There is no `.github/workflows/` yet. These gates are run locally. CI that
-runs them on pull requests and `main` is tracked in
-[issue #45](https://github.com/brightops-ai/brightopsai-plugins-official/issues/45).
+`claude plugin validate` needs no login; `CLAUDE_CONFIG_DIR` may be an
+empty temp directory.
 
 ## Pull-request checklist
 
