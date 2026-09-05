@@ -12,6 +12,12 @@ from typing import Any
 
 MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
 README_FILE = "README.md"
+PLUGIN_STRING_FIELDS = (
+    "displayName",
+    "homepage",
+    "repository",
+    "license",
+)
 
 README_ROW = re.compile(
     r"^\|\s*\*\*\[(?P<name>[^\]]+)\]\(plugins/(?P<slug>[^)]+)\)\*\*"
@@ -34,6 +40,7 @@ def collect_findings(root: Path | str) -> list[str]:
         found.append(readme_error)
 
     if marketplace is not None:
+        found.extend(check_marketplace_catalog_metadata(marketplace))
         found.extend(_check_marketplace_entries(root, marketplace))
 
     readme_by_slug = {slug: version for slug, version in readme_rows}
@@ -45,6 +52,7 @@ def collect_findings(root: Path | str) -> list[str]:
             continue
 
         found.extend(_check_plugin_identity(name, plugin_data))
+        found.extend(check_plugin_manifest_fields(name, plugin_data))
 
         plugin_version = plugin_data.get("version") if isinstance(plugin_data, dict) else None
 
@@ -73,6 +81,61 @@ def collect_findings(root: Path | str) -> list[str]:
                     f'{README_FILE}: plugin "{slug}" is listed but does not exist'
                 )
 
+    return found
+
+
+def check_plugin_manifest_fields(
+    plugin_name: str,
+    plugin_data: dict[str, Any],
+) -> list[str]:
+    """Fail if plugin.json is missing Discover metadata (#38)."""
+    rel = f"plugins/{plugin_name}/.claude-plugin/plugin.json"
+    found: list[str] = []
+    for field in PLUGIN_STRING_FIELDS:
+        if not _nonempty_string(plugin_data.get(field)):
+            found.append(f'{rel}: missing "{field}"')
+    if not _nonempty_string_list(plugin_data.get("keywords")):
+        found.append(f'{rel}: missing "keywords"')
+    return found
+
+
+def check_marketplace_catalog_metadata(
+    marketplace: dict[str, Any],
+) -> list[str]:
+    """Fail if the marketplace root is missing $schema or owner contact (#38)."""
+    found: list[str] = []
+    if not _nonempty_string(marketplace.get("$schema")):
+        found.append(f'{MARKETPLACE_FILE}: missing "$schema"')
+    owner = marketplace.get("owner")
+    if not isinstance(owner, dict):
+        found.append(f'{MARKETPLACE_FILE}: missing "owner"')
+        return found
+    has_url = _nonempty_string(owner.get("url"))
+    has_email = _nonempty_string(owner.get("email"))
+    if not has_url and not has_email:
+        found.append(f'{MARKETPLACE_FILE}: owner missing "email" or "url"')
+    return found
+
+
+def check_marketplace_entry_metadata(
+    plugin_name: str,
+    marketplace_entry: dict[str, Any],
+    plugin_data: dict[str, Any] | None,
+) -> list[str]:
+    """Fail if an entry lacks category/tags or its description drifts (#38)."""
+    found: list[str] = []
+    prefix = f'{MARKETPLACE_FILE}: plugin "{plugin_name}"'
+    if not _nonempty_string(marketplace_entry.get("category")):
+        found.append(f'{prefix} missing "category"')
+    if not _nonempty_string_list(marketplace_entry.get("tags")):
+        found.append(f'{prefix} missing "tags"')
+    if "description" not in marketplace_entry:
+        return found
+    plugin_desc = (
+        plugin_data.get("description") if isinstance(plugin_data, dict) else None
+    )
+    if marketplace_entry.get("description") != plugin_desc:
+        found.append(f"{prefix} description does not match plugin.json")
     return found
 
 
@@ -127,6 +190,30 @@ def _ok_line(root: Path) -> str:
 
 def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def _nonempty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _nonempty_string_list(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    )
+
+
+def _plugin_data_for_source(root: Path, source: Any) -> dict[str, Any] | None:
+    if not isinstance(source, str):
+        return None
+    plugin_json = _source_plugin_json(root, source)
+    if plugin_json is None or not plugin_json.is_file():
+        return None
+    plugin_data, error = _load_plugin_json(root, plugin_json.parent.parent)
+    if error:
+        return None
+    return plugin_data
 
 
 def _discover_disk_plugins(root: Path) -> dict[str, Path]:
@@ -203,6 +290,8 @@ def _check_marketplace_entries(
             found.append(f'{MARKETPLACE_FILE}: plugins[{index}] missing "name"')
             continue
         found.extend(check_marketplace_plugin_version(name, entry))
+        plugin_data = _plugin_data_for_source(root, entry.get("source"))
+        found.extend(check_marketplace_entry_metadata(name, entry, plugin_data))
         if "source" not in entry:
             found.append(f'{MARKETPLACE_FILE}: plugin "{name}" missing "source"')
             continue

@@ -1,8 +1,22 @@
 {
   "name": "1password",
-  "version": "1.2.0",
-  "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Covers authentication, secret retrieval, credential injection, new secret storage, and SSH key management via the 1Password SSH agent.",
+  "displayName": "1Password",
+  "version": "1.2.1",
+  "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent.",
   "author": {
     "name": "BrightOps AI (adapted from openclaw)"
-  }
+  },
+  "homepage": "https://brightopsinc.ai/",
+  "repository": "https://github.com/brightops-ai/brightopsai-plugins-official",
+  "license": "MIT",
+  "keywords": [
+    "1password",
+    "secrets",
+    "credentials",
+    "ssh",
+    "cli",
+    "security",
+    "injection",
+    "authentication"
+  ]
 }

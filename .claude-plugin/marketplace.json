@@ -1,34 +1,93 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "brightopsai-plugins-official",
   "description": "BrightOps AI official plugin marketplace",
   "owner": {
-    "name": "BrightOps AI"
+    "name": "BrightOps AI",
+    "url": "https://brightopsinc.ai/"
   },
   "plugins": [
     {
       "name": "1password",
       "source": "./plugins/1password",
-      "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Includes SSH key management via 1Password SSH agent."
+      "description": "Use the 1Password CLI (op) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent.",
+      "category": "security",
+      "tags": [
+        "1password",
+        "secrets",
+        "credentials",
+        "ssh",
+        "cli",
+        "security",
+        "injection",
+        "authentication"
+      ]
     },
     {
       "name": "agent-teams",
       "source": "./plugins/agent-teams",
-      "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development."
+      "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination.",
+      "category": "development",
+      "tags": [
+        "teams",
+        "multi-agent",
+        "orchestration",
+        "parallel",
+        "research",
+        "review",
+        "debugging",
+        "coordination"
+      ]
     },
     {
       "name": "marketplace-scout",
       "source": "./plugins/marketplace-scout",
-      "description": "Search Facebook Marketplace for deals, grade listings A+ through F with market research, and serve an interactive dashboard."
+      "description": "Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage.",
+      "category": "productivity",
+      "tags": [
+        "facebook",
+        "marketplace",
+        "deals",
+        "listings",
+        "arbitrage",
+        "research",
+        "dashboard",
+        "playwright"
+      ]
     },
     {
       "name": "adversarial-review",
       "source": "./plugins/adversarial-review",
-      "description": "Use Grok as an adversarial reviewer to stress-test plans, designs, and working documents via browser automation."
+      "description": "Use Grok (grok.com) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation.",
+      "category": "development",
+      "tags": [
+        "review",
+        "adversarial",
+        "grok",
+        "plans",
+        "architecture",
+        "security",
+        "browser",
+        "playwright"
+      ]
     },
     {
       "name": "brightops-ai-skills",
       "source": "./plugins/brightops-ai-skills",
-      "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief."
+      "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief.",
+      "category": "productivity",
+      "tags": [
+        "skills",
+        "prompting",
+        "prompt-engineering",
+        "dictation",
+        "workflow",
+        "memory",
+        "consolidation",
+        "tmux",
+        "sessions",
+        "orchestration"
+      ]
     }
   ]
 }

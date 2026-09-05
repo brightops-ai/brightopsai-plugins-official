@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-05
+
+### Added
+
+- Discover metadata: `displayName`, `homepage`, `repository`,
+  `license`, `keywords`, and a plugin `LICENSE`.
+
 ## [1.1.0] - 2026-09-05
 
 ### Added

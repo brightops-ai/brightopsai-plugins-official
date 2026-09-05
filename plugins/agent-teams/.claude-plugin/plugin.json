@@ -1,8 +1,22 @@
 {
   "name": "agent-teams",
-  "version": "1.2.0",
+  "displayName": "Agent Teams",
+  "version": "1.2.1",
   "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination.",
   "author": {
     "name": "BrightOps AI"
-  }
+  },
+  "homepage": "https://brightopsinc.ai/",
+  "repository": "https://github.com/brightops-ai/brightopsai-plugins-official",
+  "license": "MIT",
+  "keywords": [
+    "teams",
+    "multi-agent",
+    "orchestration",
+    "parallel",
+    "research",
+    "review",
+    "debugging",
+    "coordination"
+  ]
 }
