@@ -1,8 +1,22 @@
 {
   "name": "marketplace-scout",
-  "version": "1.1.0",
-  "description": "Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports both personal deal-finding and resale arbitrage modes.",
+  "displayName": "Marketplace Scout",
+  "version": "1.1.1",
+  "description": "Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage.",
   "author": {
     "name": "BrightOps AI"
-  }
+  },
+  "homepage": "https://brightopsinc.ai/",
+  "repository": "https://github.com/brightops-ai/brightopsai-plugins-official",
+  "license": "MIT",
+  "keywords": [
+    "facebook",
+    "marketplace",
+    "deals",
+    "listings",
+    "arbitrage",
+    "research",
+    "dashboard",
+    "playwright"
+  ]
 }

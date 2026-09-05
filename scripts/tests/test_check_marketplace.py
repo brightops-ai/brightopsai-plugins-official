@@ -21,6 +21,14 @@ PLUGIN = "alpha"
 VERSION = "1.2.0"
 PLUGIN_JSON = Path("plugins") / PLUGIN / ".claude-plugin" / "plugin.json"
 MARKETPLACE_JSON = Path(".claude-plugin") / "marketplace.json"
+PLUGIN_DESCRIPTION = "The alpha plugin."
+MARKETPLACE_SCHEMA = "https://anthropic.com/claude-code/marketplace.schema.json"
+PLUGIN_STRING_FIELDS = (
+    "displayName",
+    "homepage",
+    "repository",
+    "license",
+)
 
 
 def _skill_md(name: str = "demo") -> str:
@@ -52,6 +60,38 @@ def _readme(rows: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _plugin_payload(
+    name: str,
+    version: str,
+    *,
+    description: str | None = None,
+    skills: list[str] | None = None,
+) -> dict:
+    payload: dict = {
+        "name": name,
+        "displayName": name.replace("-", " ").title(),
+        "version": version,
+        "description": description if description is not None else f"The {name} plugin.",
+        "homepage": "https://example.com/",
+        "repository": "https://github.com/example/repo",
+        "license": "MIT",
+        "keywords": [name, "fixture"],
+    }
+    if skills is not None:
+        payload["skills"] = skills
+    return payload
+
+
+def _marketplace_plugin_entry(name: str, description: str) -> dict:
+    return {
+        "name": name,
+        "source": f"./plugins/{name}",
+        "description": description,
+        "category": "development",
+        "tags": [name, "fixture"],
+    }
+
+
 def build_clean_tree(root: Path) -> None:
     """One plugin, a listed nested skill, an unlisted top-level skill."""
     plugin_dir = root / "plugins" / PLUGIN
@@ -65,26 +105,18 @@ def build_clean_tree(root: Path) -> None:
     )
     _write_json(
         root / PLUGIN_JSON,
-        {
-            "name": PLUGIN,
-            "version": VERSION,
-            "description": "The alpha plugin.",
-            "skills": ["./skills/cat/nested"],
-        },
+        _plugin_payload(
+            PLUGIN, VERSION, description=PLUGIN_DESCRIPTION, skills=["./skills/cat/nested"]
+        ),
     )
     _write_json(
         root / MARKETPLACE_JSON,
         {
+            "$schema": MARKETPLACE_SCHEMA,
             "name": "test-marketplace",
             "description": "fixture",
-            "owner": {"name": "Test"},
-            "plugins": [
-                {
-                    "name": PLUGIN,
-                    "source": f"./plugins/{PLUGIN}",
-                    "description": "The alpha plugin.",
-                }
-            ],
+            "owner": {"name": "Test", "url": "https://example.com/"},
+            "plugins": [_marketplace_plugin_entry(PLUGIN, PLUGIN_DESCRIPTION)],
         },
     )
     (root / "README.md").write_text(
@@ -117,13 +149,7 @@ def add_plugin(
         d = plugin_dir / rel
         d.mkdir(parents=True, exist_ok=True)
         (d / "SKILL.md").write_text(_skill_md(Path(rel).name), encoding="utf-8")
-    payload: dict = {
-        "name": name,
-        "version": version,
-        "description": f"The {name} plugin.",
-    }
-    if listed_skills is not None:
-        payload["skills"] = listed_skills
+    payload = _plugin_payload(name, version, skills=listed_skills)
     _write_json(plugin_dir / ".claude-plugin" / "plugin.json", payload)
 
 
@@ -306,6 +332,109 @@ class ReadmeTableTest(_TreeTest):
 
         items = self.findings()
         self.assert_finding(items, "README.md", PLUGIN)
+
+
+class PluginManifestFieldsTest(_TreeTest):
+    """Every plugin.json must carry Discover metadata (#38)."""
+
+    def test_missing_string_field_is_a_finding(self) -> None:
+        for field in PLUGIN_STRING_FIELDS:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    build_clean_tree(root)
+                    data, path = load_plugin(root)
+                    del data[field]
+                    _write_json(path, data)
+                    items = cm.collect_findings(root)
+                    self.assert_finding(items, str(PLUGIN_JSON), field)
+
+    def test_missing_keywords_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_plugin(self.root)
+        del data["keywords"]
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, str(PLUGIN_JSON), "keywords")
+
+    def test_empty_keywords_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_plugin(self.root)
+        data["keywords"] = []
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, str(PLUGIN_JSON), "keywords")
+
+
+class MarketplaceEntryMetadataTest(_TreeTest):
+    """Marketplace entries carry category/tags; descriptions match plugin.json (#38)."""
+
+    def test_marketplace_description_must_match_plugin_json(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        data["plugins"][0]["description"] = "A different blurb."
+        _write_json(path, data)
+
+        items = self.findings()
+        self.assert_finding(
+            items,
+            ".claude-plugin/marketplace.json",
+            PLUGIN,
+            "description",
+        )
+
+    def test_marketplace_entry_without_description_is_ok(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        del data["plugins"][0]["description"]
+        _write_json(path, data)
+        self.assertEqual(self.findings(), [])
+
+    def test_marketplace_entry_missing_category_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        del data["plugins"][0]["category"]
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(
+            items, ".claude-plugin/marketplace.json", PLUGIN, "category"
+        )
+
+    def test_marketplace_entry_missing_tags_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        del data["plugins"][0]["tags"]
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, ".claude-plugin/marketplace.json", PLUGIN, "tags")
+
+    def test_empty_tags_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        data["plugins"][0]["tags"] = []
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, ".claude-plugin/marketplace.json", PLUGIN, "tags")
+
+
+class MarketplaceCatalogMetadataTest(_TreeTest):
+    """Marketplace root declares $schema and owner contact (#38)."""
+
+    def test_marketplace_missing_schema_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        del data["$schema"]
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, ".claude-plugin/marketplace.json", "$schema")
+
+    def test_owner_missing_email_and_url_is_a_finding(self) -> None:
+        build_clean_tree(self.root)
+        data, path = load_marketplace(self.root)
+        data["owner"] = {"name": "Test"}
+        _write_json(path, data)
+        items = self.findings()
+        self.assert_finding(items, ".claude-plugin/marketplace.json", "owner")
 
 
 class MarketplaceVersionRuleTest(unittest.TestCase):

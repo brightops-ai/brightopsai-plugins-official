@@ -11,6 +11,15 @@ rather than numbered.
 
 ## [Unreleased]
 
+## [2026-09-05] - Manifest metadata
+
+### Added
+
+- Marketplace `$schema`, owner URL, and `category`/`tags` on every plugin
+  entry so `/plugin` Discover matches official listings.
+- `scripts/check-marketplace.py` now fails when those fields drift, or when
+  a marketplace description does not match `plugin.json`.
+
 ## [2026-09-05] - Baseline
 
 ### Added
