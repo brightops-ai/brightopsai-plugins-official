@@ -130,6 +130,7 @@ See [CLAUDE.md](CLAUDE.md) for conventions and structure details.
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+See [SECURITY.md](SECURITY.md) for vulnerability reporting, secret handling, and plugin data directories.
 
 ---
 

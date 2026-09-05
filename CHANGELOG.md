@@ -11,6 +11,14 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Added
+
+- `SECURITY.md`: vulnerability reporting via GitHub Security Advisories,
+  fake example credentials, `${CLAUDE_PLUGIN_DATA}`, 1Password/`op` handling,
+  Facebook Marketplace terms responsibility, grok.com upload plus pre-upload
+  secret scan, and the gitleaks pre-commit gate (inactive until
+  `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing; no CI scan).
+
 ## [2026-09-05] - Plugin READMEs
 
 ### Added
