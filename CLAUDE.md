@@ -16,7 +16,7 @@ level of `skills/`
 - agent-teams (v1.2.0) — 1 skill: agent-teams
 - adversarial-review (v1.3.0) — 1 skill: adversarial-review
 - marketplace-scout (v1.1.0) — 1 skill: marketplace-scout
-- brightops-ai-skills (v1.3.0) — 7 skills: improve-prompt, calibrate-style, dream,
+- brightops-ai-skills (v1.3.1) — 7 skills: improve-prompt, calibrate-style, dream,
   improve-memory, session-analysis, send-result, spawn-session
 
 ## Adding a New Skill
@@ -61,6 +61,15 @@ runner, so a user installing the plugin installs nothing:
 
 ```bash
 cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .
+```
+
+The `spawn-session` scripts have a bats suite. `--unit` runs the pure specs with no
+dependencies; the full run drives a private tmux server and needs `tmux`, `bats` and
+`shellcheck`:
+
+```bash
+plugins/brightops-ai-skills/tests/run.sh --unit   # 23 pure specs
+plugins/brightops-ai-skills/tests/run.sh          # all 39, private tmux socket
 ```
 
 Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
