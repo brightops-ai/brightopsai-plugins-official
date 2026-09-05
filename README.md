@@ -109,6 +109,8 @@ automation, an MCP server:
   version-keyed, so an unbumped change is never picked up
 - Run `./scripts/install-hooks.sh` once per clone to activate the gitleaks pre-commit gate —
   this repository is public, and git does not clone hooks
+- Run `python3 scripts/check-marketplace.py` when the change touches a plugin
+  manifest, the marketplace registry, the README plugin table, or adds a skill
 - Run the tests: `cd plugins/brightops-ai-skills/lib && python3 -m unittest discover -s dream/tests -t .`
   and `plugins/brightops-ai-skills/tests/run.sh --unit`; run `evals/run.sh` when touching
   `improve-prompt`
