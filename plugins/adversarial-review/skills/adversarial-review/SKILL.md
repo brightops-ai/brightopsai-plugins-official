@@ -77,13 +77,21 @@ Critical severity items always require user confirmation regardless of mode.
 
 ### 3. Scan for Secrets
 
-Before submitting any content to Grok, scan the document for secrets:
+Before any upload to Grok, scan the document with the bundled scanner — never a prose regex list:
 
-- API keys (`sk-`, `api_key`, `bearer`, `token`)
-- Passwords (`password=`, `passwd`, `secret`)
-- Connection strings, private keys, credentials
+```bash
+"${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/scan-secrets.sh" "<document>"
+```
 
-If detected, warn the user and offer to redact before proceeding. Never paste secrets into Grok.
+The script prefers `gitleaks` when it is on PATH. If the file sits in a git work tree (`git -C <dir> rev-parse --show-toplevel`) that has a `.gitleaks.toml` at the repo root, that config is passed through; otherwise gitleaks defaults apply. If gitleaks is absent, a bundled high-confidence fallback runs and prints a `FALLBACK` line recommending gitleaks.
+
+Exit codes:
+
+- **0** — clean. Continue.
+- **1** — hit(s). Stop. Show the `rule:` / `file:` / `line:` lines. Offer redaction. Do not open Grok, do not upload, do not paste the document. After edits, run the script again. Repeat until the scan exits 0.
+- **2** — usage or scanner error. Stop, report stderr, and do not upload.
+
+A hit blocks the upload. Never proceed to Grok until a rescan exits 0.
 
 ### 4. Verify Grok Login
 
@@ -95,51 +103,22 @@ Wait for confirmation via AskUserQuestion before proceeding.
 
 ### 5. Navigate to Grok Projects and Upload Document
 
-Consult `references/grok-ui-navigation.md` for detailed selectors and navigation steps.
+Follow `references/grok-ui-navigation.md` for selectors, the 3-step new-project dialog, Attach → "Upload a file", and how to refresh sources on an existing project.
 
-1. Locate the Projects section in Grok's sidebar — it appears as an expandable section with existing projects listed
-2. Search for a project matching the repo/directory name
-3. If found — open it, then update the project source file (see step 5b)
-4. If not found — create a new project with that name, uploading the document as a source during creation (see `references/grok-ui-navigation.md` for the 3-step dialog flow)
+1. Find or create the Grok project whose name matches the repo/directory from step 1.
+2. Upload the document as a project source, or replace a stale copy of the same file so Grok reviews the current version.
 
-**5b. Keep project sources current:**
-- When an existing project is opened, check if the document file is already a project source
-- If the file exists but is outdated (local edits since last upload), delete the old version from project sources and re-upload the current file
-- If the file does not exist, upload it via the project sources panel
-- This ensures Grok always reviews the latest version of the document
+Do not upload until step 3 exited 0 on this file.
 
 ### 6. Compose and Submit the Review Prompt
 
-Consult `references/adversarial-prompt-templates.md` to select the appropriate template. Read the document and reason about which variant fits best:
+Read `references/adversarial-prompt-templates.md` and follow its selection logic and assembly instructions. Variants: Architecture, Implementation, Security, UX/Product, Standard. If the user names a variant, use it. Briefly note which variant was selected and why.
 
-- Describes how components interact → **Architecture** variant
-- Step-by-step plan with milestones → **Implementation** variant
-- Focused on threats, auth, data protection → **Security** variant
-- About user experience, mobile, accessibility, visual design → **UX/Product** variant
-- None of the above → **Standard** variant
-
-If the user specifies a variant, use it regardless of auto-detection. Briefly note which variant was selected and why.
-
-The prompt has three parts:
-
-1. **Context block** — Project name, document type, the uploaded filename (e.g., "Review the attached document (my-plan.md)"), and any constraints the user mentioned
-2. **Document content** — Do NOT inline the full markdown. Instead, reference the uploaded project source file by name. Grok has access to project source files and will read them directly. This keeps the prompt concise and avoids input-length issues.
-3. **Review instructions** — The adversarial review template with required output format
-
-Use `browser_evaluate` to set the prompt text in the contenteditable input (Grok uses a contenteditable div, not a textarea). Regular `browser_type` works for short text but `browser_evaluate` is more reliable for prompts over a few hundred characters. See `references/grok-ui-navigation.md` for the exact JavaScript pattern.
-
-After setting the text, click the Submit button (find it via `browser_evaluate` using `ariaLabel === 'Submit'`).
+Do not copy template text into the session notes — assemble from that file. Do not inline the document; reference the uploaded filename. Set the prompt and click Submit using the `browser_evaluate` patterns in `references/grok-ui-navigation.md`.
 
 ### 7. Wait for Response
 
-Grok streams responses which can take 30-60+ seconds for detailed reviews. Use a polling approach:
-
-1. Wait 15 seconds initially with `browser_wait_for` (time)
-2. Use `browser_evaluate` to measure the response text length (query `.prose` or `.markdown` elements)
-3. Wait another 15 seconds, then measure again
-4. **Response is complete when text length stabilizes** — same length across two consecutive checks 5+ seconds apart
-
-Do NOT rely solely on the Submit button's disabled/enabled state — it can remain disabled after generation completes. Text length stabilization is the most reliable signal.
+Grok streams for 30-60+ seconds. Follow the text-length stabilization procedure in `references/grok-ui-navigation.md`. Do not treat the Submit button's enabled state as completion.
 
 On timeout (120 seconds total), take a `browser_take_screenshot`, report the state to the user, and offer to retry.
 
@@ -158,47 +137,25 @@ Cap at 3 follow-up turns to prevent infinite loops.
 
 ### 9. Extract Feedback
 
-Use `browser_evaluate` to extract the response. Grok's page contains multiple `.prose` / `.markdown` elements — the user's message and the assistant's response are separate elements. To identify the correct one:
+Extract the assistant response per `references/grok-ui-navigation.md` (enumerate `.prose` / `.markdown` elements; pick by content, not a hard-coded index; save long text via the `filename` parameter).
 
-1. Query all `.prose, .markdown` elements
-2. Enumerate them with their text length and first 80 characters
-3. The assistant response is typically the largest element whose text does NOT start with the prompt content
-4. It often begins with "Thought for Xs" followed by the actual findings
-5. Save the extracted text to a temporary file via the `filename` parameter on `browser_evaluate`, then read it
-
-Grok outputs findings as JSON first, then markdown. Prefer parsing the JSON array for structured data. Each finding has:
-- `id` — finding number
-- `severity` — Critical / Major / Minor / Nit
-- `title` — short description
-- `rationale` — explaining the concern
-- `suggestion` — concrete fix
-- `self_improvement` — Grok's self-critique of its own finding (how it could be sharper or more specific)
-
-Use the self-improvement notes to gauge finding quality — if Grok flags its own finding as vague, weigh it lower during triage.
+Grok outputs findings as JSON first, then markdown. Prefer the JSON array. Each finding has `id`, `severity`, `title`, `rationale`, `suggestion`, and `self_improvement`. Weigh vague findings lower when Grok's self-improvement note says so.
 
 ### 10. Triage and Apply Suggestions
 
 Create a backup of the original document at `{filename}.pre-review.md` before making any edits.
 
-For each finding, classify per the mode table in Step 2:
+For each finding, classify per the mode table in Step 2. Conflict handling, edit size, and voice preservation are in `references/feedback-integration.md`.
 
 - **Auto-apply**: Make the edit directly using the Edit tool. One suggestion per edit for clean diffs.
 - **Propose to user**: Present the finding with Grok's rationale via AskUserQuestion. Apply only if approved.
 - **Log only**: Suggestions that are out of scope or where Claude disagrees with Grok. Include in the summary but do not apply.
 
-After all edits, re-read the file and do a coherence pass to ensure integrated changes read naturally and don't conflict with each other.
+After all edits, re-read the file and do a coherence pass so integrated changes read naturally and do not conflict.
 
 ### 11. Sync Updated Document to Grok
 
-After applying edits locally, update the project source in Grok so it always has the latest version:
-
-1. Navigate back to the project in Grok (use the sidebar project link)
-2. Open the project sources/files panel
-3. Delete the old version of the document file
-4. Upload the updated local file via the Attach → "Upload a file" flow (see `references/grok-ui-navigation.md`)
-5. Verify the new file appears with the correct name
-
-This ensures future reviews in the same project reference the post-review version, not the original.
+After applying edits locally, update the project source in Grok so it always has the latest version. Repeat step 3 on the updated file; do not re-upload until that scan exits 0. Then follow `references/grok-ui-navigation.md` to replace the old project source with the current file and verify the name.
 
 ### 12. Summary Report
 
@@ -239,4 +196,4 @@ Output a structured summary:
 - If the document exceeds 15,000 characters, split into logical sections and review each separately, then perform a holistic review of the full document
 - If Grok is unresponsive for 120 seconds, take a screenshot, report to user, and offer to retry
 - Preserve the original document's voice and style when integrating suggestions — see `references/feedback-integration.md`
-- Do not submit credentials, API keys, tokens, or passwords to Grok under any circumstances
+- Do not upload until `scan-secrets.sh` exits 0. A scanner hit is a stop, not a warning to click through.

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-05
+
+### Added
+
+- Secret scan before every Grok upload: `scan-secrets.sh` prefers
+  `gitleaks` (repo `.gitleaks.toml` when the file is in a git work tree),
+  otherwise a bundled high-confidence fallback. A hit names the rule and
+  file and blocks the upload.
+
+### Changed
+
+- Skill step 3 no longer carries a prose regex list; the scanner is the
+  source of patterns. Selector and prompt detail stay in the reference
+  files.
+
 ## [1.3.2] - 2026-09-05
 
 ### Added
