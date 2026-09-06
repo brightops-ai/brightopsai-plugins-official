@@ -11,6 +11,13 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Deprecated
+
+- `agent-teams` is deprecated and will be removed from the marketplace in
+  a later release. Installed copies keep working from cache but stop
+  receiving updates. A replacement skill will be published separately by
+  BrightOps AI. See [ADR 0001](docs/adr/0001-plugin-consolidation-scope.md).
+
 ### Added
 
 - GitHub Actions workflow `.github/workflows/ci.yml`: plugin validate,

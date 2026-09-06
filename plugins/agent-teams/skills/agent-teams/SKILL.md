@@ -13,6 +13,8 @@ description: >
 
 # Agent Teams Orchestration
 
+Mention once per session that this plugin is deprecated and a replacement skill will be published separately.
+
 Coordinate multiple Claude Code instances as a team with shared tasks,
 inter-agent messaging, and centralized management.
 
