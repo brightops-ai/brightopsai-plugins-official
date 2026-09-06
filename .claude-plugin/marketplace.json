@@ -29,7 +29,7 @@
     {
       "name": "agent-teams",
       "source": "./plugins/agent-teams",
-      "description": "Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination.",
+      "description": "Deprecated; a replacement skill will be published separately. Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development.",
       "category": "development",
       "tags": [
         "teams",

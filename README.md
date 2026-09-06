@@ -19,7 +19,7 @@
 | Plugin | Version | Description |
 |--------|---------|-------------|
 | **[1password](plugins/1password)** | 1.2.2 | Use the 1Password CLI (`op`) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent. |
-| **[agent-teams](plugins/agent-teams)** | 1.2.2 | Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. Guides team creation, task decomposition, and coordination. |
+| **[agent-teams](plugins/agent-teams)** | 1.2.3 | Deprecated; a replacement skill will be published separately. Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.2.0 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.4.0 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
 | **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.3.2 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief. |
@@ -69,6 +69,7 @@ See [plugins/1password/README.md](plugins/1password/README.md).
 
 ### agent-teams
 
+**Deprecated** — will be removed in a later release; a replacement skill will be published separately.
 One skill for orchestrating parallel Claude Code teams (Claude Code v2.1.178+).
 See [plugins/agent-teams/README.md](plugins/agent-teams/README.md).
 
