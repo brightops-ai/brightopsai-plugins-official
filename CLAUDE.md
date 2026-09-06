@@ -80,25 +80,37 @@ manual.
 
 ## Agent skills
 
-`docs/agents/` is in-repo coding-agent configuration (mattpocock-skills issue
+This block is in-repo coding-agent configuration (mattpocock-skills issue
 tracker, triage, and domain conventions), not marketplace plugin-user docs —
 see [docs/README.md](docs/README.md).
 
 ### Issue tracker
 
-GitHub Issues on `brightops-ai/brightopsai-plugins-official` via the `gh` CLI. See
-[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+GitHub Issues on `brightops-ai/brightopsai-plugins-official` via the `gh` CLI.
 
 ### Triage labels
 
 Canonical five-state vocabulary — `needs-triage`, `needs-info`,
-`ready-for-agent`, `ready-for-human`, `wontfix` — label strings unchanged. See
-[docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+`ready-for-agent`, `ready-for-human`, `wontfix` — label strings unchanged.
 
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and one `docs/adr/` at the repo root, created
-lazily by `/grill-with-docs`. See [docs/agents/domain.md](docs/agents/domain.md).
+lazily by `/grill-with-docs`.
+
+### Long-form conventions
+
+The `gh` recipes, the wayfinder operations, the PR-triage flag and the
+domain-doc consumer rules are the same in every repo, so they live once in the
+engineering-docs repo cloned beside this one and are imported here:
+
+@../engineering-docs/agents/skills.md
+
+A clone without that repo beside it — a cloud session, a laptop — sees only
+this block. That is enough for `/to-spec`, `/to-tickets` and `/triage` on a
+GitHub repo with the canonical labels. `/code-review` will notice that
+`docs/agents/issue-tracker.md` is absent and offer to re-run setup; decline,
+and it falls back to asking.
 
 ### Secret scanning
 
