@@ -535,8 +535,9 @@ class ResultWriteTests(ChildTestCase):
             os.close(reader)
             self.write("proceed", "go")
         _, stderr = process.communicate(timeout=30)
+        # The shell's own wording for the failed write differs between bash and dash; the
+        # contract is the exit status and that nothing was sent.
         self.assertEqual(process.returncode, 1, stderr)
-        self.assertIn("write error", stderr)
         self.assertNotIn("t3 thread", self.read("calls"))
 
 class CommandNameTests(ChildTestCase):
