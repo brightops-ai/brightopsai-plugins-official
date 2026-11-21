@@ -91,6 +91,21 @@
         "sessions",
         "orchestration"
       ]
+    },
+    {
+      "name": "t3-code",
+      "source": "./plugins/t3-code",
+      "description": "Operate the T3 Code desktop app from inside its own agent threads: restart it without losing other threads' work, and give every session 1Password secrets through a service account and op:// references.",
+      "category": "development",
+      "tags": [
+        "t3-code",
+        "1password",
+        "secrets",
+        "service-account",
+        "restart",
+        "orchestration",
+        "macos"
+      ]
     }
   ]
 }

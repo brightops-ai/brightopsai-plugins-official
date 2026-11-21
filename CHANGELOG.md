@@ -35,6 +35,8 @@ rather than numbered.
   secret scan, the gitleaks pre-commit gate (inactive until
   `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing), and CI
   tree scan on pull requests and `main`.
+- `t3-code` plugin (0.1.0): `restart` and `1password-secrets` skills for the
+  T3 Code desktop app on macOS.
 
 ## [2026-09-05] - Plugin READMEs
 

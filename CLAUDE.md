@@ -20,6 +20,7 @@ human checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 - marketplace-scout — 1 skill: marketplace-scout
 - brightops-ai-skills — 7 skills: improve-prompt, calibrate-style, dream,
   improve-memory, session-analysis, send-result, spawn-session
+- t3-code — 2 skills: restart, 1password-secrets
 
 ## Adding a New Skill
 
