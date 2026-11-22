@@ -1,0 +1,22 @@
+{
+  "name": "t3-code",
+  "displayName": "T3 Code",
+  "version": "0.1.0",
+  "description": "Operate the T3 Code desktop app from inside its own agent threads: restart it without losing other threads' work, and give every session 1Password secrets through a service account and op:// references.",
+  "author": {
+    "name": "BrightOps AI"
+  },
+  "homepage": "https://brightopsinc.ai/",
+  "repository": "https://github.com/brightops-ai/brightopsai-plugins-official",
+  "license": "MIT",
+  "keywords": [
+    "t3-code",
+    "t3",
+    "1password",
+    "secrets",
+    "service-account",
+    "restart",
+    "orchestration",
+    "macos"
+  ]
+}
