@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-22
+
+### Security
+
+- The dashboard's `zod` moves from 3.25.76 to 4.6.7 (`^4.6.6` in
+  `package.json`), which clears GHSA-mrhx-c7xc-m3w5, the one high-severity
+  advisory `npm audit` reported on the shipped lockfile (#93). The advisory
+  covers every release below 4.6.6 and names no patched 3.x, so the major was
+  the only fix. `npm audit` on the new lockfile reports no advisory of any
+  severity.
+- The dashboard was not exposed. The advisory is about parsing an oversized
+  array, set or map. The two schemas in `src/types/listing.ts` are the only
+  zod code in the dashboard, and nothing calls `parse` or `safeParse` on them;
+  `searches.json` is read with a type annotation only.
+- If those schemas are ever used to parse, give their arrays a `.max()`. The
+  fix in 4.6.6 rejects an input that is over a declared upper bound before
+  walking its elements. An array schema with no upper bound, which is what
+  both schemas have, still collects one issue per bad element.
+- No schema code changed: the calls the two schemas make are the same in
+  zod 4. Run against both releases, they accept and reject the same inputs
+  with one exception, which zod's migration guide lists: `z.number()` no
+  longer accepts `Infinity`.
+- zod stays a single copy. `eslint-plugin-react-hooks` and
+  `zod-validation-error` (lint only) accept `^3.25.0 || ^4.0.0` and share it.
+- An installed `${CLAUDE_PLUGIN_DATA}/dashboard` (one that has
+  `node_modules`) is left as it is and keeps the zod it was installed with,
+  as in 1.3.0; given the above there is nothing to act on. To move it
+  anyway, delete its `node_modules` and run the skill again: see the next
+  section for when that brings in the new versions.
+
+### Changed
+
+- A dashboard that was scaffolded by an earlier release and never installed
+  is moved to this release's pinned dependencies when `ensure-dashboard.sh`
+  installs into it. That covers a scaffold from before the lockfile shipped
+  whose install failed, a 1.3.0 scaffold made with `SKIP_NPM_INSTALL`, and
+  an installed dashboard whose `node_modules` was deleted. Its `package.json`
+  and `package-lock.json` are replaced with this release's, and the script
+  says so, only when each is byte-identical to a file an earlier release
+  shipped (matched by sha256 against a list in the script), so no edit is
+  lost. No other file in the dashboard is touched. Without this, changing
+  the shipped `package.json` would have made the script refuse every
+  never-installed pre-lockfile scaffold, and a never-installed 1.3.0
+  scaffold would have installed the old lockfile and zod 3.25.76.
+- A `package.json` or `package-lock.json` that was edited is never
+  replaced. With a lockfile of its own the dashboard installs from the two
+  files it holds, as before. With no lockfile it is refused (exit 1), as
+  before.
+- Nothing in the dashboard is touched until `npm ci` has succeeded in the
+  staging directory, so a failed install (exit 4) leaves it as it was. After
+  the install the script checks again that both files are what the install
+  was planned against and that no `node_modules` has appeared. If anything
+  changed while `npm` ran, it exits 5 and the dashboard is byte for byte as
+  it was. This also holds for a dashboard that installs from its own pair.
+- A file is never replaced where it stands. It is moved out of the
+  dashboard, what was moved is checked, and only then is the new file linked
+  into the empty path, which cannot overwrite anything and never shows a
+  partial file. Both old files go out before either new one goes in, and
+  `node_modules` arrives last. If a file turns out to have been edited at
+  the last moment, or a step fails, everything is put back and the run exits
+  5 (4 when a file could not be written). The message names each file and
+  what happened to it.
+- An edit is kept even when its path has been filled by something else
+  before it could be put back: it is saved beside the path as
+  `<name>.set-aside.<id>` and reported.
+- `SIGINT`, `SIGTERM` and `SIGHUP` that arrive during those few steps are
+  held until the steps are complete or undone, then the run exits 130 or
+  143. A run killed outright (`SIGKILL`, power loss) in that moment can leave
+  a file out of the dashboard; it is in the staging directory beside it, and
+  the next run puts it back before doing anything else. That staging
+  directory is not deleted by the next run, which says when it can be.
+- The lockfile is no longer written through to its final name, so an
+  interrupted write cannot leave a partial `package-lock.json` (1.3.0 could).
+- An unreadable `package.json` or `package-lock.json` is reported as
+  unreadable (exit 1).
+- Recognising an earlier release's file needs `sha256sum` or `shasum`. With
+  neither, such a file counts as edited.
+- What is not covered. A file that is not being replaced is checked after
+  the install but not again: an edit to it in the instant between that check
+  and the end of the run is not noticed. A program that already has a file
+  open can still write to it after it was moved out and checked. On a
+  filesystem without hard links the new file is renamed into place instead,
+  and a file created at that path in the instant between the check and the
+  rename can be overwritten. `node_modules` is still moved in with the
+  check-then-rename that 1.3.0 uses.
+- The production bundle grows from about 467 kB to 499 kB (126 kB to 138 kB
+  gzipped): zod 4 is larger and both schemas are still built at load.
+
+### Added
+
+- `tests/test_dashboard_lockfile.py`: offline checks that the locked zod and
+  the declared range stay at or above 4.6.6, that one zod copy satisfies
+  every package that asks for it, that the lockfile root matches
+  `package.json`, and that every package resolves from the public npm
+  registry with a sha512 integrity. It also fails when `package.json` or
+  `package-lock.json` changes without its sha256 being appended to the list
+  in `ensure-dashboard.sh`.
+- `tests/fixtures/`: the `package.json` files earlier releases shipped and
+  the 1.3.0 lockfile, byte for byte, so the specs for the cases above do not
+  depend on the revision under test.
+- `tests/ensure-dashboard.bats` goes from 21 to 60 specs: the earlier-release
+  cases, each thing that can change, fail or stop while the two files are
+  exchanged, and each state a killed run can leave with what the next run
+  does.
+
 ## [1.3.0] - 2026-11-22
 
 ### Security
