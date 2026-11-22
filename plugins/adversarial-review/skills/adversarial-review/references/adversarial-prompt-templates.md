@@ -226,7 +226,7 @@ Each variant should include at least one example finding in the assembled prompt
 When composing the final prompt:
 
 1. Start with the Context block — fill in project name, doc type, and any user-provided context
-2. Reference the uploaded filename by name in the Document block (e.g., "Review the attached document (my-plan.md)"). Prefer referencing project source files over pasting inline — it keeps the prompt concise. However, if Grok fails to read the file (returns "FILE ACCESS FAILURE" or hallucinates content), fall back to pasting the document inline using the `DOCUMENT_CONTENT_FALLBACK` block, respecting the token-size limits documented there.
+2. Reference the uploaded filename by name in the Document block (e.g., "Review the attached document (my-plan.md)"). Prefer referencing project source files over pasting inline — it keeps the prompt concise. However, if Grok fails to read the file (returns "FILE ACCESS FAILURE" or hallucinates content), fall back to pasting the document inline using the `DOCUMENT_CONTENT_FALLBACK` block, respecting the token-size limits documented there. The paste is a second way of sending the document: do it only after the inline-fallback confirmation in SKILL.md step 7, and build it from the approved snapshot, not from the source file.
 3. Append the appropriate Review Instructions variant
 4. If the user specified additional focus areas, append them as a numbered addition to the review dimensions
 

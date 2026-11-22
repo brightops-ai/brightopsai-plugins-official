@@ -2,7 +2,11 @@
 #
 # scan-secrets.sh — scan one document for secrets before uploading it.
 #
-# Usage: scan-secrets.sh <file>
+# Usage: scan-secrets.sh <file> [<origin>]
+#   <origin>  optional path the file was copied from. When <file> is a
+#             snapshot outside the repository, the repo .gitleaks.toml is
+#             looked up from <origin> so the snapshot is scanned with the
+#             same rules as the document it was taken from.
 #   exit 0  no secret pattern matched. Not clearance: the scan cannot tell
 #           whether the document is confidential, so stderr carries a WARNING
 #           telling the agent to confirm the file and destination with the user
@@ -15,9 +19,9 @@
 # gitleaks (preferred):
 #   gitleaks detect --no-git --no-banner --redact --source <file>
 #   plus --report-format json --report-path <tmp>
-#   plus --config <repo>/.gitleaks.toml when the file sits in a git work tree
-#   that has one (git -C <dir> rev-parse --show-toplevel). Otherwise gitleaks
-#   defaults.
+#   plus --config <repo>/.gitleaks.toml when the file (or <origin>, if given)
+#   sits in a git work tree that has one (git -C <dir> rev-parse
+#   --show-toplevel). Otherwise gitleaks defaults.
 #
 # SCAN_SECRETS_GITLEAKS (test / override):
 #   unset     use `gitleaks` from PATH if present, else the bundled fallback
@@ -36,15 +40,16 @@ FALLBACK_PY="$SCRIPT_DIR/scan_secrets.py"
 BLOCKED_LINE="BLOCKED: do not upload"
 
 usage() {
-  echo "usage: scan-secrets.sh <file>" >&2
+  echo "usage: scan-secrets.sh <file> [<origin>]" >&2
   exit 2
 }
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage
 fi
 
 FILE=$1
+ORIGIN=${2:-$1}
 if [[ ! -f "$FILE" ]]; then
   echo "scan-secrets.sh: not a file: $FILE" >&2
   exit 2
@@ -57,7 +62,7 @@ emit_blocked() {
 # Printed on a clean scan, so it sits in the tool result the agent reads at the
 # moment it decides whether to upload. Clean means no pattern matched, no more.
 emit_clean_notice() {
-  echo "WARNING: no secret pattern matched in $FILE, but a clean scan is not clearance; an upload SENDS the whole file to a third party and cannot be recalled. Ask the user to confirm this exact file and the destination before uploading. If no user can answer, stop." >&2
+  echo "WARNING: no secret pattern matched in $FILE, but a clean scan is not clearance; an upload SENDS the whole file to a third party and cannot be recalled. Ask the user to confirm this exact file and the destination before uploading, and send only the bytes that were scanned. If no user can answer, stop." >&2
 }
 
 # Prints the gitleaks binary to stdout. Returns 1 when the fallback must run.
@@ -134,7 +139,7 @@ run_gitleaks() {
   )
 
   local dir repo
-  dir=$(dirname -- "$FILE")
+  dir=$(dirname -- "$ORIGIN")
   if repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null); then
     if [[ -f "$repo/.gitleaks.toml" ]]; then
       args+=(--config "$repo/.gitleaks.toml")

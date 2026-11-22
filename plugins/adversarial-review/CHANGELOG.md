@@ -14,18 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upload confirmation (#82). After a clean scan and before opening Grok, the
   skill asks the user to confirm the exact file and the destination and
   uploads only on an explicit yes. With no user to answer — a headless,
-  scheduled, or delegated run — it stops without uploading. The confirmation
-  covers the same file and project for the rest of the run.
+  scheduled, or delegated run — it stops without uploading.
+- `scripts/snapshot-document.sh`: the scan, the approval and the upload act on
+  one read-only copy of the document in a private temporary directory.
+  `create` prints its path, sha256 and size; `check` refuses (exit 1) when the
+  snapshot no longer has the approved sha256 or the source was saved since;
+  `remove` deletes it. An approval covers one sha256 and one destination.
+- A second confirmation once Grok is open, naming the account actually signed
+  in and the project, before a project is created or content is sent. The
+  first question is asked before the account is known.
+- The post-edit re-upload is new content: new snapshot, new scan, new
+  confirmation.
+- The inline-paste fallback needs its own explicit answer and is built from
+  the approved snapshot. No pre-approved browser tool may send document
+  content otherwise.
+- `scan-secrets.sh <file> [<origin>]`: the optional second argument is where
+  the repo `.gitleaks.toml` is looked up, so a snapshot outside the
+  repository is scanned with the document's own rules.
 - `scan-secrets.sh` prints a `WARNING` on a clean scan: a clean scan is not
   clearance, confirm the file and destination with the user, stop if no user
   can answer. Exit codes are unchanged.
 
 ### Changed
 
-- The description triggers only on requests that name Grok or an adversarial
-  review. General phrases ("critique this plan", "find the flaws", "poke
-  holes in this" and similar) no longer invoke a skill that uploads a
-  document.
+- The description triggers only on requests for a Grok review or an
+  adversarial review that names no other reviewer. General phrases ("critique
+  this plan", "find the flaws", "poke holes in this" and similar) and
+  "cross-model review" no longer invoke a skill that uploads a document.
 - `browser_file_upload` is no longer in the skill's `allowed-tools`, so the
   skill does not pre-approve the upload; the session's permission rules
   apply. Expect a permission prompt per upload unless the tool is already

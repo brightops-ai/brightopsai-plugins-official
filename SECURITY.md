@@ -54,13 +54,21 @@ The user is responsible for how they run it.
 `adversarial-review` uploads the named working document to grok.com as a Grok
 project source and submits a review prompt.
 
-Before any upload it runs
-`plugins/adversarial-review/skills/adversarial-review/scripts/scan-secrets.sh`
-on that file:
+The scan, the user's approval and the upload act on the same bytes.
+`scripts/snapshot-document.sh` copies the document, read-only, into a private
+temporary directory and reports its sha256. That snapshot is what is scanned,
+what the confirmation names, and what is uploaded. Immediately before an
+upload the script checks that the snapshot still has the approved sha256 and
+that the source has not changed since; if either fails, nothing is sent and
+the cycle starts again.
 
-- Prefers `gitleaks` on `PATH`. If the file sits in a git work tree whose root
-  has `.gitleaks.toml`, that config is passed through; otherwise gitleaks
-  defaults apply.
+Before any upload the skill runs
+`plugins/adversarial-review/skills/adversarial-review/scripts/scan-secrets.sh`
+on the snapshot:
+
+- Prefers `gitleaks` on `PATH`. If the source document sits in a git work tree
+  whose root has `.gitleaks.toml`, that config is passed through; otherwise
+  gitleaks defaults apply.
 - If gitleaks is absent, a bundled high-confidence Python fallback runs and
   prints a `FALLBACK` line. It is not a substitute for gitleaks.
 - Exit 0: no pattern matched — continue to the confirmation below. Exit 1:
@@ -70,15 +78,27 @@ on that file:
 A clean scan is not clearance. Do not send documents that contain secrets or
 confidential material.
 
-After a clean scan and before the first upload in a run, the skill asks the
-user to confirm the exact file and the destination (grok.com, the named
-project, the account signed in to the Playwright browser), and uploads only on
-an explicit yes to that question. With no user to answer — a headless,
-scheduled, or delegated run — it stops without opening Grok. The skill does
-not pre-approve the Playwright upload tool, so the session's own permission
-rules apply to each upload. The confirmation is an instruction to the agent
-and the permission is a default the user can change; neither is a technical
-boundary, and an upload cannot be recalled.
+The skill asks the user for an explicit answer at each point where content
+could leave the machine:
+
+- After a clean scan and before opening Grok: the file, the snapshot's sha256
+  and size, and the intended project. With no user to answer — a headless,
+  scheduled, or delegated run — it stops here.
+- Once the site is open and before a project is created or content is sent:
+  the account actually signed in and the project. The first answer is given
+  before the account is known, so it does not cover this.
+- Before the re-upload that follows edits: the edited document is new content
+  and gets a new snapshot, scan and confirmation.
+- Before the inline fallback, which pastes the document into the chat when
+  Grok cannot read the uploaded file.
+
+An approval covers one sha256 and one destination. The skill does not
+pre-approve the Playwright upload tool, so the session's own permission rules
+apply to each upload. The inline fallback has to go through a browser tool the
+skill does pre-approve; the explicit answer is the only gate on it. The
+confirmations are instructions to the agent and the permission is a default
+the user can change; neither is a technical boundary, and an upload cannot be
+recalled.
 
 ## Secret scanning in this repository
 

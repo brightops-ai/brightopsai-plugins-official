@@ -53,8 +53,10 @@ If the target project is not found:
 1. The dialog advances to "Project Sources" with a drag-and-drop zone
 2. Click `button "Attach"` — this opens a dropdown menu (NOT a file chooser directly)
 3. Click `menuitem "Upload a file"` from the dropdown
-4. The file chooser modal appears — use `browser_file_upload` with the document path
+4. The file chooser modal appears — use `browser_file_upload` with the approved snapshot path from SKILL.md step 6, never the source path. The snapshot keeps the document's filename
 5. Verify the file appears in the dialog with filename and size
+
+If `browser_file_upload` refuses the snapshot path as outside the directories it may read, make the snapshot inside the workspace instead: `snapshot-document.sh create "<document>" "<workspace directory>"`. Scan it, run `check`, and upload it. The approval is for a sha256, so an identical sha256 needs no new question; a different one does. Remove the snapshot directly after the upload and never commit it.
 
 **Step 3 — Create:**
 1. Click `button "Create"` to finalize the project
@@ -69,7 +71,7 @@ To update or add source files in an existing project:
 2. Look for the Sources section in the project side panel (button labeled "Personal files N")
 3. Click it to expand the file list
 4. To delete an old file: look for a remove/delete button next to the filename
-5. To add a new file: use the Attach button in the sources panel, follow the same Upload flow as project creation
+5. To add a new file: use the Attach button in the sources panel, follow the same Upload flow as project creation, with the approved snapshot path
 
 ## Chat Input Field
 

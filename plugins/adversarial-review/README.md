@@ -3,19 +3,30 @@
 ## Overview
 
 Send plans, designs, and working documents to Grok (`grok.com`) for adversarial
-feedback via Playwright browser automation. The loop scans the document for
-secrets, asks for confirmation of the exact file and destination, navigates to
-Grok, creates or finds the matching project, uploads the document, submits a
-structured review prompt, extracts findings with severity tags and
-self-improvement notes, and integrates approved suggestions back into the
-source file.
+feedback via Playwright browser automation. The loop snapshots the document,
+scans the snapshot for secrets, asks for confirmation, navigates to Grok,
+confirms the signed-in account, creates or finds the matching project, uploads
+the snapshot, submits a structured review prompt, extracts findings with
+severity tags and self-improvement notes, and integrates approved suggestions
+back into the source file.
 
-An upload cannot be recalled. Before the first upload in a run the skill asks
-to confirm the file path and the destination (grok.com, the project, the
-signed-in account) and uploads only on an explicit yes. With no user to answer
-— a headless, scheduled, or delegated run — it stops without opening Grok. The
-skill does not pre-approve the Playwright upload tool, so the session's own
-permission rules apply to each upload as well.
+An upload cannot be recalled, so the skill asks before it sends anything:
+
+- **Before opening Grok:** the file, the sha256 and size of its snapshot, and
+  the intended project. With no user to answer — a headless, scheduled, or
+  delegated run — it stops here.
+- **Once the site is open:** the account actually signed in and the project,
+  before a project is created or content is sent.
+- **After edits:** the edited document is new content. It is snapshotted,
+  scanned and confirmed again before the re-upload.
+- **Inline fallback:** if Grok cannot read the uploaded file, pasting the
+  content into the chat needs its own explicit answer.
+
+What is scanned, approved and uploaded is one read-only copy in a private
+temporary directory. If the source is saved after the scan, the upload is
+refused and the cycle starts again. The skill does not pre-approve the
+Playwright upload tool, so the session's own permission rules apply to each
+upload as well.
 
 Use this for a cross-model second opinion on a plan or design. Use Claude
 Code's built-in `/code-review` for a Claude-on-Claude diff review — that path
@@ -55,8 +66,9 @@ another marketplace otherwise — install Playwright **first**, then
 |--------|----------------|
 | `/adversarial-review:adversarial-review` | Upload a document to Grok, run the review, and apply approved edits. |
 
-The skill is model-invocable, on requests that name Grok or an adversarial
-review; a general request for critique does not invoke it. Pass a path to the
+The skill is model-invocable, on requests for a Grok review or an adversarial
+review that names no other reviewer; a general request for critique, or a
+review by another model or a local reviewer, does not invoke it. Pass a path to the
 document, and optionally `--aggressive`.
 
 ## Prerequisites
@@ -68,12 +80,16 @@ document, and optionally `--aggressive`.
   wall appears
 - `gitleaks` on `PATH` is preferred for the pre-upload secret scan. Without it,
   a bundled high-confidence fallback runs and prints a `FALLBACK` line
+- `sha256sum` or `shasum` for the snapshot hash; `python3` is used when neither
+  is present
 
 ## Data
 
 This plugin does not write under `${CLAUDE_PLUGIN_DATA}`. The review happens in
 the Grok project in the browser; approved edits go back into the source file in
-the workspace. The secret scanner is run-only and stores nothing.
+the workspace. The secret scanner is run-only and stores nothing. Snapshots
+live in a private directory under the system temporary directory and are
+removed at the end of a run.
 
 ## Update
 
