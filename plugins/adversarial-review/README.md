@@ -4,7 +4,8 @@
 
 Send plans, designs, and working documents to Grok (`grok.com`) for adversarial
 feedback via Playwright browser automation. The loop snapshots the document,
-scans the snapshot for secrets, asks for confirmation, navigates to Grok,
+scans the snapshot for secrets before reading it, asks for confirmation,
+navigates to Grok,
 confirms the signed-in account, creates or finds the matching project, uploads
 the snapshot, submits a structured review prompt, extracts findings with
 severity tags and self-improvement notes, and integrates approved suggestions
@@ -15,16 +16,21 @@ An upload cannot be recalled, so the skill asks before it sends anything:
 - **Before opening Grok:** the file, the sha256 and size of its snapshot, and
   the intended project. With no user to answer — a headless, scheduled, or
   delegated run — it stops here.
-- **Once the site is open:** the account actually signed in and the project,
-  before a project is created or content is sent.
+- **Once the site is open:** the account actually signed in and the project
+  (an existing project by its identifier, not its name alone), before a
+  project is created or content is sent. This question is never skipped.
 - **After edits:** the edited document is new content. It is snapshotted,
   scanned and confirmed again before the re-upload.
 - **Inline fallback:** if Grok cannot read the uploaded file, pasting the
-  content into the chat needs its own explicit answer.
+  content into the chat needs its own explicit answer, for the exact text to
+  be pasted. A truncated version gets its own snapshot and scan.
 
-What is scanned, approved and uploaded is one read-only copy in a private
-temporary directory. If the source is saved after the scan, the upload is
-refused and the cycle starts again. The skill does not pre-approve the
+The skill does not open the document until its snapshot has scanned clean,
+so a secret in it is refused before it can reach the session transcript.
+What is scanned, read, approved and uploaded is one read-only copy in a
+private temporary directory. The copy is checked again in the command just
+before each send; if the source was saved after the scan, nothing is sent and
+the cycle starts again. Snapshots are removed on every way out of a run. The skill does not pre-approve the
 Playwright upload tool, so the session's own permission rules apply to each
 upload as well.
 
@@ -89,7 +95,7 @@ This plugin does not write under `${CLAUDE_PLUGIN_DATA}`. The review happens in
 the Grok project in the browser; approved edits go back into the source file in
 the workspace. The secret scanner is run-only and stores nothing. Snapshots
 live in a private directory under the system temporary directory and are
-removed at the end of a run.
+removed whenever a run ends or stops.
 
 ## Update
 

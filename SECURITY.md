@@ -60,13 +60,20 @@ The user is responsible for how they run it.
 `adversarial-review` uploads the named working document to grok.com as a Grok
 project source and submits a review prompt.
 
+The skill does not read the document before it is scanned. It resolves the
+path and project from metadata, takes a snapshot, scans the snapshot, and
+opens the content only after a clean scan, from the snapshot. A document with
+a secret in it is refused before its content can enter the session
+transcript; on a hit the skill reports the rule and line and does not open
+the file to look.
+
 The scan, the user's approval and the upload act on the same bytes.
 `scripts/snapshot-document.sh` copies the document, read-only, into a private
 temporary directory and reports its sha256. That snapshot is what is scanned,
-what the confirmation names, and what is uploaded. Immediately before an
-upload the script checks that the snapshot still has the approved sha256 and
-that the source has not changed since; if either fails, nothing is sent and
-the cycle starts again.
+read, named in the confirmation, and uploaded. In the command just before
+each send the script checks that the snapshot still has the approved sha256
+and that the source has not changed since; if either fails, nothing is sent
+and the cycle starts again. Snapshots are removed on every way out of a run.
 
 Before any upload the skill runs
 `plugins/adversarial-review/skills/adversarial-review/scripts/scan-secrets.sh`
@@ -91,12 +98,14 @@ could leave the machine:
   and size, and the intended project. With no user to answer — a headless,
   scheduled, or delegated run — it stops here.
 - Once the site is open and before a project is created or content is sent:
-  the account actually signed in and the project. The first answer is given
-  before the account is known, so it does not cover this.
+  the account actually signed in and the project, an existing project by its
+  identifier and not its name alone. The first answer is given before the
+  account is known, so it does not cover this; the question is never skipped.
 - Before the re-upload that follows edits: the edited document is new content
   and gets a new snapshot, scan and confirmation.
 - Before the inline fallback, which pastes the document into the chat when
-  Grok cannot read the uploaded file.
+  Grok cannot read the uploaded file. The answer covers the exact text to be
+  pasted; a truncated version gets its own snapshot and scan first.
 
 An approval covers one sha256 and one destination. The skill does not
 pre-approve the Playwright upload tool, so the session's own permission rules

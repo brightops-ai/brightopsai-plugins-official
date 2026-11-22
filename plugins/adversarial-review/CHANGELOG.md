@@ -28,6 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The inline-paste fallback needs its own explicit answer and is built from
   the approved snapshot. No pre-approved browser tool may send document
   content otherwise.
+- The document is not read before it is scanned. The skill used to read the
+  whole file in its first step, two steps before the scan, so a secret in it
+  was in the transcript before the scanner could refuse it. Step 1 now uses
+  metadata only; the content is opened after a clean scan, from the snapshot;
+  on a hit the skill does not open the file to look; the source is checked
+  against the snapshot before it is opened for edits.
+- `check` runs as the last command before each send, upload or paste, after
+  the project is open and the file chooser is up, so the approval cannot go
+  stale during setup.
+- The destination is named by account and project identifier
+  (`/project/{uuid}`), not by project name alone, and the destination
+  question is never skipped.
+- The inline fallback confirms the exact payload: full or truncated, its
+  size and sha256. A truncated or summarised payload gets its own snapshot
+  and scan.
+- Snapshots are removed on every way out of a run, not only at the end.
+- `snapshot-document.sh remove` deletes the one snapshot file and then its
+  directory only if empty. It used to trust the directory's name and delete
+  it recursively. `create` and `check` report a digest only when the hash
+  tool succeeded and produced 64 hex digits.
+- `references/upload-gate.md`: the wording of each confirmation, the
+  inline-fallback procedure, and cleanup.
 - `scan-secrets.sh <file> [<origin>]`: the optional second argument is where
   the repo `.gitleaks.toml` is looked up, so a snapshot outside the
   repository is scanned with the document's own rules.
@@ -41,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adversarial review that names no other reviewer. General phrases ("critique
   this plan", "find the flaws", "poke holes in this" and similar) and
   "cross-model review" no longer invoke a skill that uploads a document.
+- `SKILL.md` is under 2,000 words including frontmatter. The mode table and
+  the summary format live in `references/feedback-integration.md`; a test
+  holds the limit.
 - `browser_file_upload` is no longer in the skill's `allowed-tools`, so the
   skill does not pre-approve the upload; the session's permission rules
   apply. Expect a permission prompt per upload unless the tool is already

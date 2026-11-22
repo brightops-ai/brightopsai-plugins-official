@@ -84,4 +84,35 @@ After all edits are applied:
 
 ## Syncing Changes Back to Grok
 
-After applying edits locally, the Grok project source file is stale. See SKILL.md Step 12 for the full sync workflow (new snapshot, scan and confirmation of the edited document, then delete old file from project sources, re-upload updated version, verify). This is especially important when a project accumulates multiple review cycles.
+After applying edits locally, the Grok project source file is stale. See SKILL.md Step 12 for the full sync workflow (new snapshot, scan and confirmation of the edited document, `check` immediately before the upload, then delete old file from project sources, re-upload updated version, verify). This is especially important when a project accumulates multiple review cycles.
+
+## Summary Report
+
+Output this at the end of a run, after the snapshots are removed (SKILL.md step 13):
+
+```
+## Adversarial Review Summary
+
+**Source:** [filename]
+**Reviewer:** Grok (grok.com)
+**Mode:** Conservative | Aggressive
+**Project:** [project name]
+
+### Findings by Severity
+- Critical: N
+- Major: N
+- Minor: N
+- Nit: N
+
+### Changes Applied
+- [list with line references]
+
+### Changes Proposed (Declined)
+- [list with rationale for declining]
+
+### Logged for Reference
+- [interesting but out-of-scope findings]
+
+### Open Questions
+- [any unresolved items from the review]
+```

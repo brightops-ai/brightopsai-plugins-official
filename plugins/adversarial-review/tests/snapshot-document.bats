@@ -3,7 +3,7 @@
 # snapshot-document.sh: the scanned, approved and uploaded bytes are one copy.
 #   create  private read-only copy, prints snapshot / sha256 / bytes
 #   check   exit 0 UNCHANGED, exit 1 CHANGED (snapshot altered or source moved on)
-#   remove  deletes only a directory `create` made
+#   remove  deletes one snapshot file, then its directory only if empty
 
 setup() {
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
@@ -103,13 +103,14 @@ mode_of() {
   [ "$status" -eq 2 ]
 }
 
-@test "remove deletes the snapshot directory and nothing else" {
+@test "remove deletes the snapshot file and its emptied directory" {
   create_snapshot "$DOC"
   local dir
   dir="$(dirname "$SNAPSHOT")"
 
   run "$SNAP" remove "$SNAPSHOT"
   [ "$status" -eq 0 ]
+  [[ "$output" == "removed: $SNAPSHOT" ]]
   [ ! -e "$dir" ]
   [ -f "$DOC" ]
 }
@@ -120,6 +121,89 @@ mode_of() {
   [[ "$output" == *"refusing to remove"* ]]
   [ -f "$DOC" ]
   [ -d "$BATS_TEST_TMPDIR/work" ]
+}
+
+@test "remove of a nonexistent path under a matching directory deletes nothing" {
+  # A directory that only looks like one of ours, holding someone's file.
+  local lookalike="$TMPDIR/.adversarial-review-snapshot.lookalike"
+  mkdir -p "$lookalike"
+  printf '%s\n' 'unrelated' >"$lookalike/sibling.txt"
+
+  run "$SNAP" remove "$lookalike/plan.md"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"not an existing snapshot file; nothing was deleted"* ]]
+  [ "$(cat "$lookalike/sibling.txt")" = "unrelated" ]
+}
+
+@test "remove leaves and reports anything else in the snapshot directory" {
+  create_snapshot "$DOC"
+  local dir
+  dir="$(dirname "$SNAPSHOT")"
+  printf '%s\n' 'payload' >"$dir/other.txt"
+
+  run "$SNAP" remove "$SNAPSHOT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == "KEPT: "* ]]
+  [[ "$output" == *"other.txt"* ]]
+  [ ! -e "$SNAPSHOT" ]
+  [ "$(cat "$dir/other.txt")" = "payload" ]
+}
+
+@test "remove refuses a symlink and a symlinked directory" {
+  create_snapshot "$DOC"
+  local dir real
+  dir="$(dirname "$SNAPSHOT")"
+  real="$BATS_TEST_TMPDIR/work/keep.md"
+  printf '%s\n' 'keep me' >"$real"
+  ln -s "$real" "$dir/link.md"
+
+  run "$SNAP" remove "$dir/link.md"
+  [ "$status" -eq 2 ]
+  [ "$(cat "$real")" = "keep me" ]
+
+  ln -s "$BATS_TEST_TMPDIR/work" "$TMPDIR/.adversarial-review-snapshot.symlinked"
+  run "$SNAP" remove "$TMPDIR/.adversarial-review-snapshot.symlinked/plan.md"
+  [ "$status" -eq 2 ]
+  [ -f "$DOC" ]
+}
+
+# A sha256 tool that fails, or prints something that is not a digest.
+stub_hash_tools() {
+  local bin="$BATS_TEST_TMPDIR/hashbin" tool
+  mkdir -p "$bin"
+  for tool in sha256sum shasum; do
+    printf '%s\n' '#!/bin/sh' "$1" >"$bin/$tool"
+    chmod +x "$bin/$tool"
+  done
+  PATH="$bin:$PATH"
+}
+
+@test "create reports no digest and leaves no snapshot when the hash tool fails" {
+  stub_hash_tools 'exit 1'
+  run "$SNAP" create "$DOC"
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"sha256:"* ]]
+  [[ "$output" != *"snapshot:"* ]]
+  [[ "$output" == *"could not compute the sha256"* ]]
+  run find "$TMPDIR" -mindepth 1
+  [ -z "$output" ]
+}
+
+@test "create rejects a hash tool that prints something other than a digest" {
+  stub_hash_tools 'echo "not-a-digest  file"; exit 0'
+  run "$SNAP" create "$DOC"
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"sha256:"* ]]
+  run find "$TMPDIR" -mindepth 1
+  [ -z "$output" ]
+}
+
+@test "check stops when the digest cannot be computed" {
+  create_snapshot "$DOC"
+  stub_hash_tools 'exit 1'
+  run "$SNAP" check "$SNAPSHOT" "$SHA" "$DOC"
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"UNCHANGED"* ]]
 }
 
 @test "usage errors exit 2 and create nothing" {

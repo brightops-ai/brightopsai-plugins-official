@@ -9,8 +9,7 @@ description: >
   to grok.com. It is not for a general request for critique, a second opinion,
   or flaws in a document that names neither Grok nor an adversarial review,
   and not for a review that names another reviewer or model or expects a local
-  or delegated reviewer; those are answered without this skill. Supports
-  conservative and aggressive auto-apply modes for integrating feedback.
+  or delegated reviewer; those are answered without this skill.
 argument-hint: "[path to plan or document] [--aggressive]"
 allowed-tools:
   - mcp__plugin_playwright_playwright__browser_navigate
@@ -36,48 +35,46 @@ allowed-tools:
 
 # Adversarial Review
 
-Send plans, designs, and working documents to Grok (grok.com) for critical adversarial feedback. Automate the full loop: snapshot and scan the document, confirm the upload with the user, navigate to Grok, confirm the account, match or create the project, upload the document, submit a structured review prompt, extract findings, and integrate approved suggestions back into the source file.
+Send a plan, design, or working document to Grok (grok.com) for adversarial feedback: snapshot and scan it, confirm the upload and the destination with the user, upload the snapshot, submit a review prompt, extract findings, and integrate approved suggestions into the source file.
 
 ## When to Use This vs. `/code-review`
 
-Use this skill for cross-model review of plans, designs, and documents — it sends content to Grok, a different model, to get an independent second opinion. Use the built-in `/code-review` skill instead when reviewing a code diff with Claude itself; that skill doesn't require browser automation or leaving Claude Code.
+Use this skill to send a plan, design, or document to Grok for an independent second opinion. Use the built-in `/code-review` skill to review a code diff with Claude itself; it needs no browser.
 
 ## References
 
-- **`references/grok-ui-navigation.md`** — Playwright selectors, URL patterns, chunked typing strategy, and response detection for Grok's UI
-- **`references/adversarial-prompt-templates.md`** — Review prompt templates (standard, architecture, implementation, security) with selection logic
-- **`references/feedback-integration.md`** — Severity-to-action mapping, conflict resolution rules, and document style preservation
+- **`references/upload-gate.md`** — confirmation wording, the inline-fallback procedure, snapshot cleanup. Read before step 3.
+- **`references/grok-ui-navigation.md`** — selectors, URL patterns, typing strategy, response detection
+- **`references/adversarial-prompt-templates.md`** — review prompt templates and selection logic
+- **`references/feedback-integration.md`** — severity-to-action mapping, conflict rules, style preservation, summary format
 
 ## Workflow
 
 ### Prerequisites
 
-Confirm the Playwright browser tools (`browser_navigate` and the rest of the `mcp__plugin_playwright_playwright__browser_*` set) are available in this session. If they are missing, stop: tell the user to run `/plugin install playwright@claude-plugins-official`, then `/reload-plugins` or restart, and invoke this skill again. Do not retry the browser loop without those tools.
+Confirm the Playwright browser tools (`mcp__plugin_playwright_playwright__browser_*`) are available. If they are missing, stop: tell the user to run `/plugin install playwright@claude-plugins-official`, then `/reload-plugins` or restart. Do not retry the browser loop without them.
 
 ### 1. Identify the Document
 
-Read the file path from the skill argument. If no path provided, ask the user via AskUserQuestion. Read the file content with the Read tool. Determine the project name:
+Take the file path from the skill argument. If no path is provided, ask the user via AskUserQuestion. Resolve it to an absolute path and confirm it is a regular file.
+
+**Do not open the document yet.** No Read, `cat`, `head`, `grep`, or any other look at its content before the scan in step 3 exits 0. A document with a secret in it would be in the transcript before the scanner could refuse it. Until then use metadata only: the path, the name, the size.
+
+Determine the project name:
 
 ```bash
-basename $(git rev-parse --show-toplevel)
+basename "$(git rev-parse --show-toplevel)"
 ```
 
 If not in a git repo, use the current directory name.
 
 ### 2. Parse Flags
 
-Check the argument for `--aggressive`. This controls auto-apply behavior:
-
-| Mode | Auto-apply | Propose to user | Always ask |
-|------|-----------|----------------|------------|
-| **Conservative** (default) | Minor, Nit | Major | Critical |
-| **Aggressive** (`--aggressive`) | Minor, Nit, Major | Critical | — |
-
-Critical severity items always require user confirmation regardless of mode.
+Check the argument for `--aggressive`. Conservative mode (the default) auto-applies Minor and Nit findings and proposes Major ones; `--aggressive` auto-applies Major too. Critical findings always wait for the user, in both modes. The full mapping is in `references/feedback-integration.md`.
 
 `--aggressive` only widens what is auto-applied. Both modes take the backup in step 11 before the first edit, and neither skips the scan in step 3 or any confirmation in steps 4, 5, 7 and 12.
 
-### 3. Snapshot and Scan
+### 3. Snapshot, Scan, Then Read
 
 The scan, the approval and the upload must act on the same bytes. Freeze them first:
 
@@ -85,7 +82,7 @@ The scan, the approval and the upload must act on the same bytes. Freeze them fi
 "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/snapshot-document.sh" create "<document>"
 ```
 
-The script copies the document, read-only, into a private temporary directory and prints `snapshot:`, `sha256:` and `bytes:`. From here on the snapshot is the only thing scanned, approved, uploaded or pasted. Never send from the source path.
+The script copies the document, read-only, into a private temporary directory and prints `snapshot:`, `sha256:` and `bytes:`. From here on the snapshot is the only thing scanned, read, approved, uploaded or pasted. Never send from the source path.
 
 Scan the snapshot with the bundled scanner — never a prose regex list. Pass the source path second so its repository's `.gitleaks.toml` still applies:
 
@@ -93,17 +90,15 @@ Scan the snapshot with the bundled scanner — never a prose regex list. Pass th
 "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/scan-secrets.sh" "<snapshot>" "<document>"
 ```
 
-It uses `gitleaks` when on PATH, otherwise a bundled fallback that prints a `FALLBACK` line.
+- **0** — no pattern matched. Only now read the document, from the snapshot path, and continue to step 4.
+- **1** — hit(s). Stop. Show the `rule:` / `file:` / `line:` lines; the scanner redacts the match. Do not open the document to inspect or fix the hit: ask the user to remove the secret, then start again with a new snapshot.
+- **2** — usage or scanner error. Stop and report stderr.
 
-- **0** — no pattern matched. Continue to step 4.
-- **1** — hit(s). Stop. Show the `rule:` / `file:` / `line:` lines and offer to redact the source. Do not open Grok, upload, or paste. After edits, `remove` the snapshot, create a new one, and scan that. Repeat until the scan exits 0.
-- **2** — usage or scanner error. Stop, report stderr, and do not upload.
+**Cleanup.** Whenever the run stops from here on — a hit, "Cancel", a denied upload, a timeout, an error — first remove every snapshot it made: `snapshot-document.sh remove "<snapshot>"`.
 
 ### 4. Confirm the Upload
 
-An upload cannot be recalled, and a clean scan is not a confidentiality check. Before opening Grok, ask the user with AskUserQuestion, naming the bytes and the intended destination:
-
-> Send `<absolute path of the document>` (sha256 `<first 12 digits>`, `<bytes>` bytes) to grok.com, project "<project name>", for review? xAI receives the whole file and it cannot be recalled. The secret scan passed; that is not a confidentiality check. The account is confirmed with you before anything is sent.
+An upload cannot be recalled, and a clean scan is not a confidentiality check. Before opening Grok, ask the user with AskUserQuestion. The question names the document's absolute path, the snapshot's sha256 (first 12 digits) and size in bytes, and the destination as far as it is known: grok.com and the project name. It says that the account is confirmed separately before anything is sent. Wording: `references/upload-gate.md`.
 
 Offer "Upload" and "Cancel". Continue only on an explicit "Upload" given in answer to this question, in this run.
 
@@ -117,32 +112,26 @@ These rules govern every confirmation in this skill (steps 4, 5, 7 and 12):
 
 ### 5. Verify Grok Login and the Destination
 
-Navigate to `https://grok.com` using `browser_navigate`. Take a `browser_snapshot`. If a login wall or auth prompt is detected, inform the user:
+Navigate to `https://grok.com` using `browser_navigate`. Take a `browser_snapshot`. If a login wall or auth prompt is detected, ask the user via AskUserQuestion to log in to grok.com in the Playwright browser window and confirm when ready.
 
-> "Grok requires login. Please log in to grok.com in the Playwright browser window, then confirm here when ready."
+The step 4 answer was given before the account was known. Before creating a project or sending anything, resolve the actual destination from the page:
 
-Wait for confirmation via AskUserQuestion before proceeding.
+- the signed-in account: the name, handle, or email shown by the profile control;
+- the project: an existing one by its name **and** the identifier in its link (`/project/{uuid}`), or "will be created" when no project has that name. Do not create it yet.
 
-The step 4 answer was given before the account was known, and a login may have changed it. Before creating a project or sending anything, resolve the actual destination from the page: the signed-in account (name, handle, or email shown by the profile control; open its menu if needed), and whether a project matching the step 1 name exists. Do not create it yet.
-
-Then ask with AskUserQuestion, naming what was resolved:
-
-> Upload to grok.com account "<account as shown>", project "<project name>" (<existing | will be created>)?
-
-Continue only on an explicit "Upload". Skip this question only if the step 4 answer itself named this same account. If the account cannot be read from the page, say so in the question and have the user check the browser window and name it. Never guess it.
+Then ask with AskUserQuestion, naming exactly that account and project. This question is never skipped: the step 6 upload requires its answer. Continue only on an explicit "Upload". If the account cannot be read from the page, say so in the question and have the user name it. Never guess it.
 
 ### 6. Navigate to Grok Projects and Upload Document
 
-Follow `references/grok-ui-navigation.md` for selectors, the 3-step new-project dialog, Attach → "Upload a file", and how to refresh sources on an existing project.
+Follow `references/grok-ui-navigation.md` for the UI steps.
 
-Immediately before the upload, check that nothing moved since the approval:
-
-```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/snapshot-document.sh" check "<snapshot>" "<sha256>" "<document>"
-```
-
-- **`UNCHANGED` (exit 0):** find or create the confirmed project, then upload the **snapshot path** with `browser_file_upload` as a project source, replacing a stale copy of the same file.
-- **`CHANGED` (exit 1):** send nothing. The source was saved after the scan, or the snapshot was altered. Return to step 3 for a new snapshot and scan, then ask the step 4 question again for the new sha256.
+1. Open or create the confirmed project and go as far as the open file chooser. For an existing project, the page URL must carry the confirmed identifier; if it does not, stop.
+2. As the last command before the upload, with nothing after it but the upload itself, check that nothing moved since the approval:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/snapshot-document.sh" check "<snapshot>" "<sha256>" "<document>"
+   ```
+3. **`UNCHANGED` (exit 0):** in the very next tool call, upload the **snapshot path** with `browser_file_upload`, replacing a stale copy of the same file.
+4. **`CHANGED` (exit 1), or any other exit status:** send nothing. The source was saved after the scan, or the snapshot was altered. Return to step 3 for a new snapshot and scan, then ask the step 4 question again for the new sha256.
 
 Do not upload until step 3 exited 0 on this snapshot and the user answered "Upload" in steps 4 and 5. If the upload is denied, stop.
 
@@ -150,9 +139,9 @@ Do not upload until step 3 exited 0 on this snapshot and the user answered "Uplo
 
 Read `references/adversarial-prompt-templates.md` and follow its selection logic and assembly instructions. Variants: Architecture, Implementation, Security, UX/Product, Standard. If the user names a variant, use it. Briefly note which variant was selected and why.
 
-Do not copy template text into the session notes — assemble from that file. Do not inline the document; reference the uploaded filename. Set the prompt and click Submit using the `browser_evaluate` patterns in `references/grok-ui-navigation.md`.
+Assemble from that file; do not copy template text into the session notes. Do not inline the document; reference the uploaded filename. Set the prompt and click Submit using the `browser_evaluate` patterns in `references/grok-ui-navigation.md`.
 
-**Inline fallback.** If Grok cannot read the uploaded file, the templates allow pasting the document into the prompt. That paste goes through a pre-approved tool, so no permission prompt stands in front of it. Before pasting, run the step 6 `check` again and ask with AskUserQuestion whether to paste the content instead, naming the document path, the sha256, the account and the project. Paste only on an explicit "Paste", and only content read from the snapshot. On any other answer, or if `check` reports `CHANGED`, stop.
+**Inline fallback.** If Grok cannot read the uploaded file, the templates allow pasting the document into the prompt, through a pre-approved tool that no permission prompt guards. Follow "Inline fallback" in `references/upload-gate.md`: build the exact payload first, ask with AskUserQuestion naming that payload (full or truncated, its size and sha256) and the account and project, and run `check` as the last command before the paste. Paste only on an explicit "Paste", and only that payload. On any other answer, or if `check` does not report `UNCHANGED`, stop.
 
 ### 8. Wait for Response
 
@@ -162,83 +151,41 @@ On timeout (120 seconds total), take a `browser_take_screenshot`, report the sta
 
 ### 9. Handle Multi-Turn Conversation
 
-If Grok's response is truncated (ends mid-sentence or says "continued..."):
-- Type "Please continue" and wait again
-
-If Grok asks a clarifying question:
-- Extract the question text
-- Relay it to the user via AskUserQuestion
-- Type the user's answer back to Grok
-- Wait for the next response
-
-Cap at 3 follow-up turns to prevent infinite loops.
+If the response is truncated (ends mid-sentence or says "continued..."), type "Please continue" and wait again. If Grok asks a clarifying question, relay it to the user via AskUserQuestion, type the answer back, and wait. Cap at 3 follow-up turns.
 
 ### 10. Extract Feedback
 
-Extract the assistant response per `references/grok-ui-navigation.md` (enumerate `.prose` / `.markdown` elements; pick by content, not a hard-coded index; save long text via the `filename` parameter).
+Extract the assistant response per `references/grok-ui-navigation.md`.
 
-Grok outputs findings as JSON first, then markdown. Prefer the JSON array. Each finding has `id`, `severity`, `title`, `rationale`, `suggestion`, and `self_improvement`. Weigh vague findings lower when Grok's self-improvement note says so.
+Grok outputs findings as JSON first, then markdown. Prefer the JSON array, and weigh vague findings lower when Grok's `self_improvement` note says so.
 
 ### 11. Triage and Apply Suggestions
 
+The edits go into the source document, which may have changed since the snapshot. Before opening or editing it, run the step 6 `check`. On `CHANGED`, stop: the source now holds content that was never scanned; start again from step 3.
+
 Create a backup of the original document at `{filename}.pre-review.md` before making any edits, in conservative and aggressive mode alike. If the backup cannot be written, stop and apply nothing (`references/feedback-integration.md`, Backup and Recovery).
 
-For each finding, classify per the mode table in Step 2. Conflict handling, edit size, and voice preservation are in `references/feedback-integration.md`.
+Classify each finding per the mapping in `references/feedback-integration.md`, which also covers conflicts, edit size, and voice. Auto-apply with the Edit tool, one suggestion per edit. Propose the rest with Grok's rationale via AskUserQuestion and apply only if approved. Log, without applying, what is out of scope or disputed.
 
-- **Auto-apply**: Make the edit directly using the Edit tool. One suggestion per edit for clean diffs.
-- **Propose to user**: Present the finding with Grok's rationale via AskUserQuestion. Apply only if approved.
-- **Log only**: Suggestions that are out of scope or where Claude disagrees with Grok. Include in the summary but do not apply.
-
-After all edits, re-read the file and do a coherence pass so integrated changes read naturally and do not conflict.
+After all edits, re-read the file and do a coherence pass.
 
 ### 12. Sync Updated Document to Grok
 
 After applying edits locally, the project source in Grok is stale. The edited document is new content, so the earlier approval does not cover it:
 
 1. Repeat step 3 on the edited document: a new snapshot, then a scan that exits 0.
-2. Re-read the signed-in account from the page, then ask the step 4 question for the new sha256, naming that account and the project.
-3. On "Upload", run the step 6 `check` and follow `references/grok-ui-navigation.md` to replace the old project source with the new snapshot and verify the name.
+2. Re-read the signed-in account and the project identifier from the page, then ask the step 4 question for the new sha256, naming that account and project.
+3. On "Upload", follow step 6 — `check` as the last command before the upload — to replace the old project source with the new snapshot, and verify the name.
 
 On any other answer, leave the old source in Grok and say so in the summary.
 
 ### 13. Summary Report
 
-Remove every snapshot made in this run (`snapshot-document.sh remove "<snapshot>"`), then output a structured summary:
-
-```
-## Adversarial Review Summary
-
-**Source:** [filename]
-**Reviewer:** Grok (grok.com)
-**Mode:** Conservative | Aggressive
-**Project:** [project name]
-
-### Findings by Severity
-- Critical: N
-- Major: N
-- Minor: N
-- Nit: N
-
-### Changes Applied
-- [list with line references]
-
-### Changes Proposed (Declined)
-- [list with rationale for declining]
-
-### Logged for Reference
-- [interesting but out-of-scope findings]
-
-### Open Questions
-- [any unresolved items from the review]
-```
+Remove every snapshot made in this run (`snapshot-document.sh remove "<snapshot>"`), then output the summary in the format given in `references/feedback-integration.md` ("Summary Report").
 
 ## Guardrails
 
-- Never auto-apply Critical severity without user confirmation, even in aggressive mode
-- Always create a backup before the first edit, in either mode
-- Wait 2-3 seconds between Playwright actions to avoid overwhelming the UI
+- Wait 2-3 seconds between Playwright actions
 - If the document exceeds 15,000 characters, split into logical sections and review each separately, then perform a holistic review of the full document
-- If Grok is unresponsive for 120 seconds, take a screenshot, report to user, and offer to retry
-- Preserve the original document's voice and style when integrating suggestions — see `references/feedback-integration.md`
-- A scanner hit is a stop, not a warning to click through. With no user to answer, stop before opening Grok.
-- Send only snapshot bytes whose sha256 the user approved, to the account and project the user approved, and only after `check` reports `UNCHANGED`.
+- Never read the document before its snapshot has scanned clean. A scanner hit is a stop, not a warning to click through. With no user to answer, stop before opening Grok.
+- Send only snapshot bytes whose sha256 the user approved, to the account and project the user approved, and only when `check` reported `UNCHANGED` in the command just before the send.
