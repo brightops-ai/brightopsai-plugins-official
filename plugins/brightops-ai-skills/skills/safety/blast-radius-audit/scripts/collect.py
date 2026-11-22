@@ -1,32 +1,60 @@
 #!/usr/bin/env python3
 """Read-only evidence collector for the blast-radius-audit skill.
 
-Prints leads for the eleven checks: names, paths, hosts and line numbers.
+Prints leads for the eleven checks. What it guarantees, and how:
 
-Guarantees, in the order they matter:
+* Output is built from names and fixed text, never from file content. A lead
+  is a location (`file:line`, `env:NAME`, `~/path`), a lead type, and a note
+  assembled from things the collector can vouch for: environment variable
+  names, file paths, profile, context and host names that pass a strict
+  character test, counts, and fixed phrases. Matching lines, hook bodies and
+  config values are not printed; the auditor reads them at the cited
+  location. Three kinds of value-derived text are shown, each by design:
+  the value of a fixed list of context selectors (`AWS_PROFILE`, `NODE_ENV`,
+  ...) when it is a plain name or path; the host, port and database name of a
+  database URL; and the leading command words of a permission rule. For a
+  command line, the program is named, plus the one argument whose position
+  fixes its meaning (the script after an interpreter, the package after an
+  npx-style launcher); every other argument is counted, not shown.
+* It never writes, deletes or modifies a file.
+* The only programs it starts are `git` (read-only subcommands, in a fixed
+  environment with tracing, filesystem-monitor helpers and on-demand fetching
+  off) and, with `--github`, `gh`. It starts no shell, so no shell startup
+  file runs.
+* Files and directories read through the repository must resolve inside it.
+  Git's own configuration for the clone is read through `git` and is the one
+  exception: for a linked worktree it lives in the main checkout, and it can
+  include other files.
+* It opens no network connection unless `--github` is given. That flag adds
+  GET requests to github.com through `gh` and nothing else, and the collector
+  never fetches the token. `gh` authenticates and routes those requests as
+  its own configuration says, which can include refreshing an expiring login
+  or an `api_host` override; omit `--github` if that matters.
+* A check that could not be examined says so. Missing evidence is reported
+  as UNKNOWN or NOT INSPECTED, never as a clean result.
 
-* Never prints a secret value. Environment values and credential files are
-  read in-process and reduced to a name, a host, or a classification before
-  anything is emitted. Free-text snippets pass through ``redact`` first.
-* Never writes, deletes or modifies a file.
-* Never opens a network connection, unless ``--github`` is given. That flag
-  adds read-only GitHub GET requests through the ``gh`` CLI and nothing else.
+Limits worth knowing: leads are pattern matches (tests, docs and fixtures
+included), configuration is read as text rather than parsed as YAML or HCL,
+and file and variable NAMES are shown as they are.
 
 Standard library only; runs on Python 3.9+.
 
     collect.py --repo <path> [--github] [--only 1,3] [--json]
+    collect.py --keys <file>        key names of one config file, no values
 """
 
 from __future__ import annotations
 
 import argparse
 import configparser
+import fnmatch
 import ipaddress
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -47,7 +75,6 @@ MAX_PER_KIND = 40
 # Per lead type within one file. One noisy file (a fixture, a doc full of
 # examples) must not crowd every other file out of the per-type cap.
 MAX_PER_FILE = 5
-SNIPPET_CHARS = 160
 
 CHECKS = {
     1: "Test/dev/preview config pointing at a non-local database",
@@ -113,7 +140,7 @@ SHAPE_LABELS = (
 URL_USERINFO = re.compile(r"(?<=://)[^/\s@'\"]+@")
 SECRET_WORD = (
     r"(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key"
-    r"|private[_-]?key|credential|authorization|bearer|auth[_-]?(?:token|key)|dsn)"
+    r"|private[_-]?key|credential|authorization|bearer|auth[_-]?(?:token|key)|basic[_-]?auth|dsn)"
 )
 ASSIGN = re.compile(
     r"(?i)([A-Za-z0-9_.\-\"']*" + SECRET_WORD + r"[A-Za-z0-9_.\-\"']*\s*[:=]\s*)"
@@ -167,9 +194,331 @@ def redact(text: str) -> str:
     return BLOB.sub(lambda m: "<redacted>" if looks_random(m.group(0)) else m.group(0), text)
 
 
-def snippet(text: str) -> str:
-    text = redact(" ".join(text.split()))
-    return text if len(text) <= SNIPPET_CHARS else text[: SNIPPET_CHARS - 3] + "..."
+NAME_SAFE = re.compile(r"^[A-Za-z0-9_.@:/~+*\- ]{1,120}$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,80}$")
+SELECTOR_VALUE = re.compile(r"^[A-Za-z0-9_.:/~@-]{1,100}$")
+PROGRAM = re.compile(r"^[\w.+-]{1,40}$")
+SCRIPT_ARG = re.compile(r"^(?:\$\{?[A-Z_]{1,40}\}?/?)?[\w./-]{1,160}\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|ps1)$")
+PACKAGE_ARG = re.compile(r"^(?:@[a-z0-9._-]{1,60}/)?[A-Za-z0-9._-]{1,80}(?:(?:@|==)[\w.\-^~*]{1,40})?$")
+STATE_OR_VARS = re.compile(r"(?i)\.tfstate(?:\.|$)|\.tfvars(?:\.json)?$")
+HOST_SAFE = re.compile(r"^(?:[A-Za-z0-9._\-${}]{1,253}|[0-9A-Fa-f:.]{2,45})$")
+SETTING_WORDS = {
+    "true", "false", "never", "always", "on-request", "on-failure", "untrusted", "danger-full-access",
+    "workspace-write", "read-only", "yolo", "auto", "default", "manual", "plan", "acceptedits",
+    "bypasspermissions", "dontask", "disable", "enabled", "disabled", "trusted",
+}
+PERMISSION_MODES = {"default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"}
+
+
+def one_line(text: object) -> str:
+    """Render on one line with control characters visible; ordinary spaces are kept as they are."""
+    return "".join(ch if ch == " " or (ch.isprintable() and ord(ch) not in (0x2028, 0x2029)) else f"\\x{ord(ch):02x}"
+                   for ch in str(text))
+
+
+def safe_name(value: object) -> str:
+    """Pass a NAME through (profile, context, host, package, key); withhold anything else.
+
+    The collector's output is built from names it can vouch for. A string
+    with characters a name does not need, or one that reads as key material,
+    is not shown, because nothing can prove it is not a value.
+    """
+    text = str(value)
+    if not NAME_SAFE.match(text) or TOKEN_SHAPES.search(text) or looks_random(text):
+        return "<withheld>"
+    return text
+
+
+def safe_names(values, limit: int = 20) -> str:
+    values = list(values)
+    shown = ", ".join(safe_name(v) for v in values[:limit])
+    return shown + (f" (+{len(values) - limit} more)" if len(values) > limit else "")
+
+
+INTERPRETERS = {"bash", "sh", "zsh", "dash", "python", "python3", "node", "ruby", "deno", "bun", "pwsh",
+                "powershell", "tsx", "ts-node", "perl", "php"}
+FLAG_WORD = re.compile(r"^(?:--[a-z][a-z-]{1,24}|-[A-Za-z]{1,4})$")
+SUBCOMMAND_WORD = re.compile(r"^[a-z][a-z-]{1,14}$")
+# Programs whose first words are subcommands, with how many to show.
+SUBCOMMAND_PROGRAMS = {
+    "git": 2, "gh": 3, "npm": 2, "pnpm": 2, "yarn": 2, "bun": 2, "terraform": 2, "tofu": 2, "kubectl": 2,
+    "docker": 2, "helm": 2, "aws": 2, "gcloud": 3, "az": 3, "cargo": 1, "go": 1, "pip": 1, "pip3": 1,
+    "make": 1, "claude": 2, "codex": 1, "gemini": 1, "brew": 1, "pulumi": 1, "cdk": 1,
+}
+PATH_GLOB = re.compile(r"^[\w./*~-]{1,80}$")
+MULTILINE = "\0multi-line value"
+
+
+def _tokens(command: object) -> list[str] | None:
+    if isinstance(command, (list, tuple)):
+        return [str(t) for t in command]
+    try:
+        return shlex.split(str(command))
+    except ValueError:
+        return None  # unbalanced quotes: any split would mislabel part of a value as the program
+
+
+def command_summary(command: object) -> str:
+    """Name the program a command line runs, and its script when an interpreter is given one.
+
+    Nothing else is shown. Arguments are where inline secrets live
+    (`-pPASSWORD`, a token as a bare positional). A pattern can check how an
+    argument is spelled but not what it means, so only a position whose
+    meaning is fixed (the script after an interpreter) is ever shown, and the
+    rest are counted.
+    """
+    tokens = _tokens(command)
+    if tokens is None:
+        return "runs a command that could not be parsed (not shown)"
+    while tokens and re.match(r"^[A-Za-z_]\w*=", tokens[0]):
+        tokens = tokens[1:]
+    if not tokens:
+        return "runs nothing recognisable"
+    return launch_summary(tokens[0].strip("\"'"), [t.strip("\"'") for t in tokens[1:]])
+
+
+def launch_summary(command: str, args: list[str]) -> str:
+    """Program, plus the one argument whose position fixes its meaning: an
+    interpreter's script, or the package an npx-style launcher fetches."""
+    base = os.path.basename(command or "")
+    shown = base if PROGRAM.match(base) and not looks_random(base) else "<program withheld>"
+    named = ""
+    if base in INTERPRETERS and args and SCRIPT_ARG.match(args[0]):
+        named = args[0]
+    elif base in ("npx", "bunx", "pnpx", "uvx"):
+        # The package is the first argument once any yes-flags are skipped. A
+        # word that follows any other option may be that option's value.
+        rest_args = list(args)
+        while rest_args and rest_args[0] in ("-y", "--yes", "-q", "--quiet"):
+            rest_args.pop(0)
+        candidate = rest_args[0] if rest_args else ""
+        if not candidate.startswith("-") and PACKAGE_ARG.match(candidate) and not looks_random(candidate):
+            named = candidate
+    rest = len(args) - (1 if named else 0)
+    out = "runs " + " ".join(filter(None, [shown, named]))
+    return out + (f" (+{rest} arguments not shown)" if rest > 0 else "")
+
+
+def rule_head(rule: object) -> str:
+    """A permission rule reduced to what cannot be a value: `Bash(git push --force *)`.
+
+    A saved "always allow" rule records a command as typed, credentials
+    included. So a Bash rule shows its program, then subcommand words only for
+    programs known to take them, then flag NAMES. The first word after a flag
+    may be that flag's value and ends the display.
+    """
+    found = re.match(r"^([A-Za-z_][\w*-]{0,100})(?:\((.*)\))?$", str(rule), re.S)
+    if not found:
+        return "<rule not shown>"
+    tool, body = found.group(1), found.group(2)
+    if body is None:
+        return tool
+    if tool != "Bash":
+        return f"{tool}({body})" if PATH_GLOB.match(body) and not looks_random(body) else f"{tool}(...)"
+    words = body.replace(":*", " *").split()
+    if not words or not PROGRAM.match(words[0]) or looks_random(words[0]):
+        return "Bash(...)"
+    shown, seen_flag = [words[0]], False
+    subcommands = SUBCOMMAND_PROGRAMS.get(os.path.basename(words[0]), 0)
+    for word in words[1:]:
+        if word == "*" or FLAG_WORD.match(word):
+            seen_flag = seen_flag or word != "*"
+        elif not seen_flag and subcommands > 0 and SUBCOMMAND_WORD.match(word):
+            subcommands -= 1
+        else:
+            break
+        shown.append(word)
+    return f"Bash({' '.join(shown)}{'' if len(shown) == len(words) else ' ...'})"
+
+
+def netrc_machines(text: str) -> list[str] | None:
+    """Machine names from netrc text, read by token position. None if it cannot be tokenised.
+
+    A quoted password may contain the word `machine`; only a token that
+    follows the keyword in keyword position is a machine name.
+    """
+    # A macro body is free text; it is cut off before tokenising so that an
+    # unbalanced quote inside one cannot spoil the entries before it.
+    text = re.split(r"(?m)(?:^|\s)macdef(?:\s|$)", text, maxsplit=1)[0]
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    machines, index = [], 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "machine" and index + 1 < len(tokens):
+            machines.append(tokens[index + 1])
+            index += 2
+        elif token in ("login", "password", "account"):
+            index += 2
+        else:
+            index += 1
+    return machines
+
+
+def plausible_key(key: str) -> bool:
+    """False for a "key" that reads like a line of encoded data rather than a variable name.
+
+    An unquoted multi-line value (a PEM body pasted into a .env) leaves lines
+    such as `MIIEvQIBADANBgkq=` that parse as assignments. Variable names are
+    snake case or one case; Base64 mixes cases and digits with no underscore.
+    """
+    if len(key) > 64 or looks_random(key):
+        return False
+    mixed = any(c.isupper() for c in key) and any(c.islower() for c in key)
+    return "_" in key or not mixed or (len(key) <= 24 and not any(c.isdigit() for c in key))
+
+
+def env_assignments(text: str) -> list[tuple[int, str, str]]:
+    """(line, key, value) for each assignment in dotenv text.
+
+    A value can span lines: quoted (a PEM key in quotes) or not (a PEM body
+    pasted bare). Continuation lines are skipped rather than mistaken for
+    assignments, and a quoted multi-line value comes back as MULTILINE.
+    """
+    def closes(rest: str, quote: str) -> bool:
+        return re.search(r"(?<!\\)" + re.escape(quote), rest) is not None
+
+    found, quote, in_pem = [], "", False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if quote:
+            if closes(line, quote):
+                quote = ""
+            continue
+        if in_pem:
+            in_pem = "-----END" not in line
+            continue
+        match = ENV_LINE.match(line)
+        if not match or line.lstrip().startswith("#"):
+            in_pem = "-----BEGIN" in line and "-----END" not in line  # a header pasted on a line of its own
+            continue
+        key, value = match.group(1)[:80], match.group(2).strip()
+        if value == "=" or not plausible_key(key):
+            continue  # Base64 padding or a line of data, not an assignment; neither side is shown
+        if value[:1] in ("'", '"', "`") and not closes(value[1:], value[0]):
+            quote = value[0]
+            found.append((lineno, key, MULTILINE))
+            continue
+        if "-----BEGIN" in value and "-----END" not in value:
+            in_pem = True
+            found.append((lineno, key, MULTILINE))
+            continue
+        found.append((lineno, key, value.strip("\"'")))
+    return found
+
+
+def key_listing(path: Path, repo: Path | None = None) -> list[str]:
+    """Key names of one config file, never its values: for `--keys`.
+
+    Only formats that can be parsed for certain are accepted (dotenv, JSON,
+    TOML). A shell script, a PEM file or anything else is refused rather than
+    guessed at, because a guess prints content.
+    """
+    if path.is_symlink():
+        return ["is a link: pass the real path instead; nothing read"]
+    try:
+        real = path.resolve()
+        if repo is not None:
+            root = repo.resolve()
+            if Path(os.path.abspath(path)).is_relative_to(Path(os.path.abspath(repo))) and not real.is_relative_to(root):
+                return ["reaches outside the repository through a link: nothing read"]
+        info = os.stat(real)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CONFIG_BYTES:
+            return ["not a regular file, or too large: nothing read"]
+        text = real.read_bytes().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ["cannot be read"]
+    name = path.name.lower()
+    if name.endswith((".json", ".jsonc")):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            stripped = re.sub(r",(\s*[}\]])", r"\1", re.sub(r"^\s*//.*$", "", text, flags=re.M))
+            try:
+                data = json.loads(stripped)
+            except ValueError:
+                return ["not valid JSON: key names unavailable"]
+        rows: list[str] = []
+
+        def walk(node: object, trail: str) -> None:
+            if len(rows) >= 2000:
+                return
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    walk(value, f"{trail}.{safe_name(key)}" if trail else safe_name(key))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{trail}[{index}]")
+            else:
+                rows.append(f"{trail} ({type(node).__name__})")
+
+        walk(data, "")
+        return rows
+    if name.endswith(".toml"):
+        return [f"[{safe_name(table) if table else 'top level'}] {safe_names(sorted(values), 60)}"
+                for table, values in parse_toml_tables(text).items() if values]
+    if DOTENV_FILE.match(path.name):
+        return [f"{lineno}: {key}" + (" (multi-line value)" if value == MULTILINE else "")
+                for lineno, key, value in env_assignments(text)]
+    return ["unsupported file type: key names are listed only for .env-style, .json and .toml files"]
+
+
+def workspace_match(folder: str, pattern: str) -> bool:
+    """npm workspace glob: `*` is one path component, `**` any number."""
+    if "**" in pattern:
+        return fnmatch.fnmatch(folder, pattern)
+    parts, wanted = folder.split("/"), pattern.split("/")
+    return len(parts) == len(wanted) and all(fnmatch.fnmatch(p, w) for p, w in zip(parts, wanted))
+
+
+def github_slug(url: str) -> tuple[str, str] | None:
+    """(owner, repo) when the remote's HOST is exactly github.com, else None."""
+    url = url.strip()
+    path = None
+    if re.match(r"^(?:https?|ssh|git)://", url):
+        try:
+            parts = urlsplit(url)
+            if (parts.hostname or "").lower() == "github.com":
+                path = parts.path
+        except ValueError:
+            return None
+    else:
+        scp = re.match(r"^(?:[\w.-]+@)?github\.com:(?!/)(.+)$", url)  # git@github.com:owner/repo
+        path = scp.group(1) if scp else None
+    if path is None:
+        return None
+    found = re.fullmatch(r"/?([\w.-]{1,100})/([\w.-]{1,100}?)(?:\.git)?/?", path)
+    return (found.group(1), found.group(2)) if found else None
+
+
+def branch_verdict(protection: object, rules: object, held: list) -> str:
+    """One line on the default branch. Missing evidence stays unknown; it is never read as 'unprotected'."""
+    types = sorted({str(r.get("type")) for r in rules if isinstance(r, dict)}) if isinstance(rules, list) else []
+    if isinstance(protection, dict):
+        bound = bool((protection.get("enforce_admins") or {}).get("enabled"))
+        if "admin" in held and not bound:
+            if types:
+                return ("the classic rules do not bind this admin token; rulesets also exist and who may bypass "
+                        "them was not checked, so the effective protection is UNKNOWN")
+            if not isinstance(rules, list):
+                return ("the classic rules do not bind this admin token; rulesets could not be read, so the "
+                        "effective protection is UNKNOWN")
+            return ("THIS TOKEN CAN BYPASS THE PROTECTION: it has admin on the repo, the classic rules are "
+                    "not enforced for admins, and no ruleset applies, so a direct push to the default branch "
+                    "is accepted")
+        return "classic protection applies to this token as far as the API shows"
+    if types:
+        return ("rulesets are present; who may bypass them was not checked, so whether this token is bound "
+                "is UNKNOWN")
+    if protection == "HTTP 404" and "admin" in held and isinstance(rules, list):
+        return "NO PROTECTION: an admin token read both the classic rules and the rulesets and found none"
+    return ("UNKNOWN: the protection settings could not be read with this token "
+            f"(classic: {protection if isinstance(protection, str) else 'n/a'}; "
+            f"rulesets: {rules if isinstance(rules, str) else 'none listed'}). Check in the repository settings")
 
 
 def shape_label(text: str) -> str:
@@ -196,14 +545,15 @@ DB_URL = re.compile(
 LOCAL_NAMES = {"localhost", "host.docker.internal", "0.0.0.0", "::1", "ip6-localhost"}
 
 
-def classify_host(host: str) -> str:
-    """local | service-name | private-network | non-local | from-variable | no-host"""
+HOST_RANK = ("local", "service-name", "no-host", "from-variable", "unknown", "private-network", "non-local")
+
+
+def _classify_one(host: str) -> str:
     name = (host or "").strip().strip("[]").lower()
     if not name:
         return "no-host"
     if "$" in name or "{" in name or "%" in name:
         return "from-variable"
-    name = name.split(",")[0]
     if name in LOCAL_NAMES or name.endswith(".localhost"):
         return "local"
     try:
@@ -222,28 +572,78 @@ def classify_host(host: str) -> str:
     return "non-local"
 
 
+def classify_host(host: str) -> str:
+    """local | service-name | private-network | non-local | from-variable | no-host
+
+    A host list (MongoDB, libpq) is as remote as its most remote member.
+    """
+    parts = [part for part in (host or "").split(",") if part.strip()] or [""]
+    return max((_classify_one(part) for part in parts), key=HOST_RANK.index)
+
+
 def sanitize_db_url(url: str) -> tuple[str, str]:
-    """Return (scheme://host:port/db, class) with credentials and query removed."""
+    """Return (scheme://host:port/db, class) with credentials and query removed.
+
+    Anything that does not parse into plain host names is reported as
+    unparseable rather than echoed.
+    """
     raw = url[5:] if url.lower().startswith("jdbc:") else url
     scheme = raw.split("://", 1)[0].lower()
+    if not re.fullmatch(r"[a-z][a-z0-9+.-]{1,30}", scheme):
+        return "<unparseable>", "unknown"
+    unknown = (f"{scheme}://<unparseable>", "unknown")
     try:
         parts = urlsplit(raw)
-        tail = parts.path + parts.query + parts.fragment
-        # An unescaped '/', '?' or '#' in a password moves part of the
-        # password into the path. Refuse to echo anything from such a URL.
-        if "@" in tail or raw.count("@") > 1:
-            return f"{scheme}://<unparseable>", "unknown"
-        host = parts.hostname or ""
-        port = parts.port
     except ValueError:
-        return f"{scheme}://<unparseable>", "unknown"
-    database = parts.path.strip("/").split("/")[0]
-    shown = f"{scheme}://{host or '<no host>'}"
-    if port:
+        return unknown
+    # An unescaped '/', '?' or '#' in a password moves part of the password
+    # into the path. Refuse to echo anything from such a URL.
+    if "@" in parts.path + parts.query + parts.fragment or raw.count("@") > 1:
+        return unknown
+    hosts, port = [], ""
+    for item in parts.netloc.rpartition("@")[2].split(","):
+        if item.startswith("["):
+            host, _, rest = item[1:].partition("]")
+            item_port = rest.lstrip(":")
+        else:
+            host, _, item_port = item.partition(":")
+        if host and (not HOST_SAFE.match(host) or looks_random(host)):
+            return unknown
+        if item_port and not re.fullmatch(r"\d{1,5}|\$\{?\w{1,40}\}?", item_port):
+            return unknown
+        hosts.append(host)
+        port = port or item_port
+    shown = f"{scheme}://{','.join(h or '<no host>' for h in hosts)}"
+    if port.isdigit() and len(hosts) == 1:
         shown += f":{port}"
-    if re.fullmatch(r"[\w.${}-]{1,64}", database or ""):
+    database = parts.path.strip("/").split("/")[0]
+    if re.fullmatch(r"[\w.${}-]{1,64}", database or "") and not looks_random(database):
         shown += f"/{database}"
-    return shown, classify_host(host)
+    return shown, classify_host(",".join(hosts))
+
+
+def safe_url_host(url: str) -> str:
+    """The host a URL names, or <withheld> when it cannot be told apart from the credentials.
+
+    An unescaped '/', '?' or '#' inside the userinfo moves the real host into
+    the path, query or fragment and leaves part of the credential where the
+    host should be. Any '@' after the authority means exactly that.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname or ""
+    except ValueError:
+        return "<withheld>"
+    if "@" in parts.path + parts.query + parts.fragment or url.count("@") > 1:
+        return "<withheld>"
+    return host if HOST_SAFE.match(host) and not looks_random(host) else "<withheld>"
+
+
+def host_from_value(raw: str) -> str:
+    """The host in a bare `[user:pass@]host[:port]` value, or an empty string."""
+    host = raw.strip().strip("\"'").rstrip(",;").rsplit("@", 1)[-1]
+    host = host[1:].split("]")[0] if host.startswith("[") else host.split(":")[0]
+    return host if HOST_SAFE.match(host) and not looks_random(host) else ""
 
 
 def value_hints(value: str) -> list[str]:
@@ -259,11 +659,7 @@ def value_hints(value: str) -> list[str]:
         shown, klass = sanitize_db_url(match.group(1))
         hints.append(f"-> {shown} [{klass}]")
     elif re.match(r"^[a-z][a-z0-9+.-]*://[^/\s@]+@", value, re.I):
-        try:
-            host = urlsplit(value).hostname or "?"
-        except ValueError:
-            host = "?"
-        hints.append(f"URL with embedded credentials -> host {host}")
+        hints.append(f"URL with embedded credentials -> host {safe_url_host(value)}")
     return hints
 
 
@@ -354,7 +750,8 @@ LINE_PATTERNS = [
         r"(?i)\bstripe\.(?:paymentIntents|transfers|payouts|charges|refunds|invoices)\."
         r"|\b(?:create_?(?:payout|transfer|charge|refund|payment)|send_?(?:money|payment|funds)"
         r"|wire_?transfer|payouts?\.create|transfers?\.create|sendTransaction|eth_sendTransaction"
-        r"|signAndSend|braintree|paypal|plaid|adyen|dwolla)\b"), False),
+        r"|signAndSend|braintree|paypal|plaid|adyen|dwolla)\b"
+        r"|\b\w*(?:Transfer|Payout|Charge|Refund|PaymentIntent)\.create\s*\("), False),
     (11, "sends-messages", re.compile(
         r"(?i)\b(?:twilio|sendgrid|sgMail|mailgun|postmark|nodemailer|smtplib|sendmail|resend\.emails"
         r"|ses\.send\w*|sns\.publish|chat\.postMessage|chat_postMessage|send_?message|send_?email"
@@ -362,9 +759,10 @@ LINE_PATTERNS = [
 ]
 
 DB_HOST_KEY = re.compile(
-    r"(?i)\b((?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host)[\"']?\s*[:=]\s*[\"']?"
-    r"([A-Za-z0-9_.\-${}:]+)"
+    r"(?i)\b((?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host)[\"']?\s*[:=]\s*"
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s\"']+))"
 )
+HOST_KEY_NAME = re.compile(r"(?i)^(?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host$")
 
 RULE_FILE_NAMES = {
     "AGENTS.md", "AGENTS.override.md", "AGENT.md", "CLAUDE.md", "CLAUDE.local.md",
@@ -423,6 +821,8 @@ SENSITIVE_TRACKED = re.compile(
 )
 EXAMPLE_NAME = re.compile(r"(?i)example|sample|template|\.dist$|\.pub$|fixture")
 ENV_FILE = re.compile(r"(?i)^(?:\.env(?:\..+)?|.+\.env|\.envrc|\.dev\.vars|\.flaskenv)$")
+# Files in dotenv syntax. `.envrc` is a shell script and is not one of them.
+DOTENV_FILE = re.compile(r"(?i)^(?:\.env(?:\..+)?|.+\.env|\.dev\.vars|\.flaskenv)$")
 ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.*)$")
 SECRET_NAME = re.compile(r"(?i)" + SECRET_WORD)
 
@@ -527,52 +927,169 @@ def hidden_codepoint(cp: int, previous: int) -> bool:
     )
 
 
+def hidden_columns(line: str) -> list[tuple[int, int]]:
+    """(column, code point) of each hidden character in one line.
+
+    A subdivision flag is U+1F3F4, then two to six tag letters or digits, then
+    the cancel tag. Only that exact shape is left alone; tag characters in any
+    other arrangement can spell out text nobody sees, and are reported.
+    """
+    found, previous, index = [], 0, 0
+    while index < len(line):
+        code = ord(line[index])
+        if code == 0x1F3F4:
+            end = index + 1
+            while end < len(line) and (0xE0030 <= ord(line[end]) <= 0xE0039 or 0xE0061 <= ord(line[end]) <= 0xE007A):
+                end += 1
+            if 2 <= end - index - 1 <= 6 and end < len(line) and ord(line[end]) == 0xE007F:
+                previous, index = 0xE007F, end + 1
+                continue
+        if code > 0x7F and hidden_codepoint(code, previous):
+            found.append((index + 1, code))
+        previous = code
+        index += 1
+    return found
+
+
+def _toml_mask(text: str) -> str:
+    """`text` with the contents of quoted strings replaced by NUL characters; same length.
+
+    Structure (brackets, braces, commas, `=`, `#`) is read from the mask and
+    values are sliced from the original at the same positions. Nothing inside
+    a string is then ever mistaken for structure, whatever it contains: an
+    escaped quote, a bracket, a `name =`, a `#`.
+    """
+    out, index, size = [], 0, len(text)
+    while index < size:
+        char = text[index]
+        if char not in "\"'":
+            out.append(char)
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+        while index < size and text[index] != char:
+            # In a basic (double-quoted) string a backslash escapes the next character.
+            step = 2 if char == '"' and text[index] == "\\" and index + 1 < size else 1
+            out.append("\0" * step)
+            index += step
+        if index < size:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def _toml_uncomment(line: str) -> str:
+    cut = _toml_mask(line).find("#")
+    return line if cut < 0 else line[:cut]
+
+
+def _toml_unquote(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def _toml_inner(value: str) -> tuple[str, str] | None:
+    """What lies between a leading bracket or brace and its match, with its mask."""
+    mask, depth = _toml_mask(value), 0
+    for index, char in enumerate(mask):
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+            if depth == 0:
+                return value[1:index], mask[1:index]
+    return None
+
+
+def _toml_split(text: str, mask: str) -> list[tuple[str, str]]:
+    """The top-level, comma-separated pieces of `text`, each with its mask."""
+    pieces, depth, start = [], 0, 0
+    for index, char in enumerate(mask):
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            pieces.append((text[start:index], mask[start:index]))
+            start = index + 1
+    pieces.append((text[start:], mask[start:]))
+    return [(piece, piece_mask) for piece, piece_mask in pieces if piece.strip()]
+
+
+def _toml_value(value: str) -> object:
+    """A scalar as a string, an array as a list of strings, an inline table as a dict.
+
+    Inline-table values are kept (never shown) so a literal secret can be
+    recognised; only the keys are ever printed.
+    """
+    value = _toml_uncomment(value).strip()
+    if value[:1] in ("{", "["):
+        inner = _toml_inner(value)
+        pieces = _toml_split(*inner) if inner else []
+        if value.startswith("["):
+            return [_toml_unquote(piece) for piece, _ in pieces]
+        table = {}
+        for piece, mask in pieces:
+            equals = mask.find("=")
+            if equals > 0:
+                table[_toml_unquote(piece[:equals])] = _toml_unquote(piece[equals + 1:])
+        return table
+    return _toml_unquote(value)
+
+
 def parse_toml_tables(text: str) -> dict[str, dict[str, object]]:
-    """Minimal TOML reader: table headers and single-line or bracketed values.
+    """Minimal TOML reader: table headers, and scalar, array or inline-table values.
 
     Python 3.9 has no tomllib, and one code path on every interpreter beats
-    two. Enough for Codex-style config; not a general TOML parser.
+    two; the tests compare this reader with tomllib where it exists. Enough
+    for agent config files, not a general TOML parser. Whatever sits inside a
+    quoted string is a value and is never read as structure.
     """
     tables: dict[str, dict[str, object]] = {"": {}}
     current = ""
     pending_key, pending = None, ""
+    closing = ""
     for raw in text.splitlines():
-        line = raw.strip()
+        if closing:
+            # Inside a multi-line string: this is a value, whatever it looks like.
+            if closing in raw:
+                closing = ""
+            continue
+        line = _toml_uncomment(raw).strip()
         if pending_key is not None:
             pending += " " + line
-            if pending.count("[") <= pending.count("]"):
+            mask = _toml_mask(pending)
+            if mask.count("[") <= mask.count("]"):
                 tables[current][pending_key] = _toml_value(pending)
                 pending_key, pending = None, ""
             continue
-        if not line or line.startswith("#"):
+        if not line:
             continue
-        header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]\s*(?:#.*)?$", line)
-        if header and "=" not in line.split("]")[0]:
-            current = header.group(1)
-            tables.setdefault(current, {})
+        mask = _toml_mask(line)
+        if mask.startswith("["):
+            header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]$", line)
+            if header:
+                current = header.group(1)
+                tables.setdefault(current, {})
             continue
-        pair = re.match(r"^([A-Za-z0-9_.\-\"']+)\s*=\s*(.*)$", line)
-        if not pair:
+        equals = mask.find("=")
+        if equals <= 0:
             continue
-        key, value = pair.group(1).strip("\"'"), pair.group(2)
-        if value.startswith("[") and value.count("[") > value.count("]"):
+        key, value = _toml_unquote(line[:equals]), line[equals + 1:].strip()
+        if value[:3] in ('"""', "'''"):
+            tables[current][key] = ""
+            if value[:3] not in value[3:]:
+                closing = value[:3]
+            continue
+        value_mask = _toml_mask(value)
+        if value.startswith("[") and value_mask.count("[") > value_mask.count("]"):
             pending_key, pending = key, value
             continue
         tables[current][key] = _toml_value(value)
     return tables
-
-
-def _toml_value(value: str) -> object:
-    value = value.strip()
-    try:
-        return json.loads(value)
-    except ValueError:
-        pass
-    if value.startswith("{"):
-        return {name: "" for name in re.findall(r"([A-Za-z0-9_\-]+)\s*=", value)}
-    if value.startswith("["):
-        return [a or b for a, b in re.findall(r"\"([^\"]*)\"|'([^']*)'", value)]
-    return value.split("#")[0].strip().strip("\"'")
 
 
 def unpinned_reasons(command: str, args: list[str]) -> list[str]:
@@ -628,6 +1145,9 @@ class Collector:
         # Nothing is exempt, this skill's own directory included: an exempt
         # directory is where a planted file would hide.
         self.coverage: dict[int, list[str]] = {}
+        self.steps_run: list[str] = []
+        self.github_requests = 0
+        self._status_cache: dict[str, str] = {}
         self._file_counts: dict[tuple, int] = {}
         self._files: list[str] | None = None
         self._tracked: set | None = None
@@ -635,9 +1155,16 @@ class Collector:
     # -- plumbing ----------------------------------------------------------
 
     def _run(self, cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-        env = dict(self.environ)
-        env.update(HOME=str(self.home), GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0",
-                   GH_PROMPT_DISABLED="1", NO_COLOR="1")
+        if cmd[0] == "git":
+            # A fixed environment: inherited GIT_* settings can redirect git to
+            # another repository or make it write trace files.
+            env = {k: v for k, v in self.environ.items() if k in ("PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT")}
+            env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_TRACE="0",
+                       GIT_TRACE2="0", GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0")
+        else:
+            env = {k: v for k, v in self.environ.items() if not k.startswith("GIT_TRACE") and k != "GH_DEBUG"}
+            env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1", NO_COLOR="1")
+        env["HOME"] = str(self.home)
         try:
             done = subprocess.run(cmd, cwd=str(cwd or self.repo), env=env, capture_output=True,
                                   text=True, timeout=SUBPROCESS_TIMEOUT, stdin=subprocess.DEVNULL)
@@ -649,13 +1176,25 @@ class Collector:
             return 126, "", "could not run"
         return done.returncode, done.stdout, done.stderr
 
+    @staticmethod
+    def _git_cmd(*args: str) -> list[str]:
+        # A repository's own config can name helper programs (a filesystem
+        # monitor hook) and a partial clone can fetch on demand. None of the
+        # read-only commands used here needs either, so both are switched off.
+        return ["git", "--no-optional-locks", "--no-pager", "-c", "core.fsmonitor=false",
+                "-c", "core.untrackedCache=false", *args]
+
     def _git(self, *args: str) -> str | None:
-        code, out, _ = self._run(["git", *args])
+        code, out, _ = self._run(self._git_cmd(*args))
         return out.rstrip("\n") if code == 0 else None
 
     def add(self, check: int, kind: str, loc: str, note: str = "") -> None:
         if self.only and check not in self.only:
             return
+        # One lead, one line: a path or name with a newline in it must not forge a second row.
+        home = str(self.home)
+        loc = one_line(str(loc).replace(home, "~"))
+        note = one_line(redact(str(note).replace(home, "~")))
         anchored = re.match(r"^(.+?):\d+(?::\d+)?$", loc)
         if anchored:
             per_file = (check, kind, anchored.group(1))
@@ -665,14 +1204,15 @@ class Collector:
         key = (check, kind)
         self._counts[key] = self._counts.get(key, 0) + 1
         if self._counts[key] <= MAX_PER_KIND:
-            # Keeps the account name out of a report that may be pasted elsewhere.
-            home = str(self.home)
-            self.items.append({"check": check, "kind": kind, "loc": loc.replace(home, "~"),
-                               "note": note.replace(home, "~")})
+            # redact() is a second layer only: notes are built from names and
+            # fixed text, never from file content.
+            self.items.append({"check": check, "kind": kind, "loc": loc, "note": note})
 
     def cover(self, check: int, text: str) -> None:
         """Record what was examined, so a clean check reads differently from one not run."""
-        self.coverage.setdefault(check, []).append(text)
+        if self.only and check not in self.only:
+            return
+        self.coverage.setdefault(check, []).append(one_line(redact(str(text).replace(str(self.home), "~"))))
 
     def show(self, path: Path | str) -> str:
         """Display form of a path: repo-relative, else ~-relative, else as given."""
@@ -712,16 +1252,43 @@ class Collector:
         return self._tracked
 
     def text(self, path: Path | str, limit: int = MAX_FILE_BYTES) -> str | None:
+        """Decoded content of a regular file, or None.
+
+        Anything reached through the repository must resolve to a file inside
+        it: a link in a checkout (at any level of the path) can point at any
+        file on the machine. The read is bounded, never blocks on a FIFO or
+        device, and skips cloud placeholders rather than downloading them.
+        """
         path = Path(path)
         if not path.is_absolute():
             path = self.repo / path
+        if STATE_OR_VARS.search(path.name):
+            return None  # Terraform state and variable files hold values; no scanner reads them
         try:
-            if not path.is_file() or path.stat().st_size > limit:
-                return None
-            data = path.read_bytes()
+            path.relative_to(self.repo)
+            through_repo = True
+        except ValueError:
+            through_repo = False
+        try:
+            resolved = path.resolve()
+            if through_repo:
+                resolved.relative_to(self.repo)
+            if STATE_OR_VARS.search(resolved.name):
+                return None  # a link with an innocent name must not get a state file read
+            info = os.stat(resolved)
+        except (OSError, ValueError):
+            return None
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_flags", 0) & SF_DATALESS:
+            return None
+        try:
+            descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return None
+                data = handle.read(limit + 1)
         except OSError:
             return None
-        if b"\0" in data[:4096]:
+        if len(data) > limit or b"\0" in data[:4096]:
             return None
         return data.decode("utf-8", errors="replace")
 
@@ -745,8 +1312,11 @@ class Collector:
             return "no git"
         if name in self.tracked():
             return "tracked in git"
-        code, _, _ = self._run(["git", "check-ignore", "-q", "--", name])
-        return "untracked, ignored" if code == 0 else "untracked, NOT ignored"
+        if name not in self._status_cache:
+            code, _, _ = self._run(self._git_cmd("check-ignore", "-q", "--", name))
+            self._status_cache[name] = {0: "untracked, ignored", 1: "untracked, NOT ignored"}.get(
+                code, "untracked, ignore status unknown")
+        return self._status_cache[name]
 
     # -- check 1 and 2: env files, tracked text ----------------------------
 
@@ -771,26 +1341,29 @@ class Collector:
                 continue
             found += 1
             role, status = self.env_role(base), self.status(name)
-            keys, literal_secrets = 0, []
-            for lineno, line in enumerate(text.splitlines(), 1):
-                match = ENV_LINE.match(line)
-                if not match or line.lstrip().startswith("#"):
+            if not DOTENV_FILE.match(base):
+                self.add(2, "env-file", name, f"role: {role}; {status}; a shell script, not parsed for keys")
+                continue
+            assignments = env_assignments(text)
+            literal_secrets = []
+            for lineno, key, value in assignments:
+                if value == MULTILINE:
+                    if SECRET_NAME.search(key):
+                        literal_secrets.append(f"{key}@{lineno}")
                     continue
-                keys += 1
-                key, value = match.group(1), match.group(2).strip().strip("\"'")
                 for hint in value_hints(value):
                     if hint.startswith("->"):
                         self.add(1, "db-target", f"{name}:{lineno}", f"{key} {hint} (file role: {role}; {status})")
                     elif "live payment" in hint:
                         self.add(2, "live-payment-key", f"{name}:{lineno}", f"{key}: {hint} ({status})")
-                host = DB_HOST_KEY.match(f"{key}={value}")
-                if host and not DB_URL.search(value):
+                if HOST_KEY_NAME.match(key) and value and not DB_URL.search(value):
+                    named = host_from_value(value)  # the whole parsed value: credentials in front may hold ',' or ';'
                     self.add(1, "db-target", f"{name}:{lineno}",
-                             f"{key} -> host {host.group(2)} [{classify_host(host.group(2))}] "
+                             f"{key} -> host {named or '<withheld>'} [{classify_host(named) if named else 'unknown'}] "
                              f"(file role: {role}; {status})")
                 if SECRET_NAME.search(key) and not PLACEHOLDER.match(value) and not REFERENCE.match(value):
                     literal_secrets.append(f"{key}@{lineno}")
-            note = f"role: {role}; {status}; {keys} keys"
+            note = f"role: {role}; {status}; {len(assignments)} keys"
             if literal_secrets:
                 note += f"; secret-named keys holding literal values: {', '.join(literal_secrets[:12])}"
                 if len(literal_secrets) > 12:
@@ -804,30 +1377,37 @@ class Collector:
         db_config = [n for n in self.files() if DB_CONFIG_FILE.search(n)]
         self.cover(1, f"database/ORM/compose config files: {len(db_config)}" if db_config else
                    "database/ORM/compose config files: none, so leads here are string matches in code, tests or docs")
+        withheld = 0
         for name in self.files():
+            if STATE_OR_VARS.search(name):
+                withheld += 1  # state and variable files hold values; they are never pattern-scanned
+                continue
             text = self.text(name)
             if text is None:
                 continue
             scanned += 1
             is_doc = name.lower().endswith(DOC_SUFFIXES)
-            tag = " (doc)" if is_doc else ""
+            tag = "(doc)" if is_doc else ""
             is_env = ENV_FILE.match(name.rsplit("/", 1)[-1]) is not None
             for lineno, line in enumerate(text.splitlines(), 1):
                 if len(line) > 2000:
                     continue
+                # Leads carry the location and what matched. The line itself is
+                # never printed: read it in the file.
                 loc = f"{name}:{lineno}"
                 label = shape_label(line)
                 if label and not is_env:
-                    self.add(2, "token-shaped-string", loc, f"{label}{tag}; {self.status(name)}")
+                    self.add(2, "token-shaped-string", loc, f"{label} {tag}; {self.status(name)}".replace("  ", " "))
                 if not is_env:
                     for match in DB_URL.finditer(line):
                         shown, klass = sanitize_db_url(match.group(1))
-                        self.add(1, "db-target", loc, f"{shown} [{klass}]{tag}")
+                        self.add(1, "db-target", loc, f"{shown} [{klass}] {tag}".rstrip())
                     host = DB_HOST_KEY.search(line)
                     if host and not is_doc and not DB_URL.search(line):
-                        klass = classify_host(host.group(2))
+                        named = host_from_value(host.group(2) or host.group(3) or host.group(4) or "")
+                        klass = classify_host(named) if named else "unknown"
                         if klass in ("non-local", "private-network"):
-                            self.add(1, "db-target", loc, f"{host.group(1)} -> host {host.group(2)} [{klass}]")
+                            self.add(1, "db-target", loc, f"{host.group(1)} -> host {named} [{klass}]")
                 rm = RM_RECURSIVE.search(line)
                 if rm:
                     target = rm.group(1)
@@ -841,28 +1421,35 @@ class Collector:
                         traits.append("touches HOME")
                     if "`" in target or "$(" in target:
                         traits.append("command substitution")
-                    self.add(3, "recursive-delete", loc,
-                             f"[{'; '.join(traits) or 'literal target'}]{tag} {snippet(line)}")
+                    self.add(3, "recursive-delete", loc, f"[{'; '.join(traits) or 'literal target'}] {tag}".rstrip())
                 for check, kind, regex, scan_docs in LINE_PATTERNS:
                     if is_doc and not scan_docs:
                         continue
                     if regex.search(line):
-                        self.add(check, kind, loc, snippet(line) + tag)
-        for check in (1, 2, 3, 4, 8, 11):
-            self.cover(check, f"{scanned} text files pattern-scanned")
+                        self.add(check, kind, loc, tag)
+        for check in (1, 2, 3, 4, 5, 8, 11):
+            self.cover(check, f"{scanned} text files pattern-scanned"
+                       + (f" ({withheld} Terraform state or variable files left unscanned)" if withheld else ""))
 
     # -- check 2: environment and credential files -------------------------
 
     def environment(self) -> None:
+        unusual = 0
         for name in sorted(self.environ):
             value = self.environ[name]
+            if not ENV_NAME.match(name):
+                unusual += 1
+                continue
             hints = value_hints(value)
             if name in SELECTORS:
+                # The only values this collector ever prints: a fixed list of
+                # context selectors, and only when the value is a plain name or path.
                 shown = value.replace(str(self.home), "~")
-                if TOKEN_SHAPES.search(shown) or looks_random(shown) or len(shown) > 200:
-                    shown = "<redacted>"
-                prod = " [PROD-LIKE NAME]" if PROD_LIKE.search(shown) else ""
-                self.add(2, "context-selector", f"env:{name}", f"= {shown}{prod}")
+                if not SELECTOR_VALUE.match(shown) or TOKEN_SHAPES.search(shown) or looks_random(shown):
+                    self.add(2, "context-selector", f"env:{name}", "set; value withheld (not a plain name or path)")
+                else:
+                    prod = " [PROD-LIKE NAME]" if PROD_LIKE.search(shown) else ""
+                    self.add(2, "context-selector", f"env:{name}", f"= {shown}{prod}")
                 continue
             if not (CRED_ENV.search(name) or [h for h in hints if h != "empty"]):
                 continue
@@ -871,6 +1458,8 @@ class Collector:
             for hint in hints:
                 if hint.startswith("->"):
                     self.add(1, "db-target", f"env:{name}", f"{hint} (exported in this shell)")
+        if unusual:
+            self.add(2, "env-var", "env", f"{unusual} variables with unusual names not listed")
         self.cover(2, f"{len(self.environ)} environment variables examined by name and shape")
         if "SSH_AUTH_SOCK" in self.environ:
             self.add(2, "env-var", "env:SSH_AUTH_SOCK",
@@ -898,22 +1487,34 @@ class Collector:
             keys = []
             for entry in sorted(ssh.iterdir()):
                 try:
-                    if entry.is_file() and b"PRIVATE KEY" in entry.read_bytes()[:64]:
-                        keys.append(entry.name)
+                    if entry.is_file():
+                        with open(entry, "rb") as handle:
+                            if b"PRIVATE KEY" in handle.read(64):
+                                keys.append(entry.name)
                 except OSError:
                     continue
             if keys:
-                self.add(2, "credential-file", "~/.ssh", f"{len(keys)} private key files: {', '.join(keys[:15])}")
+                self.add(2, "credential-file", "~/.ssh", f"{len(keys)} private key files: {safe_names(keys, 15)}")
         self.cover(2, f"{len(CRED_PATHS) + 14} known credential locations probed under ~ "
                       "(AWS, kube, gcloud, netrc, pgpass, npm, docker, gh, git, ssh and other CLIs)")
 
     def _aws(self, directory: Path) -> None:
         profile = self.environ.get("AWS_PROFILE") or self.environ.get("AWS_DEFAULT_PROFILE") or "default"
-        for filename in ("credentials", "config"):
-            path = directory / filename
+        seen = directory.is_dir()
+        for variable, filename in (("AWS_SHARED_CREDENTIALS_FILE", "credentials"), ("AWS_CONFIG_FILE", "config")):
+            override = self.environ.get(variable)
+            if override and not Path(override).is_absolute():
+                self.add(2, "credential-file", f"env:{variable}", "names a relative path, which resolves against "
+                         "whatever directory a command runs in: NOT INSPECTED")
+                continue
+            path = Path(override) if override else directory / filename
             text = self.text(path)
             if text is None:
+                if override:
+                    self.add(2, "credential-file", f"env:{variable}",
+                             "points at a file that is missing or unreadable: NOT INSPECTED")
                 continue
+            seen = True
             parser = configparser.RawConfigParser(strict=False)
             try:
                 parser.read_string(text)
@@ -932,17 +1533,21 @@ class Collector:
                     if key in keys and word not in traits:
                         traits.append(word)
                 prod = " [PROD-LIKE NAME]" if PROD_LIKE.search(name) else ""
-                described.append(f"{name}{prod} ({', '.join(traits) or 'no credentials here'})")
+                described.append(f"{safe_name(name)}{prod} ({', '.join(traits) or 'no credentials here'})")
             self.add(2, "credential-file", self.show(path),
                      f"{self._mode(path)}; profiles: {'; '.join(described[:20]) or 'none'}")
-        if directory.is_dir():
+        if seen:
             prod = " [PROD-LIKE NAME]" if PROD_LIKE.search(profile) else ""
-            self.add(2, "default-context", "~/.aws", f"aws commands with no --profile use: {profile}{prod}")
+            self.add(2, "default-context", "~/.aws", f"aws commands with no --profile use: {safe_name(profile)}{prod}")
 
     def _kube(self) -> None:
         raw = self.environ.get("KUBECONFIG") or str(self.home / ".kube" / "config")
         for entry in raw.split(os.pathsep):
             path = Path(entry)
+            if not path.is_absolute():
+                self.add(2, "credential-file", "env:KUBECONFIG", "names a relative path, which resolves against "
+                         "whatever directory a command runs in: NOT INSPECTED")
+                continue
             text = self.text(path, MAX_CONFIG_BYTES)
             if text is None:
                 continue
@@ -959,19 +1564,19 @@ class Collector:
             embedded = re.search(r"^\s+(?:token|client-key-data|password):\s*\S", text, re.M)
             context = (current.group(1).strip() if current else "") or "(none)"
             prod = " [PROD-LIKE NAME]" if PROD_LIKE.search(context) else ""
-            self.add(2, "default-context", self.show(path), f"kubectl current-context: {context}{prod}")
+            self.add(2, "default-context", self.show(path), f"kubectl current-context: {safe_name(context)}{prod}")
             self.add(2, "credential-file", self.show(path),
-                     f"{self._mode(path)}; contexts: {', '.join(names[:15]) or 'none'}"
+                     f"{self._mode(path)}; contexts: {safe_names(names, 15) or 'none'}"
                      + ("; STATIC CREDENTIAL embedded in file" if embedded else ""))
 
     def _gcloud(self) -> None:
         directory = Path(self.environ.get("CLOUDSDK_CONFIG") or self.home / ".config" / "gcloud")
-        if not directory.is_dir():
+        if not directory.is_absolute() or not directory.is_dir():
             return
         active = (self.text(directory / "active_config") or "default").strip() or "default"
         active = self.environ.get("CLOUDSDK_ACTIVE_CONFIG_NAME") or active
-        note = f"gcloud active configuration: {active}"
-        config = self.text(directory / "configurations" / f"config_{active}")
+        note = f"gcloud active configuration: {safe_name(active)}"
+        config = self.text(directory / "configurations" / f"config_{active}") if NAME_SAFE.match(active) else None
         if config:
             parser = configparser.RawConfigParser(strict=False)
             try:
@@ -981,7 +1586,7 @@ class Collector:
             except configparser.Error:
                 project = account = ""
             if project:
-                note += f"; project: {project}"
+                note += f"; project: {safe_name(project)}"
             if account:
                 kind = "service account" if account.endswith(".gserviceaccount.com") else "user account"
                 note += f"; signed in as a {kind}"
@@ -990,8 +1595,10 @@ class Collector:
         self.add(2, "default-context", self.show(directory), note)
         adc = self.load_json(directory / "application_default_credentials.json")
         if isinstance(adc, dict):
+            kind = adc.get("type") if adc.get("type") in ("authorized_user", "service_account",
+                                                           "external_account", "impersonated_service_account") else "unknown"
             self.add(2, "credential-file", self.show(directory / "application_default_credentials.json"),
-                     f"application default credentials, type: {adc.get('type', 'unknown')}")
+                     f"application default credentials, type: {kind}")
         for extra in ("credentials.db", "access_tokens.db", "legacy_credentials"):
             if (directory / extra).exists():
                 self.add(2, "credential-file", self.show(directory / extra), "gcloud stored credentials")
@@ -1000,9 +1607,10 @@ class Collector:
         home = self.home
         netrc = self.text(home / ".netrc")
         if netrc is not None:
-            machines = re.findall(r"\bmachine\s+(\S+)", netrc)
-            self.add(2, "credential-file", "~/.netrc",
-                     f"{self._mode(home / '.netrc')}; logins for: {', '.join(machines[:20]) or '(default only)'}")
+            machines = netrc_machines(netrc)
+            self.add(2, "credential-file", "~/.netrc", f"{self._mode(home / '.netrc')}; " + (
+                "could not be tokenised: machine names NOT READ" if machines is None
+                else f"logins for: {safe_names(machines) or '(default only)'}"))
         pgpass = self.text(home / ".pgpass")
         if pgpass is not None:
             targets = []
@@ -1010,7 +1618,9 @@ class Collector:
                 if line.strip() and not line.lstrip().startswith("#"):
                     fields = re.split(r"(?<!\\):", line)
                     if len(fields) >= 3:
-                        targets.append(f"{fields[0]}:{fields[1]}/{fields[2]} [{classify_host(fields[0])}]")
+                        host = fields[0] if HOST_SAFE.match(fields[0]) or fields[0] == "*" else "<withheld>"
+                        port = fields[1] if re.fullmatch(r"\d{1,5}|\*", fields[1]) else "?"
+                        targets.append(f"{host}:{port}/{safe_name(fields[2])} [{classify_host(fields[0])}]")
             self.add(2, "credential-file", "~/.pgpass",
                      f"{self._mode(home / '.pgpass')}; passwords for: {', '.join(targets[:15]) or 'none'}")
         npmrc = self.text(home / ".npmrc")
@@ -1020,15 +1630,15 @@ class Collector:
                 found = re.match(r"^\s*([^#;=\s]*?):?(_authToken|_auth|_password)\s*=\s*(.*)$", line)
                 if found:
                     how = "from env var" if "${" in found.group(3) else "LITERAL in file"
-                    registries.append(f"{found.group(1) or '(default registry)'} {found.group(2)} ({how})")
+                    registries.append(f"{safe_name(found.group(1) or '(default registry)')} {found.group(2)} ({how})")
             if registries:
                 self.add(2, "credential-file", "~/.npmrc", f"{self._mode(home / '.npmrc')}; {'; '.join(registries[:10])}")
         docker = self.load_json(home / ".docker" / "config.json")
         if isinstance(docker, dict):
             auths = docker.get("auths") if isinstance(docker.get("auths"), dict) else {}
             inline = [h for h, v in auths.items() if isinstance(v, dict) and v.get("auth")]
-            note = f"registries: {', '.join(snippet(h) for h in list(auths)[:10]) or 'none'}"
-            note += f"; credsStore: {docker.get('credsStore') or 'none'}"
+            note = f"registries: {safe_names(list(auths), 10) or 'none'}"
+            note += f"; credsStore: {safe_name(docker.get('credsStore') or 'none')}"
             if inline:
                 note += f"; {len(inline)} registry logins stored INLINE (base64, not encrypted)"
             self.add(2, "credential-file", "~/.docker/config.json", note)
@@ -1038,16 +1648,12 @@ class Collector:
                 names = re.findall(r"^([^\s#][^:\n]*):\s*$", hosts, re.M)
                 stored = ("token stored in PLAINTEXT in this file" if re.search(r"^\s+oauth_token:\s*\S", hosts, re.M)
                           else "no token in file (system keychain or none)")
-                self.add(2, "credential-file", self.show(home / rel), f"gh hosts: {', '.join(names) or 'none'}; {stored}")
+                self.add(2, "credential-file", self.show(home / rel), f"gh hosts: {safe_names(names) or 'none'}; {stored}")
         gitcreds = self.text(home / ".git-credentials")
         if gitcreds is not None:
-            hosts = set()
-            for line in gitcreds.split():
-                try:
-                    hosts.add(urlsplit(line).hostname or "?")
-                except ValueError:
-                    hosts.add("?")
-            self.add(2, "credential-file", "~/.git-credentials", f"PLAINTEXT git passwords for: {', '.join(sorted(hosts))}")
+            hosts = sorted({safe_url_host(line) for line in gitcreds.split()})
+            self.add(2, "credential-file", "~/.git-credentials",
+                     f"PLAINTEXT git passwords for: {', '.join(hosts[:20])}")
         stripe = self.text(home / ".config" / "stripe" / "config.toml")
         if stripe is not None:
             live = "LIVE-MODE KEY PRESENT" if re.search(r"^\s*live_mode_api_key\s*=\s*\S", stripe, re.M) else "no live-mode key"
@@ -1064,14 +1670,14 @@ class Collector:
         if self.is_git:
             verdicts = []
             for probe in IGNORE_PROBES:
-                code, _, _ = self._run(["git", "check-ignore", "-q", "--", probe])
-                verdicts.append(f"{probe}: {'ignored' if code == 0 else 'NOT IGNORED'}")
+                code, _, _ = self._run(self._git_cmd("check-ignore", "-q", "--", probe))
+                verdicts.append(f"{probe}: " + {0: "ignored", 1: "NOT IGNORED"}.get(code, "unknown"))
             self.add(2, "gitignore-coverage", ".gitignore", "; ".join(verdicts))
         remotes = self._git("remote", "-v") or ""
         for line in remotes.splitlines():
             if re.search(r"://[^/\s@]+@", line) and not re.search(r"://git@", line):
                 self.add(2, "credential-in-remote-url", ".git/config",
-                         f"remote '{line.split()[0]}' embeds credentials in its URL")
+                         f"remote '{safe_name(line.split()[0])}' embeds credentials in its URL")
 
     # -- check 3 -----------------------------------------------------------
 
@@ -1097,11 +1703,12 @@ class Collector:
             if "-u" not in missing:
                 continue
             deletes = bool(RM_RECURSIVE.search(text) or re.search(r"\bfind\b.*-delete|\bgit\s+clean\b", text))
-            entry = (name, f"missing set {' '.join(missing)}" + ("; CONTAINS A RECURSIVE DELETE" if deletes else ""))
+            entry = (name, f"no 'set {' '.join(missing)}' line anywhere" + ("; CONTAINS A RECURSIVE DELETE" if deletes else ""))
             (risky if deletes else plain).append(entry)
         for name, note in risky + plain:
             self.add(3, "shell-without-nounset", f"{name}:1", note)
-        self.cover(3, f"{checked} shell scripts checked for set -u ({len(risky) + len(plain)} lack it)")
+        self.cover(3, f"{checked} shell scripts checked for a 'set -u' line ({len(risky) + len(plain)} have none; "
+                      "a line inside a branch still counts, so read the script before trusting it)")
 
     def symlinks(self) -> None:
         seen = set()
@@ -1132,39 +1739,69 @@ class Collector:
 
     # -- check 4 -----------------------------------------------------------
 
+    @staticmethod
+    def _tf_code(text: str) -> str:
+        """Terraform source with comments blanked, line numbers preserved."""
+        text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+        return "\n".join(re.sub(r"(?:#|//).*$", "", line) for line in text.split("\n"))
+
     def infrastructure(self) -> None:
         tf_files = [n for n in self.files() if n.endswith(".tf")]
-        backend = False
+        roots: dict[str, dict] = {}
         for name in tf_files:
-            text = self.text(name) or ""
-            backend = backend or bool(re.search(r'^\s*(?:backend\s+"|cloud\s*\{)', text, re.M))
-            lines = text.splitlines()
+            code = self._tf_code(self.text(name) or "")
+            root = roots.setdefault(name.rpartition("/")[0] or ".", {"remote": False, "resources": 0, "first": name})
+            backends = re.findall(r'^\s*backend\s+"(\w+)"', code, re.M)
+            # `backend "local"` keeps state on disk; it is not a remote backend.
+            root["remote"] = (root["remote"] or any(kind != "local" for kind in backends)
+                              or bool(re.search(r"^\s*cloud\s*\{", code, re.M)))
+            lines = code.splitlines()
             for index, line in enumerate(lines):
                 found = TF_RESOURCE.match(line)
-                if not found or not TF_DATA_TYPES.search(found.group(1)):
+                if not found:
                     continue
-                depth, body = 0, []
+                root["resources"] += 1
+                if not TF_DATA_TYPES.search(found.group(1)):
+                    continue
+                # Only the resource's own arguments and its lifecycle block
+                # count. The same words inside a tags map protect nothing.
+                depth, own, lifecycle, in_lifecycle = 0, [], [], False
                 for inner in lines[index:]:
-                    body.append(inner)
+                    before = depth
                     depth += inner.count("{") - inner.count("}")
+                    if before == 1:
+                        own.append(inner)
+                        if re.match(r"^\s*lifecycle\s*\{", inner):
+                            in_lifecycle = True
+                            # One-line form: `lifecycle { prevent_destroy = true }`.
+                            lifecycle += re.findall(r"lifecycle\s*\{([^{}]*)\}", inner)
+                    elif in_lifecycle and before == 2:
+                        lifecycle.append(inner)  # an argument of lifecycle itself, not of a nested block
+                    if in_lifecycle and depth <= 1:
+                        in_lifecycle = False
                     if depth <= 0:
                         break
-                block = "\n".join(body)
+                arguments, guard = "\n".join(own), "\n".join(lifecycle)
                 traits = []
-                if not re.search(r"(?:deletion_protection(?:_enabled)?|prevent_destroy)\s*=\s*true", block):
-                    traits.append("neither deletion_protection nor prevent_destroy is set to true")
+                if not (re.search(r"^\s*deletion_protection(?:_enabled)?\s*=\s*true\b", arguments, re.M)
+                        or re.search(r"(?:^|;)\s*prevent_destroy\s*=\s*true\b", guard, re.M)):
+                    traits.append("neither deletion_protection nor lifecycle.prevent_destroy is set to true")
                 for flag in ("force_destroy", "skip_final_snapshot"):
-                    if re.search(flag + r"\s*=\s*true", block):
+                    if re.search(r"^\s*" + flag + r"\s*=\s*true\b", arguments, re.M):
                         traits.append(f"{flag} = true")
                 if traits:
                     self.add(4, "unprotected-data-resource", f"{name}:{index + 1}",
-                             f"{found.group(1)}.{found.group(2)}: {'; '.join(traits)}")
-        if tf_files and not backend:
-            self.add(4, "local-terraform-state", tf_files[0],
-                     "no backend/cloud block in any .tf file: state is kept on this disk")
+                             f"{safe_name(found.group(1))}.{safe_name(found.group(2))}: {'; '.join(traits)}")
+        for directory, root in sorted(roots.items()):
+            # Each directory is its own Terraform root; a backend elsewhere says nothing about this one.
+            if root["resources"] and not root["remote"]:
+                self.add(4, "local-terraform-state", root["first"],
+                         f"no remote backend or cloud block among the .tf files in {directory}/: state stays "
+                         "on this disk unless a parent module configures it")
         states = 0
         iac = sorted({n.rsplit("/", 1)[-1] for n in self.files() if IAC_FILE.search(n) and not n.endswith(".tf")})
-        self.cover(4, f"{len(tf_files)} .tf files; other infrastructure files: {', '.join(iac[:8]) or 'none'}")
+        self.cover(4, f"{len(tf_files)} .tf files in {len(roots)} directories; other infrastructure files: "
+                      f"{safe_names(iac, 8) or 'none'}")
         for name in sorted(self.walk()):
             if re.search(r"\.tfstate(?:\.backup|\.\d+)?$", name):
                 states += 1
@@ -1172,7 +1809,7 @@ class Collector:
                     size = (self.repo / name).stat().st_size
                 except OSError:
                     size = 0
-                self.add(4, "tfstate-file", name, f"{self.status(name)}; {size} bytes; not opened "
+                self.add(4, "tfstate-file", name, f"{self.status(name)}; {size} bytes; content not scanned "
                          "(state holds resource ids and often plaintext secrets)")
         self.cover(4, f"{states} state files")
 
@@ -1218,11 +1855,11 @@ class Collector:
             hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
             note = f"deny rules: {len(deny)}"
             if deny:
-                note += f" ({'; '.join(snippet(d) for d in deny[:12])}{' ...' if len(deny) > 12 else ''})"
+                note += f" ({'; '.join(rule_head(d) for d in deny[:12])}{'; ...' if len(deny) > 12 else ''})"
             note += f"; ask rules: {len(ask)}; PreToolUse hooks: {len(hooks.get('PreToolUse') or [])}"
             sandbox = data.get("sandbox")
             if isinstance(sandbox, dict):
-                note += f"; sandbox.enabled: {sandbox.get('enabled')}"
+                note += f"; sandbox.enabled: {sandbox.get('enabled') is True}"
             self.add(5, "enforcement", self.show(path), note)
         hooks_path = self._git("config", "--get", "core.hooksPath")
         present = [d for d in (".githooks", ".husky") if (self.repo / d).is_dir()]
@@ -1232,8 +1869,9 @@ class Collector:
         if git_hooks.is_dir():
             active = sorted(p.name for p in git_hooks.iterdir() if p.is_file() and not p.name.endswith(".sample"))
         if self.is_git:
-            note = f"core.hooksPath: {hooks_path or 'unset'}; hook config in repo: {', '.join(present) or 'none'}"
-            note += f"; active .git/hooks: {', '.join(active) or 'none'}"
+            note = f"core.hooksPath: {safe_name(hooks_path) if hooks_path else 'unset'}; "
+            note += f"hook config in repo: {', '.join(present) or 'none'}"
+            note += f"; active .git/hooks: {safe_names(active) or 'none'}"
             if present and not hooks_path and not active:
                 note += " -- HOOK CONFIG PRESENT BUT NOTHING ACTIVE IN THIS CLONE"
             self.add(5, "enforcement", ".git", note)
@@ -1246,9 +1884,9 @@ class Collector:
             self.add(5, "named-commands", "Makefile", ", ".join(targets[:25]))
         package = self.load_json(self.repo / "package.json")
         if isinstance(package, dict) and isinstance(package.get("scripts"), dict):
-            names = sorted(k for k in package["scripts"] if wanted.search(k))
+            names = sorted(k for k in package["scripts"] if wanted.search(str(k)))
             if names:
-                self.add(5, "named-commands", "package.json", ", ".join(names[:25]))
+                self.add(5, "named-commands", "package.json", safe_names(names, 25))
 
     def _claude_settings_files(self) -> list[Path]:
         paths = [self.repo / rel for rel in CLAUDE_SETTINGS_REPO] + [self.home / rel for rel in CLAUDE_SETTINGS_HOME]
@@ -1260,34 +1898,44 @@ class Collector:
     # -- check 6 -----------------------------------------------------------
 
     def github_checks(self) -> None:
-        if self.only and 6 not in self.only:
-            return
         if not self.is_git:
             self.add(6, "not-checked", ".", "not a git repository")
             return
         url = self._git("remote", "get-url", "origin") or ""
         branch = self._git("symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ""
-        branch = branch.split("/", 1)[-1] or "main"
-        slug = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", url)
-        self.add(6, "remote", ".git/config", f"origin: {snippet(url) or 'none'}; default branch: {branch}")
+        branch = branch.split("/", 1)[-1]
+        branch = branch if re.fullmatch(r"[\w./-]{1,100}", branch) else ""
+        slug = github_slug(url)
         if not slug:
-            self.add(6, "not-checked", ".git/config", "origin is not a github.com remote: check the host's branch rules by hand")
+            self.add(6, "not-checked", ".git/config", "origin is absent or not a github.com remote: check the "
+                     "host's branch rules by hand")
             return
-        owner, repo = slug.group(1), slug.group(2)
+        owner, repo = slug
+        self.add(6, "remote", ".git/config", f"origin: github.com/{owner}/{repo}; default branch: "
+                 + (branch or "not recorded in this clone (no origin/HEAD)"))
         if not self.github:
             self.add(6, "not-checked", f"{owner}/{repo}",
                      "GitHub was not queried (run again with --github for read-only API calls)")
             return
-        if not shutil.which("gh"):
+        if not shutil.which("gh", path=self.environ.get("PATH")):
             self.add(6, "not-checked", f"{owner}/{repo}", "gh CLI not installed")
             return
-        code, out, err = self._run(["gh", "auth", "status", "--hostname", "github.com"])
-        status = [l.strip() for l in (out + err).splitlines() if re.search(r"Logged in|scopes|Active account", l)]
-        scopes = sorted(set(re.findall(r"'([\w:]+)'", " ".join(l for l in status if "scopes" in l))))
-        code, token, _ = self._run(["gh", "auth", "token", "--hostname", "github.com"])
-        kind = shape_label(token.strip()) or ("unrecognised token type" if token.strip() else "no token")
-        del token
-        account = next((re.sub(r".*account\s+(\S+).*", r"\1", l) for l in status if "Logged in" in l), "?")
+        # --no-refresh: looking must not rotate a stored token. --active: one account, the one gh would use.
+        self.github_requests += 1
+        code, out, err = self._run(["gh", "auth", "status", "--hostname", "github.com", "--active", "--no-refresh"])
+        block = (out + err).splitlines()
+        if code != 0 or not any("Logged in" in line for line in block):
+            self.add(6, "not-checked", "gh auth", "gh is not signed in to github.com (or its status could not be "
+                     "read): token scopes and branch protection are UNKNOWN")
+            return
+        account = next((m.group(1) for line in block for m in [re.search(r"account\s+([\w-]{1,60})", line)] if m), "?")
+        scopes = sorted(set(re.findall(r"'([\w:]{1,40})'", " ".join(line for line in block if "scopes" in line))))
+        # gh prints the token masked ("gho_****"); its prefix names the type. The token itself is never fetched.
+        prefix = next((m.group(1) for line in block
+                       for m in [re.search(r"Token:\s*(github_pat_|gh[a-z]_)", line)] if m), "")
+        kind = {"ghp_": "classic personal access token", "gho_": "OAuth token",
+                "github_pat_": "fine-grained personal access token", "ghs_": "app installation token",
+                "ghu_": "app user token"}.get(prefix, "type not shown")
         self.add(6, "gh-token", "gh auth", f"account: {account}; type: {kind}; scopes: {', '.join(scopes) or 'none listed'}")
         reach = [text for scope, text in (
             ("delete_repo", "CAN DELETE REPOSITORIES"),
@@ -1303,56 +1951,61 @@ class Collector:
         held: list = []
         if isinstance(info, dict):
             perms = info.get("permissions") or {}
-            held = [k for k in ("admin", "maintain", "push") if perms.get(k)]
-            branch = info.get("default_branch") or branch
+            held = [k for k in ("admin", "maintain", "push") if perms.get(k) is True]
+            reported = str(info.get("default_branch") or "")
+            branch = reported if re.fullmatch(r"[\w./-]{1,100}", reported) else branch
+            visibility = info.get("visibility") if info.get("visibility") in ("public", "private", "internal") else "unknown"
             self.add(6, "repo", f"{owner}/{repo}",
-                     f"visibility: {info.get('visibility')}; default branch: {branch}; "
+                     f"visibility: {visibility}; default branch: {branch or 'unknown'}; "
                      f"this token has: {', '.join(held) or 'read only'}")
         else:
             self.add(6, "not-checked", f"{owner}/{repo}", f"repository metadata unavailable ({info})")
+        if not branch:
+            self.add(6, "not-checked", f"{owner}/{repo}", "the default branch is unknown, so its protection was not queried")
+            return
         protection = self._gh_json(f"repos/{owner}/{repo}/branches/{branch}/protection")
-        admins_bound = None
         if isinstance(protection, dict):
             reviews = protection.get("required_pull_request_reviews") or {}
-            admins_bound = bool((protection.get("enforce_admins") or {}).get("enabled"))
             checks = (protection.get("required_status_checks") or {}).get("contexts") or []
-            self.cover(6, f"required status checks: {', '.join(map(str, checks)) or 'none'}")
+            approvals = reviews.get("required_approving_review_count", 0)
+
+            def flag(key: str) -> str:
+                value = (protection.get(key) or {}).get("enabled")
+                return str(value) if isinstance(value, bool) else "unknown"
+
+            self.cover(6, f"required status checks: {safe_names(checks, 10) or 'none'}")
             self.add(6, "branch-protection", f"{owner}/{repo}@{branch}",
-                     f"required approvals: {reviews.get('required_approving_review_count', 0)}; "
-                     f"force pushes allowed: {(protection.get('allow_force_pushes') or {}).get('enabled')}; "
-                     f"deletion allowed: {(protection.get('allow_deletions') or {}).get('enabled')}; "
-                     f"enforced for admins: {(protection.get('enforce_admins') or {}).get('enabled')}; "
-                     f"status checks required: {bool(protection.get('required_status_checks'))}")
+                     f"required approvals: {approvals if isinstance(approvals, int) else 'unknown'}; "
+                     f"force pushes allowed: {flag('allow_force_pushes')}; "
+                     f"deletion allowed: {flag('allow_deletions')}; "
+                     f"enforced for admins: {flag('enforce_admins')}; "
+                     f"status checks required: {bool(checks)}")
         else:
             self.add(6, "branch-protection", f"{owner}/{repo}@{branch}",
-                     f"NO CLASSIC PROTECTION READABLE ({protection}); see rulesets below")
+                     f"classic protection not readable ({protection}): either none is set or this token "
+                     "cannot see it")
         rules = self._gh_json(f"repos/{owner}/{repo}/rules/branches/{branch}")
-        types: list = []
         if isinstance(rules, list):
             types = sorted({str(r.get("type")) for r in rules if isinstance(r, dict)})
             self.add(6, "branch-rulesets", f"{owner}/{repo}@{branch}",
-                     f"ruleset rule types on this branch: {', '.join(types) or 'none'}"
-                     + ("" if types else " (classic protection, if any, is the only layer)"))
-        protected = isinstance(protection, dict) or bool(types)
-        if not protected:
-            verdict = "NO PROTECTION FOUND: anyone with push access can push, force-push or delete this branch"
-        elif "admin" in held and admins_bound is False and not types:
-            verdict = ("THIS TOKEN CAN BYPASS THE PROTECTION: it has admin on the repo and the rules are "
-                       "not enforced for admins, so a direct push to the default branch is accepted")
-        elif held:
-            verdict = "protected, and this token is bound by the rules as far as the API shows"
+                     f"ruleset rule types on this branch: {safe_names(types) or 'none'}")
         else:
-            verdict = "protected; this token has read access only"
-        self.add(6, "default-branch-verdict", f"{owner}/{repo}@{branch}", verdict)
+            self.add(6, "branch-rulesets", f"{owner}/{repo}@{branch}", f"rulesets not readable ({rules})")
+        self.add(6, "default-branch-verdict", f"{owner}/{repo}@{branch}", branch_verdict(protection, rules, held))
         org = self._gh_json(f"orgs/{owner}")
         if isinstance(org, dict):
-            self.add(6, "org", owner,
-                     f"members can create public repos: {org.get('members_can_create_public_repositories')}; "
-                     f"members can create repos: {org.get('members_can_create_repositories')}; "
-                     f"2FA required: {org.get('two_factor_requirement_enabled')}")
+            def setting(key: str) -> str:
+                return str(org.get(key)) if isinstance(org.get(key), bool) else "unknown"
+
+            self.add(6, "org", f"org:{owner}",
+                     f"members can create public repos: {setting('members_can_create_public_repositories')}; "
+                     f"members can create repos: {setting('members_can_create_repositories')}; "
+                     f"2FA required: {setting('two_factor_requirement_enabled')}")
 
     def _gh_json(self, endpoint: str) -> object:
-        code, out, err = self._run(["gh", "api", "--method", "GET", endpoint])
+        # The host is pinned: without it gh would use GH_HOST or its default, which may be another server.
+        self.github_requests += 1
+        code, out, err = self._run(["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint])
         if code != 0:
             status = re.search(r"HTTP (\d{3})", err + out)
             return f"HTTP {status.group(1)}" if status else "request failed"
@@ -1383,7 +2036,7 @@ class Collector:
                 except ValueError:
                     continue
         if inside:
-            self.add(7, "synced-folder", ".", f"REPO IS INSIDE A {inside[1].upper()} FOLDER ({self.show(inside[0])})")
+            self.add(7, "synced-folder", ".", f"REPO IS INSIDE A {safe_name(inside[1]).upper()} FOLDER ({self.show(inside[0])})")
         else:
             note = "repo is not under a known sync root"
             for name in ("Desktop", "Documents"):
@@ -1396,27 +2049,33 @@ class Collector:
                         if os.path.lexists(mirrored)
                         else f"repo is under ~/{name}; iCloud Desktop & Documents not detected (heuristic)")
             self.add(7, "synced-folder", ".", note)
-        empty, placeholders, examined, meant_empty = [], [], 0, 0
+        empty, placeholders, examined, meant_empty, special = [], [], 0, 0, 0
         for rel in self.walk():
             base = rel.rsplit("/", 1)[-1]
             try:
                 info = os.lstat(self.repo / rel)
             except OSError:
                 continue
+            if not stat.S_ISREG(info.st_mode):
+                # Links, FIFOs, sockets and devices have no size to speak of.
+                special += not stat.S_ISLNK(info.st_mode)
+                continue
             examined += 1
-            meant_empty += info.st_size == 0 and base in INTENTIONALLY_EMPTY
             if re.match(r"^\..+\.icloud$", base) or getattr(info, "st_flags", 0) & SF_DATALESS:
                 placeholders.append(rel)
             elif re.search(r"(?i)conflicted copy|\(conflict\)", base):
-                placeholders.append(f"{rel} (sync conflict copy)")
-            elif info.st_size == 0 and base not in INTENTIONALLY_EMPTY and not os.path.islink(self.repo / rel):
+                placeholders.append(rel)
+            elif info.st_size == 0 and base in INTENTIONALLY_EMPTY:
+                meant_empty += 1
+            elif info.st_size == 0:
                 empty.append(rel)
         for rel in placeholders:
             self.add(7, "cloud-placeholder", rel, "content is not on this disk (cloud-only placeholder) or is a conflict copy")
         for rel in empty:
             self.add(7, "zero-byte-file", rel, self.status(rel) if rel in self.tracked() else "0 bytes")
-        self.cover(7, f"{examined} files examined; {len(placeholders)} placeholders; {len(empty)} unexpected "
-                      f"zero-byte files; {meant_empty} empty-by-convention files (.gitkeep, __init__.py) not listed")
+        self.cover(7, f"{examined} regular files examined; {len(placeholders)} placeholders; {len(empty)} unexpected "
+                      f"zero-byte files; {meant_empty} empty-by-convention files (.gitkeep, __init__.py) not listed"
+                      + (f"; {special} special files (FIFO, socket, device) skipped" if special else ""))
 
     # -- check 8 -----------------------------------------------------------
 
@@ -1447,44 +2106,43 @@ class Collector:
         command, args = spec.get("command"), spec.get("args") or []
         if isinstance(command, list):
             command, args = (command[0] if command else ""), list(command[1:]) + list(args)
+        unparseable = False
         if isinstance(command, str) and " " in command and not args:
             try:
                 command, *args = shlex.split(command)
             except ValueError:
-                pass
+                unparseable = True
         args = [str(a) for a in args] if isinstance(args, list) else []
         traits = []
-        if command:
-            shown, hide_next = [], False
-            for arg in args:
-                shown.append("<redacted>" if hide_next else arg)
-                hide_next = bool(SECRET_FLAG.match(arg))
-            traits.append("runs: " + snippet(" ".join([str(command)] + shown)))
+        if unparseable:
+            traits.append("runs a command that could not be parsed (not shown)")
+        elif command:
+            traits.append(launch_summary(str(command), args))
             reasons = unpinned_reasons(str(command), args)
             if reasons:
                 traits.append("UNPINNED (" + ", ".join(reasons) + ")")
         url = spec.get("url") or spec.get("serverUrl") or spec.get("httpUrl")
+        host = ""
         if isinstance(url, str):
-            try:
-                parts = urlsplit(url)
-                traits.append(f"remote: {parts.scheme}://{parts.hostname}")
-            except ValueError:
-                traits.append("remote: <unparseable url>")
+            scheme = url.split("://", 1)[0].lower() if "://" in url else "?"
+            scheme = scheme if scheme in ("http", "https", "ws", "wss") else "?"
+            host = safe_url_host(url)
+            traits.append(f"remote: {scheme}://{host}")
         literal = []
         for block_name in ("env", "headers"):
             block = spec.get(block_name)
             if isinstance(block, dict) and block:
-                traits.append(f"{block_name}: {', '.join(sorted(map(str, block)))}")
+                traits.append(f"{block_name}: {safe_names(sorted(map(str, block)))}")
                 literal += [str(k) for k, v in block.items()
                             if isinstance(v, str) and v and "${" not in v and not v.startswith("$")
                             and (SECRET_NAME.search(str(k)) or shape_label(v) or looks_random(v))]
         if literal:
-            traits.append(f"LITERAL SECRET stored in config for: {', '.join(sorted(literal))}")
-        label = f"{name}" + (f" ({scope})" if scope else "")
+            traits.append(f"LITERAL SECRET stored in config for: {safe_names(sorted(literal))}")
+        label = safe_name(name) + (f" ({scope})" if scope else "")
         self.add(8, "mcp-server", loc, f"{label}: {'; '.join(traits) or 'no launch details'}")
-        if SENDS_HINT.search(f"{name} {command} {' '.join(args)} {url or ''}"):
-            self.add(11, "mcp-server-can-send", loc, f"{name}: name suggests it can send money or messages; "
-                     "look for a cap, an allowlist and a confirmation step")
+        if SENDS_HINT.search(f"{name} {os.path.basename(str(command or ''))} {host}"):
+            self.add(11, "mcp-server-can-send", loc, f"{safe_name(name)}: name suggests it can send money or "
+                     "messages; look for a cap, an allowlist and a confirmation step")
 
     def agent_config(self) -> None:
         configs = [self.repo / rel for rel in MCP_CONFIGS_REPO] + [self.home / rel for rel in MCP_CONFIGS_HOME]
@@ -1496,8 +2154,10 @@ class Collector:
             seen.add(path)
             data = self.load_json(path)
             loc = self.show(path)
-            servers = self._servers(data)
-            for scope, name, spec in servers:
+            if data is None:
+                self.add(8, "config-not-parsed", loc, "present but not read: invalid JSON, or a link that leads "
+                         "out of the repository. NOT INSPECTED")
+            for scope, name, spec in self._servers(data):
                 self._describe_server(loc, scope, name, spec)
             if isinstance(data, dict):
                 self._claude_extras(loc, data)
@@ -1505,6 +2165,9 @@ class Collector:
         for path in (self.repo / ".codex" / "config.toml", self.home / ".codex" / "config.toml"):
             text = self.text(path)
             if text is None:
+                if os.path.lexists(path):
+                    self.add(8, "config-not-parsed", self.show(path), "present but not read: unreadable, or a link "
+                             "that leads out of the repository. NOT INSPECTED")
                 continue
             tables = parse_toml_tables(text)
             for header, values in tables.items():
@@ -1517,7 +2180,7 @@ class Collector:
                     self._describe_server(self.show(path), "", found.group(1), spec)
             notify = tables.get("", {}).get("notify")
             if notify:
-                self.add(8, "hook", self.show(path), f"notify: {snippet(str(notify))}")
+                self.add(8, "hook", self.show(path), f"notify: {command_summary(notify)}")
         self._plugins()
         self._skills()
         self._install_scripts()
@@ -1537,35 +2200,48 @@ class Collector:
                 for group in groups if isinstance(groups, list) else []:
                     if not isinstance(group, dict):
                         continue
-                    matcher = f"[{group.get('matcher')}]" if group.get("matcher") else ""
+                    matcher = f"[{safe_name(group.get('matcher'))}]" if group.get("matcher") else ""
                     for hook in group.get("hooks") or []:
-                        if isinstance(hook, dict):
-                            body = hook.get("command") or hook.get("prompt") or hook.get("url") or ""
-                            self.add(8, "hook", loc, f"{event}{matcher} ({hook.get('type', '?')}): {snippet(str(body))}")
+                        if not isinstance(hook, dict):
+                            continue
+                        kind = hook.get("type") if hook.get("type") in ("command", "prompt", "http", "agent") else "?"
+                        if hook.get("command"):
+                            body = command_summary(hook["command"])
+                        elif hook.get("url"):
+                            body = "calls a URL (not shown)"
+                        else:
+                            body = "prompt text (not shown)"
+                        self.add(8, "hook", loc, f"{safe_name(event)}{matcher} ({kind}): {body}")
         for key in ("apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper"):
             if data.get(key):
-                self.add(8, "auto-run-command", loc, f"{key}: {snippet(str(data[key]))}")
+                self.add(8, "auto-run-command", loc, f"{key}: {command_summary(data[key])}")
         status_line = data.get("statusLine")
         if isinstance(status_line, dict) and status_line.get("command"):
-            self.add(8, "auto-run-command", loc, f"statusLine: {snippet(str(status_line['command']))}")
+            self.add(8, "auto-run-command", loc, f"statusLine: {command_summary(status_line['command'])}")
         enabled = data.get("enabledPlugins")
         if isinstance(enabled, dict) and enabled:
-            names = sorted(k for k, v in enabled.items() if v)
-            self.add(8, "plugins-enabled", loc, ", ".join(names[:30]))
+            self.add(8, "plugins-enabled", loc, safe_names(sorted(k for k, v in enabled.items() if v), 30))
         markets = data.get("extraKnownMarketplaces")
         if isinstance(markets, dict) and markets:
             described = []
             for name, value in markets.items():
                 source = value.get("source") if isinstance(value, dict) else None
-                origin = (source.get("repo") or source.get("url") or source.get("path") or "?") if isinstance(source, dict) else "?"
-                described.append(f"{name} <- {snippet(str(origin))}")
+                origin = "?"
+                if isinstance(source, dict):
+                    if source.get("repo"):
+                        origin = safe_name(source["repo"])
+                    elif source.get("url"):
+                        origin = "a URL (host not shown)"
+                    elif source.get("path"):
+                        origin = "a local path"
+                described.append(f"{safe_name(name)} <- {origin}")
             self.add(8, "plugin-marketplace", loc, "; ".join(described[:15]))
         env = data.get("env")
         if isinstance(env, dict) and env:
             literal = sorted(str(k) for k, v in env.items()
                              if isinstance(v, str) and (shape_label(v) or (SECRET_NAME.search(str(k)) and v)))
-            self.add(2, "settings-env", loc, f"sets: {', '.join(sorted(map(str, env))[:25])}"
-                     + (f"; LITERAL SECRET for: {', '.join(literal)}" if literal else ""))
+            self.add(2, "settings-env", loc, f"sets: {safe_names(sorted(map(str, env)), 25)}"
+                     + (f"; LITERAL SECRET for: {safe_names(literal)}" if literal else ""))
 
     def _plugins(self) -> None:
         installed = self.load_json(self.home / ".claude" / "plugins" / "installed_plugins.json")
@@ -1578,9 +2254,9 @@ class Collector:
                     continue
                 root = Path(str(entry.get("installPath") or ""))
                 ships = [label for rel, label in (("hooks/hooks.json", "hooks"), (".mcp.json", "MCP servers"))
-                         if root.is_dir() and (root / rel).is_file()]
+                         if root.is_absolute() and root.is_dir() and (root / rel).is_file()]
                 self.add(8, "plugin-installed", "~/.claude/plugins",
-                         f"{name} {entry.get('version', '?')} ({entry.get('scope', '?')})"
+                         f"{safe_name(name)} {safe_name(entry.get('version', '?'))} ({safe_name(entry.get('scope', '?'))})"
                          + (f"; SHIPS {' and '.join(ships)}" if ships else ""))
 
     def _skills(self) -> None:
@@ -1588,10 +2264,21 @@ class Collector:
         for root in roots:
             if not root.is_dir():
                 continue
-            names, scripted, linked = [], 0, 0
+            try:
+                root.relative_to(self.repo)
+                if not root.resolve().is_relative_to(self.repo):
+                    self.add(8, "skills", self.show(root), "this directory is a link out of the repository: NOT INSPECTED")
+                    continue
+            except ValueError:
+                pass  # a user-level skills directory; links there are the user's own
+            names, scripted, linked, escaped = [], 0, 0, 0
+            in_repo = root.is_relative_to(self.repo)
             for skill_md in sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/*/SKILL.md")) + sorted(root.glob("*/*/*/SKILL.md")):
                 directory = skill_md.parent
                 if any(part.startswith(".") for part in directory.relative_to(root).parts):
+                    continue
+                if in_repo and not directory.resolve().is_relative_to(self.repo):
+                    escaped += 1  # reached through a link that leaves the repository: not named, not probed
                     continue
                 names.append(directory.name)
                 scripted += (directory / "scripts").is_dir()
@@ -1599,30 +2286,42 @@ class Collector:
                 self._hidden_unicode(skill_md)
             if names:
                 self.add(8, "skills", self.show(root),
-                         f"{len(names)} skills ({scripted} bundle scripts, {linked} are symlinks): "
-                         f"{', '.join(names[:30])}{' ...' if len(names) > 30 else ''}")
+                         f"{len(names)} skills ({scripted} bundle scripts, {linked} are symlinks): {safe_names(names, 30)}")
+            if escaped:
+                self.add(8, "skills", self.show(root), f"{escaped} entries are reached through a link out of the "
+                         "repository: NOT INSPECTED")
 
     def _install_scripts(self) -> None:
         lifecycle = ("preinstall", "install", "postinstall", "prepare", "prepublish", "prepack")
+        root_package = self.load_json(self.repo / "package.json")
+        declared = root_package.get("workspaces") if isinstance(root_package, dict) else None
+        if isinstance(declared, dict):
+            declared = declared.get("packages")
+        patterns = [p.strip("/").replace("./", "", 1) for p in declared or [] if isinstance(p, str)]
+        root_locked = any((self.repo / lock).is_file() for lock in LOCKFILES)
         for name in [n for n in self.files() if n.rsplit("/", 1)[-1] == "package.json"][:25]:
             folder = (self.repo / name).parent
-            if not any((folder / lock).is_file() for lock in LOCKFILES) and not any(
-                    (self.repo / lock).is_file() for lock in LOCKFILES):
+            locked = any((folder / lock).is_file() for lock in LOCKFILES)
+            # A lockfile at the root covers a nested package only when that package is one of the root's workspaces.
+            inside = folder.relative_to(self.repo).as_posix()
+            member = any(workspace_match(inside, pattern) for pattern in patterns)
+            if not locked and not (root_locked and member):
                 self.add(8, "no-lockfile", name, "NO LOCKFILE beside this package.json: an install resolves "
                          "every dependency to the newest matching release and runs its install scripts")
             data = self.load_json(self.repo / name)
             scripts = data.get("scripts") if isinstance(data, dict) else None
             for key in lifecycle:
                 if isinstance(scripts, dict) and scripts.get(key):
-                    self.add(8, "install-script", name, f"{key}: {snippet(str(scripts[key]))}")
+                    self.add(8, "install-script", name, f"{key}: {command_summary(scripts[key])}")
         container = re.compile(r"\"(postCreateCommand|postStartCommand|onCreateCommand|initializeCommand"
                                r"|updateContentCommand|postAttachCommand)\"")
         for name in self.files():
             base = name.rsplit("/", 1)[-1]
             if base == "devcontainer.json":
                 for lineno, line in enumerate((self.text(name) or "").splitlines(), 1):
-                    if container.search(line):
-                        self.add(8, "install-script", f"{name}:{lineno}", snippet(line))
+                    found = container.search(line)
+                    if found:
+                        self.add(8, "install-script", f"{name}:{lineno}", f"{found.group(1)} runs when the container starts")
             elif name.endswith(".vscode/tasks.json") and "folderOpen" in (self.text(name) or ""):
                 self.add(8, "auto-run-command", name, "a task runs on folder open (runOn: folderOpen)")
             elif base == ".envrc":
@@ -1639,12 +2338,8 @@ class Collector:
         self._unicode_files += 1
         hits = []
         for lineno, line in enumerate(text.splitlines(), 1):
-            previous = 0
-            for col, char in enumerate(line, 1):
-                cp = ord(char)
-                if cp > 0x7F and hidden_codepoint(cp, previous) and not (cp == 0xFEFF and lineno == 1 and col == 1):
-                    hits.append((lineno, col, cp))
-                previous = cp
+            hits += [(lineno, col, cp) for col, cp in hidden_columns(line)
+                     if not (cp == 0xFEFF and lineno == 1 and col == 1)]
         if not hits:
             return
         for lineno, col, cp in hits[:MAX_PER_FILE]:
@@ -1656,6 +2351,7 @@ class Collector:
 
     def ci(self) -> None:
         workflows = [n for n in self.files() if re.match(r"^\.github/workflows/[^/]+\.ya?ml$", n)]
+        entry = re.compile(r"[\"']?([\w-]{1,40})[\"']?\s*:\s*[\"']?write\b")
         for name in workflows:
             lines = (self.text(name) or "").splitlines()
             jobs_at = next((i for i, l in enumerate(lines) if re.match(r"^jobs\s*:", l)), len(lines))
@@ -1663,32 +2359,51 @@ class Collector:
             triggers = [t for t in ALL_TRIGGERS if re.search(r"(?<![\w-])" + t + r"(?![\w-])", head)]
             untrusted = [t for t in triggers if t in UNTRUSTED_TRIGGERS]
             agent, writes, secrets, interp, cache, pr_head = [], [], set(), [], [], []
-            declares = False
+            declares, block_indent, scalar_indent = False, None, None
             for lineno, line in enumerate(lines, 1):
-                if line.lstrip().startswith("#"):
+                if not line.strip() or line.lstrip().startswith("#"):
                     continue
-                if AGENT_MARKER.search(line):
-                    agent.append(lineno)
-                if re.match(r"^\s*permissions\s*:", line):
+                code = line.split(" #", 1)[0]
+                indent = len(code) - len(code.lstrip())
+                # Inside `run: |` and other block scalars the text is shell or
+                # prose. It is still searched for agents and secrets below, but
+                # a `permissions:` line in it grants nothing.
+                in_scalar = scalar_indent is not None and indent > scalar_indent
+                if not in_scalar:
+                    scalar_indent = indent if re.search(r":\s*[|>][+-]?\d*\s*$", code) else None
+                # `write` counts only inside a permissions mapping: an env var
+                # or input that happens to be `write` grants nothing.
+                opened = None if in_scalar else re.match(r"^\s*(?:-\s*)?[\"']?permissions[\"']?\s*:\s*(.*)$", code)
+                if opened:
                     declares = True
-                    if "write-all" in line:
+                    inline = opened.group(1).strip()
+                    block_indent = None if inline else indent
+                    if "write-all" in inline:
                         writes.append(f"write-all@{lineno}")
-                found = re.match(r"^\s*([\w-]+)\s*:\s*write\b", line)
-                if found:
-                    writes.append(f"{found.group(1)}@{lineno}")
-                secrets.update(re.findall(r"secrets\.([A-Za-z0-9_]+)", line))
-                if re.search(r"secrets\s*:\s*inherit", line):
+                    writes += [f"{m.group(1)}@{lineno}" for m in entry.finditer(inline)]
+                elif block_indent is not None and not in_scalar:
+                    if indent <= block_indent:
+                        block_indent = None
+                    else:
+                        found = entry.match(code.strip())
+                        if found:
+                            writes.append(f"{found.group(1)}@{lineno}")
+                if AGENT_MARKER.search(code):
+                    agent.append(lineno)
+                secrets.update(re.findall(r"secrets\.([A-Za-z0-9_]{1,80})", code))
+                if re.search(r"secrets\s*:\s*inherit", code):
                     secrets.add("(inherit: all secrets)")
-                if UNTRUSTED_EXPR.search(line):
+                if UNTRUSTED_EXPR.search(code):
                     interp.append(lineno)
-                if re.search(r"actions/cache|^\s*cache\s*:", line):
+                if re.search(r"actions/cache|^\s*cache\s*:", code):
                     cache.append(lineno)
-                if re.search(r"ref\s*:.*github\.event\.pull_request\.head|refs/pull/", line):
+                if re.search(r"ref\s*:.*github\.event\.pull_request\.head|refs/pull/", code):
                     pr_head.append(lineno)
             note = f"triggers: {', '.join(triggers) or 'none found'}"
             note += f"; agent/LLM markers at lines {agent[:8]}" if agent else "; no agent marker"
-            note += f"; write permissions: {', '.join(writes)}" if writes else (
-                "; permissions block present, no write" if declares else "; NO permissions BLOCK (repo default token scope applies)")
+            note += f"; WRITE PERMISSIONS: {', '.join(writes)}" if writes else (
+                "; permissions block present, no write found" if declares
+                else "; NO permissions BLOCK (repo default token scope applies)")
             note += f"; secrets used: {', '.join(sorted(secrets))}" if secrets else "; no secrets referenced"
             if interp:
                 note += f"; untrusted event text interpolated at lines {interp[:8]}"
@@ -1696,19 +2411,27 @@ class Collector:
                 note += f"; cache at lines {cache[:5]}"
             if pr_head:
                 note += f"; checks out PR head at lines {pr_head[:5]}"
+            if re.search(r"^\s*uses\s*:\s*\.?/?[\w./-]*\.github/workflows/|workflow_call", "\n".join(lines), re.M):
+                note += "; calls or is a reusable workflow: read the other file too"
             self.add(9, "workflow", name, note)
             if agent and untrusted:
                 self.add(9, "agent-on-untrusted-trigger", f"{name}:{agent[0]}",
                          f"AGENT RUNS ON {', '.join(untrusted)}"
                          + (f" WITH SECRETS ({len(secrets)})" if secrets else "")
                          + (f" AND WRITE PERMISSIONS ({', '.join(writes)})" if writes else ""))
+            elif agent and "pull_request" in triggers:
+                self.add(9, "agent-on-pull-request", f"{name}:{agent[0]}",
+                         "an agent runs on pull_request: the PR's content is untrusted input. Fork PRs get a "
+                         "read-only token and no secrets by default; same-repo PRs get this workflow's"
+                         + (f" WRITE PERMISSIONS ({', '.join(writes)})" if writes else " permissions")
+                         + (f" and {len(secrets)} secrets" if secrets else ""))
         other = re.compile(r"(?:^|/)(?:\.gitlab-ci\.yml|Jenkinsfile|azure-pipelines\.yml|bitbucket-pipelines\.yml"
                            r"|\.circleci/config\.yml|\.buildkite/[^/]+\.ya?ml)$")
         for name in self.files():
             if other.search(name):
                 for lineno, line in enumerate((self.text(name) or "").splitlines(), 1):
                     if AGENT_MARKER.search(line):
-                        self.add(9, "agent-in-ci", f"{name}:{lineno}", snippet(line))
+                        self.add(9, "agent-in-ci", f"{name}:{lineno}", "agent or LLM marker")
         self.cover(9, f"{len(workflows)} GitHub Actions workflows; "
                       f"{sum(1 for n in self.files() if other.search(n))} other CI config files")
 
@@ -1724,85 +2447,104 @@ class Collector:
             perms = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
             allow = [str(a) for a in perms.get("allow") or []]
             wide = [a for a in allow if broad.match(a)]
-            note = f"defaultMode: {perms.get('defaultMode', 'unset')}; allow rules: {len(allow)}"
+            mode = perms.get("defaultMode", "unset")
+            note = f"defaultMode: {mode if mode in PERMISSION_MODES or mode == 'unset' else '<unrecognised value>'}"
+            note += f"; allow rules: {len(allow)}"
             if wide:
-                note += f"; BROAD ALLOW: {'; '.join(snippet(w) for w in wide[:12])}"
+                note += f"; BROAD ALLOW: {'; '.join(rule_head(w) for w in wide[:12])}"
             note += f"; deny rules: {len(perms.get('deny') or [])}"
-            for key in ("disableBypassPermissionsMode",):
-                if key in perms:
-                    note += f"; {key}: {perms[key]}"
-            if data.get("skipDangerousModePermissionPrompt"):
+            if perms.get("disableBypassPermissionsMode") == "disable":
+                note += "; bypass mode disabled by setting"
+            if data.get("skipDangerousModePermissionPrompt") is True:
                 note += "; BYPASS-MODE WARNING PRE-ACCEPTED (skipDangerousModePermissionPrompt: true)"
-            if data.get("enableAllProjectMcpServers"):
+            if data.get("enableAllProjectMcpServers") is True:
                 note += "; EVERY PROJECT MCP SERVER AUTO-ENABLED (enableAllProjectMcpServers: true)"
             sandbox = data.get("sandbox")
-            note += f"; sandbox.enabled: {sandbox.get('enabled')}" if isinstance(sandbox, dict) else "; no sandbox block"
+            note += (f"; sandbox.enabled: {sandbox.get('enabled') is True}" if isinstance(sandbox, dict)
+                     else "; no sandbox block")
             self.add(10, "agent-mode", self.show(path), note)
         state = self.load_json(self.home / ".claude.json")
-        if isinstance(state, dict) and state.get("bypassPermissionsModeAccepted"):
+        if isinstance(state, dict) and state.get("bypassPermissionsModeAccepted") is True:
             self.add(10, "agent-mode", "~/.claude.json", "bypass-permissions mode has been accepted on this machine")
         others = [self.home / rel for rel in OTHER_AGENT_SETTINGS_HOME]
         others += [self.repo / ".codex" / "config.toml", self.repo / ".gemini" / "settings.json",
                    self.repo / ".vscode" / "settings.json", self.repo / ".cursor" / "cli.json"]
         for path in others:
             for lineno, line in enumerate((self.text(path, MAX_CONFIG_BYTES) or "").splitlines(), 1):
-                if AGENT_SETTING.search(line) and not line.lstrip().startswith(("#", "//")):
-                    self.add(10, "agent-setting", f"{self.show(path)}:{lineno}", snippet(line))
+                if line.lstrip().startswith(("#", "//")):
+                    continue
+                found = re.match(r"^\s*[\"']?([\w.-]{1,60})[\"']?\s*[:=]\s*[\"']?([\w-]{1,30})?", line)
+                if found and AGENT_SETTING.search(found.group(1)):
+                    value = (found.group(2) or "").lower()
+                    shown = value if value in SETTING_WORDS else "(a value; read the line)"
+                    self.add(10, "agent-setting", f"{self.show(path)}:{lineno}", f"{found.group(1)} = {shown}")
+        # Which startup files a non-interactive shell loads decides whether a
+        # safety net exists for an agent. This is read from the files; no shell
+        # is started, because starting one would run those files.
+        every_shell = {".zshenv"}
+        bash_env = self.environ.get("BASH_ENV")
+        rc_paths = [(self.home / rel, rel in every_shell) for rel in RC_FILES]
+        if bash_env and Path(bash_env).is_absolute():
+            rc_paths.append((Path(bash_env), True))
         guard = re.compile(r"^\s*(?:alias\s+(?:-g\s+)?|function\s+)?(rm|mv|cp|git|kubectl|terraform|tofu|docker|psql"
                            r"|aws|gcloud|dropdb)\s*(?:=|\(\))")
-        aliases = 0
-        present = [rel for rel in RC_FILES if (self.home / rel).is_file()]
-        self.cover(10, f"shell startup files read: {', '.join('~/' + r for r in present) or 'none found'}; "
+        alias_name = re.compile(r"^\s*alias\s+(?:-g\s+)?([\w.-]{1,40})=")
+        present = [self.show(path) for path, _ in rc_paths if path.is_file()]
+        self.cover(10, f"shell startup files read: {', '.join(present) or 'none found'}; "
                        f"{len(self._claude_settings_files())} Claude Code settings files; "
-                       f"{sum(1 for p in others if p.is_file())} other agent settings files")
-        for rel in RC_FILES:
-            path = self.home / rel
+                       f"{sum(1 for p in others if p.is_file())} other agent settings files; no shell was started")
+        for path, loads_for_agents in rc_paths:
             for lineno, line in enumerate((self.text(path) or "").splitlines(), 1):
                 if line.lstrip().startswith("#"):
                     continue
+                where = f"{self.show(path)}:{lineno}"
                 if BYPASS.search(line):
-                    self.add(10, "bypass-in-shell-rc", f"{self.show(path)}:{lineno}", snippet(line))
-                if guard.match(line):
-                    aliases += 1
-                    self.add(10, "shell-safety-net", f"{self.show(path)}:{lineno}", snippet(line))
-        for shell in ("bash", "sh", "zsh"):
-            if not shutil.which(shell):
-                continue
-            code, out, _ = self._run([shell, "-c", "type rm"], cwd=self.home if self.home.is_dir() else None)
-            result = " ".join(out.split())[:120] or "no output"
-            plain = bool(re.search(r"is (?:/\S*)?/rm$|is a tracked alias|is hashed", result))
-            self.add(10, "noninteractive-rm", f"{shell} -c 'type rm'",
-                     f"{result}" + ("  <- the plain binary: interactive aliases do NOT load for agents"
-                                    if plain and aliases else ""))
+                    named = alias_name.match(line)
+                    self.add(10, "bypass-in-shell-rc", where,
+                             (f"alias {named.group(1)}" if named else "a line") + " launches an agent with a "
+                             "permission-bypass flag")
+                found = guard.match(line)
+                if found:
+                    self.add(10, "shell-safety-net", where,
+                             f"alias or function named {found.group(1)}; "
+                             + ("this file is read by every shell of its kind, agent shells included"
+                                if loads_for_agents else
+                                "this file is read by INTERACTIVE shells only: an agent's shell does not load it. "
+                                "Confirm with: bash -c 'type -t " + found.group(1) + "'"))
 
     # -- driver ------------------------------------------------------------
 
     def run(self) -> None:
+        # (checks a step contributes to, step). A step outside --only is not run at all.
         steps = [
-            (1, self.env_files), (1, self.scan_tracked_text), (2, self.environment),
-            (2, self.credential_files), (2, self.tracked_sensitive_files), (3, self.shell_scripts),
-            (3, self.symlinks), (4, self.infrastructure), (5, self.prose_rules), (5, self.enforcement),
-            (6, self.github_checks), (7, self.cloud_sync), (8, self.agent_config), (9, self.ci),
-            (10, self.agent_modes),
+            ({1, 2}, self.env_files), ({1, 2, 3, 4, 5, 8, 11}, self.scan_tracked_text),
+            ({1, 2}, self.environment), ({2}, self.credential_files), ({2}, self.tracked_sensitive_files),
+            ({3}, self.shell_scripts), ({3}, self.symlinks), ({4}, self.infrastructure),
+            ({5}, self.prose_rules), ({5}, self.enforcement), ({6}, self.github_checks),
+            ({7}, self.cloud_sync), ({2, 8, 11}, self.agent_config), ({9}, self.ci), ({10}, self.agent_modes),
         ]
-        for check, step in steps:
+        for checks, step in steps:
+            if self.only and not checks & self.only:
+                continue
+            self.steps_run.append(step.__name__)
             try:
                 step()
             except Exception as error:  # noqa: BLE001 - one broken parser must not end the audit
                 # The message is withheld on purpose: it can quote file content.
                 self.notes.append(f"collector step '{step.__name__}' failed ({type(error).__name__}); "
-                                  f"do check {check} by hand")
+                                  f"do check {min(checks)} by hand")
 
     def render(self) -> str:
         out = [
             "blast-radius-audit collector: LEADS, not findings. Verify each one in the file before reporting it.",
             "Read-only. No secret values are printed: names, paths, hosts and line numbers only.",
-            f"repo: {self.show(self.repo) if self.show(self.repo) != '.' else self.repo.name}"
-            f" | git: {'yes' if self.is_git else 'no'} | GitHub queried: {'yes' if self.github else 'no'}",
+            f"repo: {one_line(self.repo.name)}"
+            f" | git: {'yes' if self.is_git else 'no'} | GitHub queried: "
+            + (f"yes, {self.github_requests} read-only gh calls attempted" if self.github_requests else "no"),
             f"directories not scanned: {', '.join(sorted(SKIP_DIRS))}",
             "UPPERCASE marks a trait to look at first. It is a pattern match like the rest, not a verdict.",
         ]
-        out += [f"note: {note}" for note in self.notes]
+        out += [f"note: {one_line(note)}" for note in self.notes]
         for check, title in CHECKS.items():
             if self.only and check not in self.only:
                 continue
@@ -1831,10 +2573,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="also make read-only GitHub API calls through gh (token scopes, branch protection)")
     parser.add_argument("--only", default="", help="comma-separated check numbers, e.g. 1,3,8")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    parser.add_argument("--keys", metavar="FILE", help="print the key names of one env, JSON or TOML file "
+                        "(never its values) and exit")
     args = parser.parse_args(argv)
+    if args.keys:
+        rows = key_listing(Path(args.keys), Path(args.repo))
+        sys.stdout.write("\n".join(one_line(row) for row in rows) + "\n" if rows else "no keys found\n")
+        return 0
     only = set()
     for part in filter(None, (p.strip() for p in args.only.split(","))):
-        if not part.isdigit() or int(part) not in CHECKS:
+        if not re.fullmatch(r"[0-9]{1,2}", part) or int(part) not in CHECKS:
             parser.error(f"--only takes check numbers 1-{len(CHECKS)}, got '{part}'")
         only.add(int(part))
     repo = Path(args.repo)

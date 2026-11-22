@@ -67,11 +67,27 @@ confidential material.
 
 ## Secret scanning in this repository
 
-A pre-commit gitleaks hook in `.githooks/pre-commit`, activated by
-`./scripts/install-hooks.sh` (`core.hooksPath`), scans staged changes.
-Git does not clone hooks, so a fresh clone has no local scan until that
-script runs. A new Claude Code session opened in the clone runs it when the
-session starts. If `gitleaks` is missing, the hook skips the scan and exits 0.
+Two gitleaks hooks in `.githooks/`, activated by
+`./scripts/install-hooks.sh` (`core.hooksPath`), scan staged changes:
+`pre-commit` for `git commit`, and `pre-merge-commit` for the commit an
+automatic merge creates. Git does not clone hooks, so a fresh clone has no
+local scan until that script runs; a new Claude Code session opened in the
+clone runs it when the session starts. The script leaves an existing
+`core.hooksPath` that points elsewhere alone and exits non-zero; in that
+clone the hooks are not active.
+
+The hooks fail closed. If `gitleaks` is not on `PATH`, they block the commit
+and print install instructions. If the scan cannot complete (a missing or
+malformed `.gitleaks.toml`, a broken `gitleaks`), they block and say that the
+scan failed, which is different from a finding.
+`ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is the explicit override for a human who
+accepts an unscanned commit. It applies only when the scanner is missing; it
+never overrides a finding or a failed scan.
+
+The hooks do not cover every way a commit is made. `git rebase`,
+`git cherry-pick` and `git revert` create commits without running either
+hook, and `--no-verify` skips them. The CI scan below is the backstop for
+all of those.
 
 CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
 requests and pushes to `main` with `gitleaks detect --no-git` and

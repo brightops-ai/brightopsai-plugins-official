@@ -19,3 +19,10 @@ Thumbs.db
 # Python bytecode from bundled plugin scripts
 __pycache__/
 *.py[cod]
+
+# Credential files. The repo is public; `git add -A` must not pick these up.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
