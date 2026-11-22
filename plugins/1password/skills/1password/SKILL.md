@@ -62,8 +62,9 @@ MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- <command>
   what 1Password's item reference says of command arguments.
 - **A consumer that reads standard input** gets the value through 1Password's
   subshell form. `op run` substitutes before the inner shell expands, and a
-  shell builtin does the expansion, so the value is in no argument list:
-  `MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c 'printf "%s" "$MY_VAR" | <command-that-reads-stdin>'`.
+  shell builtin does the expansion, so the value is in no argument list.
+  `set +x` comes first because the inner shell can inherit tracing:
+  `MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c 'set +x; printf "%s" "$MY_VAR" | <command-that-reads-stdin>'`.
 - **Masking is not a boundary.** A secret the subprocess prints usually shows
   as `<concealed by 1Password>`, but a value 1Password does not treat as
   concealed prints in full. Do not print a secret through `op run` to look at

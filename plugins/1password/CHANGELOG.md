@@ -24,15 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A secret is never expanded into another program's arguments, where other
   processes can see it. The consumer reads the variable from its own
   environment; a consumer that reads standard input gets the value through
-  1Password's subshell form with a shell builtin doing the expansion; one
-  that needs a file gets a managed file.
+  1Password's subshell form with a shell builtin doing the expansion, after
+  `set +x` in the inner shell, which can inherit tracing; one that needs a
+  file gets a managed file.
 - Checks read an exit status and print no item or field content: a
   fixed-word test for "set and non-empty in my environment"
   (`${VAR_NAME:+set}`, safe under `set -x`), `op item get` with all output
   discarded for "in the vault", and `op run` around `test -n` for "the
   reference resolves". This replaces `printenv VAR_NAME`. Wrapper output is
   not a boundary: `op item get` shows fields 1Password does not classify as
-  sensitive, and `op run` masks only what it recognises.
+  sensitive, and `op run` masks only what it recognises. Creating an item
+  from a template discards the CLI's output for the same reason.
 - Storing a secret never puts the value on a command line or in the
   conversation. The user fills the item in the 1Password app or in an item
   JSON template they edit, or 1Password generates the value
@@ -46,8 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written only to a private directory under `/tmp` that is verified to be
   outside every git work tree, and removed afterwards. The check walks every
   parent without needing `git` and stops when it cannot finish, so a missing
-  or failing tool cannot pass as "outside". The cleanup trap is installed
-  before the write. This replaces `op inject -o config.yml` and
+  or failing tool cannot pass as "outside". When `GIT_WORK_TREE` or `GIT_DIR`
+  is set, which declares a work tree the walk cannot see, it refuses unless
+  `git` itself answers that the directory is outside. The cleanup trap is
+  installed before the write. This replaces `op inject -o config.yml` and
   `op read --out-file ./key.pem` in the current directory.
 - The tmux session for persistent auth never captures the pane. It writes one
   status line (sign-in state or an exit status) to a file, and the agent

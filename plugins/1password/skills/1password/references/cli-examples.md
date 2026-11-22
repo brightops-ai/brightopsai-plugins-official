@@ -54,7 +54,9 @@ expands `$DB_PASSWORD` before `op run` substitutes it. Run the expansion in
 an inner shell, and let a builtin do it, so the value is in no argument list:
 
 ```bash
-DB_PASSWORD="op://<your-vault>/db/password" op run -- sh -c 'printf "%s" "$DB_PASSWORD" | <command-that-reads-stdin>'
+# set +x first: the inner shell can inherit tracing (an exported SHELLOPTS,
+# or a caller that ran it with -x), and a trace would print the expanded value.
+DB_PASSWORD="op://<your-vault>/db/password" op run -- sh -c 'set +x; printf "%s" "$DB_PASSWORD" | <command-that-reads-stdin>'
 ```
 
 `op run` resolves the reference before it starts the inner shell, so the
@@ -109,9 +111,13 @@ op_private_dir() (
     [ "$p" = / ] && break
     p="$(dirname "$p")" && [ -n "$p" ] || refuse "cannot verify the parents of $d"
   done
-  if command -v git >/dev/null 2>&1 &&
-    [ "$(git -C "$d" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
-    refuse "git reports $d inside a work tree"
+  # git's own answer: true, false, or unknown when git is missing or fails.
+  inside="$(git -C "$d" rev-parse --is-inside-work-tree 2>/dev/null)" || inside=unknown
+  [ "$inside" = true ] && refuse "git reports $d inside a work tree"
+  # A work tree declared through the environment has no .git to find, so only
+  # git can rule it out. Without a clear "false", refuse.
+  if [ -n "${GIT_WORK_TREE:-}${GIT_DIR:-}" ] && [ "$inside" != false ]; then
+    refuse "GIT_WORK_TREE or GIT_DIR is set and git did not confirm $d is outside it"
   fi
   printf '%s\n' "$d"
 )
@@ -122,6 +128,9 @@ op_private_dir() (
 - The walk to `/` needs no `git`. It stops with an error unless every parent
   was checked, so a missing or failing tool cannot turn into "looks fine".
   `git`, when present, can only add a refusal.
+- A work tree declared with `GIT_WORK_TREE` or `GIT_DIR` has no `.git` entry
+  for the walk to find. When either is set, the function refuses unless
+  `git` itself answers that the directory is outside the work tree.
 - The directory is mode 700 and is removed again on every refusal.
 
 ## Store
@@ -157,9 +166,11 @@ op item create --category=login --title="<item>" --vault="<your-vault>" --genera
    ```
 2. The user edits that file and puts the value in. From here on the agent
    does not open, print or copy it.
-3. Create the item:
+3. Create the item. Discard the CLI's output and read the exit status: the
+   summary shows any field 1Password does not classify as sensitive, and the
+   template may hold one:
    ```bash
-   op item create --vault="<your-vault>" --template="<template-file>"
+   if op item create --vault="<your-vault>" --template="<template-file>" >/dev/null 2>&1; then echo created; else echo "not created"; fi
    ```
 4. Delete the edited template and its directory, also when step 3 fails:
    ```bash
