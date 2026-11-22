@@ -56,12 +56,18 @@ MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- <command>
 ```
 
 - **The env file holds references, not values**, so it can be committed.
-- **Expansion.** The shell expands `$MY_VAR` before `op run` substitutes it.
-  When the command line itself uses the variable, expand it in a subshell:
-  `MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c '<command> "$MY_VAR"'`.
-- **Masking.** A secret the subprocess prints shows as
-  `<concealed by 1Password>`. `--no-masking` is a deliberate reveal and is
-  for a human only.
+- **The consumer reads the variable itself**, from its environment. Never
+  expand a secret into a command's arguments (`--password "$MY_VAR"`):
+  process arguments are visible to other processes on the machine, which is
+  what 1Password's item reference says of command arguments.
+- **A consumer that reads standard input** gets the value through 1Password's
+  subshell form. `op run` substitutes before the inner shell expands, and a
+  shell builtin does the expansion, so the value is in no argument list:
+  `MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c 'printf "%s" "$MY_VAR" | <command-that-reads-stdin>'`.
+- **Masking is not a boundary.** A secret the subprocess prints usually shows
+  as `<concealed by 1Password>`, but a value 1Password does not treat as
+  concealed prints in full. Do not print a secret through `op run` to look at
+  it. `--no-masking` is a deliberate reveal and is for a human only.
 - **Scope.** `op run` gives the value to one process for its lifetime.
   `export` leaves it in the shell and every child, and 1Password says to
   "assume that processes on your computer can access the environment of other
@@ -69,20 +75,28 @@ MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- <command>
 
 ## Check without revealing
 
-- **Already in this environment?** Many users pre-inject secrets in a launch
-  script. Expand a fixed word, never the value; this prints `set` or `unset`:
+A check reads an exit status. It never prints item or field content.
+
+- **Already in this environment, and non-empty?** Many users pre-inject
+  secrets in a launch script. Expand a fixed word, never the value; this
+  prints `set` for a non-empty variable and `unset` otherwise:
   ```bash
   if [ "${VAR_NAME:+set}" = set ]; then echo set; else echo unset; fi
   ```
   Not `printenv VAR_NAME`, `echo "$VAR_NAME"`, `env` or `[ -n "$VAR_NAME" ]`.
-- **Is the item in the vault?** `op item get "<ITEM>" --vault "<VAULT>"`
-  conceals sensitive fields unless `--reveal` is passed. Never pass
-  `--reveal`, and do not add `--format json` (see `references/cli-examples.md`).
-- **Does the reference resolve?** This prints `<concealed by 1Password>` when
-  it does:
+- **Is the item in the vault?** Discard all output and test the status:
   ```bash
-  MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- printenv MY_VAR
+  if op item get "<ITEM>" --vault "<VAULT>" >/dev/null 2>&1; then echo found; else echo "not found"; fi
   ```
+- **Does the reference resolve to a non-empty value?** The child tests the
+  variable and prints nothing:
+  ```bash
+  if MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c 'test -n "$MY_VAR"' >/dev/null 2>&1; then echo resolves; else echo "does not resolve"; fi
+  ```
+
+The output is discarded on purpose: `op item get` shows every field 1Password
+does not classify as sensitive, and `op run` masks only what it recognises. A
+failure can also mean "not signed in"; `op whoami` tells the two apart.
 
 ## Store a new secret
 
@@ -111,6 +125,8 @@ variable. The forms are in `references/cli-examples.md`.
   prints every expanded value, including in an assignment, `export` or `eval`.
 - A rendered config or key file is deleted when no longer needed (1Password's
   rule) and is written outside every git work tree (this repository's rule).
+  Use only the guarded block in `references/cli-examples.md`, which stops when
+  it cannot verify the location.
 
 ## Keys for agent tools and MCP servers
 
@@ -145,13 +161,14 @@ which case SSH operations work without `op`. See the `ssh-keys` skill.
 
 - Never paste secrets into logs, chat, or code.
 - Never run a command whose output is a secret value: no bare `op read`, no
-  `printenv`, `echo` or `env` on a secret variable, no `op run --no-masking`,
-  no `--reveal`, no `cat` of a rendered config or a mounted `.env` file. A
+  `printenv`, `echo` or `env` on a secret variable (also not under `op run`),
+  no `op run --no-masking`, no `--reveal`, no `op item get` whose output is
+  kept, no `cat` of a rendered config or a mounted `.env` file. A
   value that reaches the transcript can only be undone by rotating it. When
   the user asks to see a value, give them the command to run in their own
   terminal (the human-only section of `references/cli-examples.md`).
 - Never take a secret value into the conversation or put one on a command
-  line.
+  line, as an assignment statement or as another program's argument.
 - If plaintext secrets turn up in any file, flag it and offer to move them
   into the configured vault or an Environment.
 - If a command returns "account is not signed in", authenticate

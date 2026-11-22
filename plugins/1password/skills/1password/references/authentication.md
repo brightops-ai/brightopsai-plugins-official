@@ -43,13 +43,15 @@ SOCKET="$SOCKET_DIR/op-session.sock"
 STATUS="$SOCKET_DIR/op-status"
 SESSION="op-auth-$(date +%Y%m%d-%H%M%S)"
 
-tmux -S "$SOCKET" new -d -s "$SESSION" -n shell
+# -e hands the status path to the pane as a variable (tmux 3.2 or later), so
+# no path is pasted into a command line and its characters cannot break one.
+tmux -S "$SOCKET" new -d -s "$SESSION" -n shell -e "OP_STATUS=$STATUS"
 
 # Sign in with the documented form, then write one status line to a file.
 # That line is all that leaves the session.
 rm -f "$STATUS"
 tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- \
-  "set +x; eval \$(op signin); if op whoami >/dev/null 2>&1; then echo 'op-auth: signed in'; else echo 'op-auth: NOT signed in'; fi >'$STATUS'" Enter
+  'set +x; eval $(op signin); if op whoami >/dev/null 2>&1; then echo "op-auth: signed in"; else echo "op-auth: NOT signed in"; fi >"$OP_STATUS"' Enter
 
 # Read the status line. Repeat if the file is not there yet (the app prompt
 # may still be open).
@@ -60,7 +62,7 @@ cat "$STATUS"
 # output stays in the pane for the user.
 rm -f "$STATUS"
 tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- \
-  "op run --env-file=./app.env -- <command>; echo \"exit: \$?\" >'$STATUS'" Enter
+  'op run --env-file=./app.env -- <command>; echo "exit: $?" >"$OP_STATUS"' Enter
 sleep 1
 cat "$STATUS"
 
@@ -86,12 +88,18 @@ account, to follow the principle of least privilege:
   account after creation." A wider job needs a new service account.
 - **The token can be rotated or revoked.** Do that if it is exposed.
 
-The CLI uses a service account when `OP_SERVICE_ACCOUNT_TOKEN` is set. That
-token is itself a secret:
+The CLI authenticates as a service account when `OP_SERVICE_ACCOUNT_TOKEN`
+is set, unless 1Password Connect is configured: "the `OP_CONNECT_HOST` and
+`OP_CONNECT_TOKEN` environment variables take precedence over
+`OP_SERVICE_ACCOUNT_TOKEN`", and have to be cleared to use the service
+account. So a set token does not prove which identity is in use:
 
-- The platform's secret store or the user sets it. An agent never types,
-  prints or writes it; check it with the fixed-word presence test in
-  SKILL.md.
-- `op user get --me` confirms which account is in use and prints no secret.
+- Check all three names with the fixed-word presence test in SKILL.md.
+- `op user get --me` shows the account actually in use (for a service
+  account, `Type: SERVICE_ACCOUNT`) and prints no secret.
+
+The token is itself a secret. The platform's secret store or the user sets
+it; an agent never types, prints or writes it.
+
 - With access to more than one vault, `op item` commands need `--vault`.
 - Service accounts need 1Password CLI 2.18.0 or later.
