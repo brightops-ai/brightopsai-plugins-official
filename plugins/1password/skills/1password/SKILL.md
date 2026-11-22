@@ -21,7 +21,15 @@ Follow the official CLI get-started steps. Don't guess install commands.
 ## Existing environment setup
 
 Before reading a secret, check whether it's already present in the
-environment (`printenv VAR_NAME`). Many users pre-inject secrets via
+environment. Test for presence only; the check prints `set` or `unset`,
+never the value:
+
+```bash
+if [ -n "${VAR_NAME:-}" ]; then echo set; else echo unset; fi
+```
+
+Do not check with `printenv VAR_NAME`, `echo "$VAR_NAME"` or `env`: each
+prints the value into the transcript. Many users pre-inject secrets via
 `op read` in a shell wrapper or launch script, so the value may already be
 available without needing `op` at all.
 
@@ -58,8 +66,8 @@ Use this skill for mid-session secret operations:
 
 ## Workflow
 
-1. Check if the secret is already in the environment (`printenv VAR_NAME`).
-   If it's there, use it — no need for `op`.
+1. Check if the secret is already in the environment with the presence test
+   above. If it prints `set`, use the variable — no need for `op`.
 2. Verify CLI is present: `op --version`.
 3. Try `op whoami` to check auth status. If desktop app integration is enabled
    and the app is unlocked, this may just work without tmux.
@@ -88,8 +96,9 @@ SESSION="op-auth-$(date +%Y%m%d-%H%M%S)"
 
 tmux -S "$SOCKET" new -d -s "$SESSION" -n shell
 
-# Authenticate
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op signin" Enter
+# Authenticate. eval consumes the session token that `op signin` prints
+# without app integration, so the token never sits in the pane.
+tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- 'eval "$(op signin)"' Enter
 
 # Verify (wait a moment for the app prompt to complete)
 sleep 2
@@ -97,8 +106,11 @@ tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op whoami" Enter
 sleep 1
 tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -50
 
-# Run your op commands inside the session
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op read 'op://<VAULT>/MyItem/password'" Enter
+# Run op commands inside the session. Never send a bare `op read` and then
+# capture the pane: the value would sit in the pane and in the transcript.
+# Hand the secret to its consumer instead. `op run` masks it in the command's
+# output, so the capture below shows the command's result, not the value.
+tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- "op run --env-file=./.env -- <command>" Enter
 sleep 1
 tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -10
 
@@ -109,8 +121,10 @@ tmux -S "$SOCKET" kill-session -t "$SESSION"
 ## Common operations
 
 ### Read a secret
+Send the value straight to the command that needs it. A bare `op read`
+prints the value into the transcript:
 ```bash
-op read 'op://<VAULT>/<Item Name>/<field>'
+op read 'op://<VAULT>/<Item Name>/<field>' | <command-that-reads-stdin>
 ```
 
 ### Export as environment variable
@@ -119,9 +133,10 @@ export VAR_NAME="$(op read 'op://<VAULT>/<Item Name>/<field>')"
 ```
 
 ### Store a new secret
-Prompt the user — never write the value to disk:
+Prompt the user — never write the value to disk. Discard the item summary so
+a stored field cannot reach the transcript:
 ```bash
-op item create --category=api-credential --title="<Service Name>" --vault="<VAULT>" '<field>=<value>'
+op item create --category=api-credential --title="<Service Name>" --vault="<VAULT>" '<field>=<value>' >/dev/null
 ```
 
 ### Inject into a config template
@@ -139,7 +154,15 @@ Note: `op run` doesn't allocate a TTY. For interactive tools, prefer
 ## Guardrails
 
 - Never paste secrets into logs, chat, or code.
+- Never run a command whose output is a secret value: no bare `op read`, no
+  `printenv`, `echo` or `env` on a secret variable, no `op run --no-masking`,
+  no `--reveal`, no `cat` of a rendered config. A value that reaches the
+  transcript can only be undone by rotating it. When the user asks to see a
+  value, give them the command to run in their own terminal (the human-only
+  section of `references/cli-examples.md`); do not run it.
 - Never write secrets to disk — prefer `op run` / `op inject` / `op read` + export.
+  When a tool accepts a key only as a file, write it outside any git work tree
+  and delete it after use (`references/cli-examples.md`).
 - If you discover plaintext secrets in any file, flag it immediately and offer
   to migrate them to the configured vault.
 - If a command returns "account is not signed in", authenticate inside tmux

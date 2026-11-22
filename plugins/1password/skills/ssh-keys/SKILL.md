@@ -27,8 +27,11 @@ The 1Password SSH agent handles all SSH authentication via biometric approval (T
 
 ## Create a new SSH key
 
+Discard the item summary so the generated private key cannot reach the
+transcript; fetch the public key with the next command instead:
+
 ```bash
-op item create --category "SSH Key" --title "<KEY-NAME>" --vault "<VAULT>" --ssh-generate-key ed25519
+op item create --category "SSH Key" --title "<KEY-NAME>" --vault "<VAULT>" --ssh-generate-key ed25519 >/dev/null
 ```
 
 ## Get the public key
@@ -90,6 +93,9 @@ echo "email@example.com $PUBLIC_KEY" >> ~/.ssh/allowed_signers
 
 ## Common gotchas
 
+- **Never read the `private key` field** (`op read`, `op item get --reveal`,
+  `--fields "private key"`). The 1Password SSH agent signs, so nothing needs
+  the key material, and reading it prints it into the transcript.
 - **Do NOT use `IdentityFile`** in `~/.ssh/config` pointing to `.pub` files — it
   causes "invalid format" errors. The 1Password agent offers keys automatically.
 - Only use `IdentityFile`/`IdentitiesOnly` if using `agent.toml` to limit keys

@@ -18,7 +18,7 @@
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **[1password](plugins/1password)** | 1.2.2 | Use the 1Password CLI (`op`) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent. |
+| **[1password](plugins/1password)** | 1.3.0 | Use the 1Password CLI (`op`) to read, inject, and manage secrets mid-session. Covers authentication, retrieval, injection, storage, and SSH keys via the 1Password SSH agent. |
 | **[agent-teams](plugins/agent-teams)** | 1.2.3 | Deprecated; a replacement skill will be published separately. Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.2.0 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.4.0 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
