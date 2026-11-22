@@ -33,6 +33,37 @@ import sys
 import tempfile
 
 
+def visible(text):
+    """Return text with control characters written out, so it stays one line.
+
+    The config path and the action come from outside, and a file name may hold
+    a newline or a terminal escape sequence. Printed raw, a path with a
+    newline in it puts a second line on stderr that this tool never wrote.
+    The rendering is the one `visible` in session-spawn.sh applies to every
+    other message: a backslash is doubled, then tab, newline and carriage
+    return become \\t, \\n and \\r, any other C0 control or DEL becomes
+    \\xNN, and a C1 control becomes \\u00NN.
+    """
+    out = []
+    for char in str(text):
+        code = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif code < 0x20 or code == 0x7F:
+            out.append("\\x%02x" % code)
+        elif 0x80 <= code <= 0x9F:
+            out.append("\\u%04x" % code)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
 def load(path):
     """Return the parsed config, or None if it cannot be read or parsed."""
     try:
@@ -63,7 +94,7 @@ def grant(path, key):
         # than replacing content we cannot read.
         if os.path.exists(path):
             print(
-                "refusing to write: %s exists but could not be parsed" % path,
+                "refusing to write: %s exists but could not be parsed" % visible(path),
                 file=sys.stderr,
             )
             return 1
@@ -108,7 +139,9 @@ def grant(path, key):
                 pass
             raise
     except OSError as exc:
-        print("could not write %s: %s" % (path, exc), file=sys.stderr)
+        # The reason alone: str(exc) repeats the path, in a second rendering.
+        reason = exc.strerror or exc.__class__.__name__
+        print("could not write %s: %s" % (visible(path), visible(reason)), file=sys.stderr)
         return 1
 
     return 0
@@ -125,7 +158,7 @@ def main(argv):
     if action == "grant":
         return grant(path, key)
 
-    print("unknown action: %s" % action, file=sys.stderr)
+    print("unknown action: %s" % visible(action), file=sys.stderr)
     return 2
 
 

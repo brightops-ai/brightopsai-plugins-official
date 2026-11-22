@@ -265,6 +265,165 @@ class TestEvictPluginCache(unittest.TestCase):
         result = self._run("delta", "1.0.0")
         self._assert_refused(result)
 
+    # -- capitalization, and links checked directly -------------------------
+
+    def _case_insensitive(self) -> bool:
+        probe = self.base / "CaseProbe"
+        probe.mkdir()
+        try:
+            return (self.base / "caseprobe").is_dir()
+        finally:
+            probe.rmdir()
+
+    def _resolver(self, body: str) -> str:
+        """A PATH whose `realpath` is a stand-in running `body` on its argument.
+
+        `body` is Python that sees the argument as `arg` and the truly
+        resolved path as `p`, and leaves the answer in `p`.
+        """
+        stubs = self.base / "resolver"
+        stubs.mkdir()
+        self.addCleanup(shutil.rmtree, stubs, ignore_errors=True)
+        program = f"import os, sys\narg = sys.argv[1]\np = os.path.realpath(arg)\n{body}\nprint(p)\n"
+        self.assertNotIn("'", program)
+        (stubs / "realpath").write_text(
+            f'#!/bin/sh\n[ "$1" = "--" ] && shift\nexec "{sys.executable}" -c \'{program}\' "$1"\n',
+            encoding="utf-8",
+        )
+        (stubs / "realpath").chmod(0o755)
+        self.before = _files(self.base)
+        return str(stubs) + os.pathsep + os.environ["PATH"]
+
+    def test_cache_directories_capitalised_on_disk(self) -> None:
+        # A case-insensitive filesystem finds Plugins/Cache when asked for
+        # plugins/cache, and a resolver reports the capitalization on disk.
+        # That is the managed cache, not a directory outside it.
+        config = self.base / "config-caps"
+        cache = config / "Plugins" / "Cache" / MARKETPLACE
+        self._seed(cache)
+        self.before = _files(self.base)
+        target = cache / "alpha" / "1.0.0"
+
+        if not self._case_insensitive():
+            # Here plugins/cache does not exist at all, so there is nothing to
+            # find and nothing may be deleted.
+            result = self._run("alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(config))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("nothing to evict", result.stdout)
+            self.assertEqual(_files(self.base), self.before)
+            return
+
+        dry = self._run("--dry-run", "alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(config))
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn("would delete", dry.stdout)
+        self.assertIn(f"({ALPHA_1_0_0})", dry.stdout)
+        self.assertEqual(_files(self.base), self.before)
+
+        result = self._run("alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(config))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(target.exists())
+        self.assertEqual(
+            _files(self.base),
+            [f for f in self.before if "config-caps/Plugins/Cache" not in f or "alpha/1.0.0/" not in f],
+        )
+
+    def test_resolver_capitalisation_alone_is_not_a_refusal(self) -> None:
+        # The same comparison on any filesystem: the resolver answers with
+        # Plugins/Cache for the plugins/cache it was asked about.
+        path = self._resolver('p = p.replace("/plugins/cache/", "/Plugins/Cache/")')
+        target = self.cache / "alpha" / "1.0.0"
+
+        dry = self._run("--dry-run", "alpha", "1.0.0", PATH=path)
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn(f"would delete {target} ({ALPHA_1_0_0})", dry.stdout)
+        self.assertEqual(_files(self.base), self.before)
+
+        result = self._run("alpha", "1.0.0", PATH=path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(target.exists())
+        self.assertEqual(_files(self.base), [f for f in self.before if "alpha/1.0.0/" not in f])
+
+    def test_resolver_naming_another_directory_is_still_refused(self) -> None:
+        # Only capitalization is forgiven, and only below the config
+        # directory: another name, or another config directory, is not it.
+        for label, body in (
+            ("another cache name", 'p = p.replace("/plugins/cache/", "/plugins/cache2/")'),
+            ("another plugin", 'p = p.replace("/alpha/", "/beta/")'),
+            ("another version", 'p = p.replace("/1.0.0", "/1.1.0")'),
+            ("a longer path", 'p = p + "/extra" if "/plugins/cache/" in p else p'),
+            ("config directory in other capitals", 'p = p.replace("/config/", "/CONFIG/")'),
+        ):
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(resolver=label, dry=dry):
+                    path = self._resolver(body)
+                    result = self._run(*dry, "alpha", "1.0.0", PATH=path)
+                    self._assert_refused(result)
+                    self.assertIn("WARNING", result.stderr)
+                    self.assertIn("DELETES", result.stderr)
+                    self.assertIn("Refusing", result.stderr)
+                    self.assertNotIn("would delete", result.stdout)
+                    shutil.rmtree(self.base / "resolver")
+
+    def test_symlinked_components_are_refused_whatever_the_resolver_says(self) -> None:
+        # The links are looked at directly. A resolver that resolves nothing
+        # (it echoes its argument) must not turn a symlinked managed directory
+        # into a delete outside the cache.
+        path = self._resolver("p = arg")
+        cases = []
+        for depth, label in ((0, "marketplace"), (1, "cache"), (2, "plugins")):
+            config = self.base / f"config-{label}"
+            real = self.cache.parents[depth - 1] if depth else self.cache
+            link = config / real.relative_to(self.config)
+            decoy = self.outside / label
+            victim = decoy / self.cache.relative_to(real) / "alpha" / "1.0.0"
+            victim.mkdir(parents=True)
+            link.parent.mkdir(parents=True)
+            os.symlink(decoy, link)
+            cases.append((label, config, "alpha", victim))
+        # The plugin directory, inside an otherwise real cache.
+        victim = self.outside / "gamma" / "1.0.0"
+        victim.mkdir(parents=True)
+        os.symlink(self.outside / "gamma", self.cache / "gamma")
+        cases.append(("plugin", self.config, "gamma", victim))
+        for _, _, _, victim in cases:
+            (victim / "precious.txt").write_text("keep\n", encoding="utf-8")
+        self.before = _files(self.base)
+
+        for label, config, plugin, victim in cases:
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(symlinked=label, dry=dry):
+                    result = self._run(*dry, plugin, "1.0.0", CLAUDE_CONFIG_DIR=str(config), PATH=path)
+                    self._assert_refused(result)
+                    self.assertIn("WARNING", result.stderr)
+                    self.assertIn("symlink", result.stderr)
+                    self.assertIn("DELETES", result.stderr)
+                    self.assertIn("Refusing", result.stderr)
+                    self.assertNotIn("would delete", result.stdout)
+                    self.assertTrue((victim / "precious.txt").is_file())
+
+    def test_symlink_to_a_differently_capitalised_directory_is_refused(self) -> None:
+        # plugins -> Plugins resolves to a path that differs from the expected
+        # one in capitalization only. It is still a link out of the managed
+        # chain, into a directory this script was not pointed at.
+        if self._case_insensitive():
+            self.skipTest(
+                "plugins and Plugins are one name on this filesystem, so the link cannot be made; "
+                "test_symlinked_components_are_refused_whatever_the_resolver_says covers the link check"
+            )
+        config = self.base / "config-variant"
+        victim = config / "Plugins" / "cache" / MARKETPLACE / "alpha" / "1.0.0"
+        victim.mkdir(parents=True)
+        (victim / "precious.txt").write_text("keep\n", encoding="utf-8")
+        os.symlink("Plugins", config / "plugins")
+        self.before = _files(self.base)
+        for dry in ((), ("--dry-run",)):
+            with self.subTest(dry=dry):
+                result = self._run(*dry, "alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(config))
+                self._assert_refused(result)
+                self.assertIn("WARNING: cache root", result.stderr)
+                self.assertIn("Refusing", result.stderr)
+                self.assertTrue((victim / "precious.txt").is_file())
+
     def test_default_config_dir_is_under_home(self) -> None:
         cache = self.home / ".claude" / "plugins" / "cache" / MARKETPLACE
         self._seed(cache)

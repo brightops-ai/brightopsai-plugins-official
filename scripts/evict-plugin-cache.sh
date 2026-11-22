@@ -12,8 +12,12 @@
 #               (a non-empty DRY_RUN other than 0 does the same)
 #
 # Honours CLAUDE_CONFIG_DIR (default: ~/.claude), so tests can sandbox it. The
-# config directory itself may be a symlink. Nothing below it may be: the cache
-# root must be a real directory at <config>/plugins/cache/<marketplace>.
+# config directory itself may be a symlink. Nothing below it may be: each of
+# plugins, cache, <marketplace>, <plugin> and <version> is tested for a link
+# directly, and the resolved path must then be that same chain under the
+# resolved config directory. Capitalization of those five names is not
+# compared: a case-insensitive filesystem resolves plugins/cache to
+# Plugins/Cache when that is how the directories were created.
 # Runs on macOS (bash 3.2) and Linux.
 #
 # Exit status: 0 evicted, dry run, or nothing there; 1 refused; 2 bad arguments
@@ -35,6 +39,27 @@ resolve() {
   else
     python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
   fi
+}
+
+# ASCII letters lowercased. Used only on the managed tail of a path, whose
+# expected form is ASCII by construction (fixed names, a slug and a version).
+lower() {
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+
+# is_managed_path <resolved> <anchor> <tail>
+#
+# True when <resolved> is <anchor>/<tail>, with the anchor matched exactly and
+# the tail matched without regard to capitalization. The anchor is the resolved
+# config directory, which this script does not manage and so never relaxes.
+is_managed_path() {
+  local resolved="$1" anchor="$2" tail="$3"
+  [ -n "$anchor" ] || return 1
+  case "$resolved" in
+    "$anchor"/*) ;;
+    *) return 1 ;;
+  esac
+  [ "$(lower "${resolved#"$anchor"/}")" = "$(lower "$tail")" ]
 }
 
 # Any DRY_RUN value other than empty or 0 means dry run, so DRY_RUN=true
@@ -92,13 +117,26 @@ if [ ! -e "$cache_root" ] && [ ! -L "$cache_root" ]; then
 fi
 
 # Containment is anchored at the config directory, not at wherever the cache
-# root leads. With every symlink resolved, the cache root must be exactly
-# <config>/plugins/cache/<marketplace>; a cache root (or a `plugins` or `cache`
-# directory) that is a symlink to somewhere else fails this.
+# root leads. Two checks, and both must pass.
+#
+# First, each managed directory on the way to the cache root is looked at
+# itself: a symlink, or anything that is not a directory, is refused. This does
+# not depend on what a path resolver reports.
+for component in "$config_dir/plugins" "$config_dir/plugins/cache" "$cache_root"; do
+  if [ -L "$component" ] || [ ! -d "$component" ]; then
+    echo "WARNING: cache root '$cache_root' is reached through '$component', which is a symlink or not a directory; this DELETES a directory outside the config directory's plugin cache. Refusing." >&2
+    exit 1
+  fi
+done
+
+# Second, with every symlink resolved, the cache root must be
+# <config>/plugins/cache/<marketplace>, give or take the capitalization of
+# those three names.
+managed_tail="plugins/cache/$MARKETPLACE"
 config_real="$(resolve "$config_dir")"
 root_real="$(resolve "$cache_root")"
-if [ -z "$config_real" ] || [ "$root_real" != "$config_real/plugins/cache/$MARKETPLACE" ]; then
-  echo "WARNING: cache root '$cache_root' resolves to '$root_real', not '$config_real/plugins/cache/$MARKETPLACE'; this DELETES a directory outside the config directory's plugin cache. Refusing." >&2
+if ! is_managed_path "$root_real" "$config_real" "$managed_tail"; then
+  echo "WARNING: cache root '$cache_root' resolves to '$root_real', not '$config_real/$managed_tail'; this DELETES a directory outside the config directory's plugin cache. Refusing." >&2
   exit 1
 fi
 
@@ -111,30 +149,39 @@ if [ ! -d "$target" ]; then
   exit 0
 fi
 
-# With every symlink resolved, the target must be exactly
-# <cache root>/<plugin>/<version>. A symlinked plugin directory that leads out
-# of the cache root, or to another plugin inside it, fails this.
-target_real="$(resolve "$target")"
-if [ "$target_real" != "$root_real/$plugin/$version" ]; then
-  echo "WARNING: '$target' resolves to '$target_real', not '$root_real/$plugin/$version'; this DELETES a different directory. Refusing." >&2
+# The same two checks for the plugin directory and the version directory. A
+# symlinked plugin directory that leads out of the cache root, or to another
+# plugin inside it, fails both.
+if [ -L "$cache_root/$plugin" ]; then
+  echo "WARNING: '$cache_root/$plugin' is a symlink; this DELETES a directory that is not this plugin's cache. Refusing." >&2
   exit 1
 fi
+target_real="$(resolve "$target")"
+if ! is_managed_path "$target_real" "$config_real" "$managed_tail/$plugin/$version"; then
+  echo "WARNING: '$target' resolves to '$target_real', not '$config_real/$managed_tail/$plugin/$version'; this DELETES a different directory. Refusing." >&2
+  exit 1
+fi
+
+# What is deleted is the path whose five managed components were each checked
+# above, under the resolved config directory. It is the directory the resolver
+# named, spelled the way it was checked.
+victim="$config_real/$managed_tail/$plugin/$version"
 
 # Everything beneath the target, counted by NUL terminators so a newline in a
 # file name cannot inflate it. `rm -rf` removes all of these, not only the
 # regular files.
 count_entries() {
-  find "$target_real" -mindepth 1 "$@" -print0 | tr -dc '\000' | wc -c | tr -d ' '
+  find "$victim" -mindepth 1 "$@" -print0 | tr -dc '\000' | wc -c | tr -d ' '
 }
 entries="$(count_entries)"
 files="$(count_entries -type f)"
 summary="$entries entries beneath it, $files of them regular files"
 
 if [ "$dry_run" = "1" ]; then
-  echo "dry run: would delete $target_real ($summary)"
+  echo "dry run: would delete $victim ($summary)"
   exit 0
 fi
 
-echo "WARNING: evicting cached $plugin $version; this DELETES $target_real ($summary). Claude Code re-creates it only if that version is installed again." >&2
-rm -rf -- "$target_real"
-echo "evicted $target_real"
+echo "WARNING: evicting cached $plugin $version; this DELETES $victim ($summary). Claude Code re-creates it only if that version is installed again." >&2
+rm -rf -- "$victim"
+echo "evicted $victim"
