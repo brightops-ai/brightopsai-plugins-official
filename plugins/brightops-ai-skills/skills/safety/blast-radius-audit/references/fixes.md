@@ -150,8 +150,14 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 safe_rm() {                        # safe_rm <path> ; DRY_RUN=1 to preview
   local target
-  target="$(realpath -- "${1:?safe_rm: empty path}")"
+  target="$(realpath -- "${1:?safe_rm: empty path}")" || {
+    echo "WARNING: cannot resolve '$1'; refusing to delete an unresolved path." >&2
+    return 1
+  }
   case "$target" in
+    "$REPO_ROOT"/.git|"$REPO_ROOT"/.git/*)
+       echo "WARNING: '$target' is repository metadata; this DELETES history. Refusing." >&2
+       return 1 ;;
     "$REPO_ROOT"/?*) ;;            # strictly inside the repo, never the root itself
     *) echo "WARNING: '$target' is outside $REPO_ROOT; this DELETES files there. Refusing." >&2
        return 1 ;;
@@ -173,6 +179,10 @@ safe_rm() {                        # safe_rm <path> ; DRY_RUN=1 to preview
   `python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))'`.
 - `--` stops a path beginning with `-` being read as an option.
 - POSIX `sh` has no `pipefail`; use `set -eu` there.
+- Containment in the repo is the outer limit, not the goal. Where the script
+  only ever cleans known output directories, compare the target against that
+  short list (`build`, `dist`, `.cache`) and refuse everything else: a
+  descendant of the repo can still be the source tree.
 
 Python: resolve with `Path(target).resolve()`, require
 `repo_root in resolved.parents`, and print the target and file count before
@@ -203,17 +213,21 @@ resource "aws_db_instance" "main" {
   for resource types with no protection attribute, such as buckets. Use both
   where both exist.
 - In scripts, replace `terraform apply -auto-approve` with a saved plan:
-  `terraform plan -out=tfplan` then `terraform apply tfplan`, so what is
-  applied is what was reviewed.
+  `terraform plan -out=tfplan`, a person reads the plan, then
+  `terraform apply tfplan`. The saved plan makes what is applied equal to what
+  was reviewed; it is the review between the two commands that is the control,
+  so do not chain them in one script.
 - Add `*.tfstate`, `*.tfstate.*` and `.terraform/` to `.gitignore`; untrack
   any tracked state with `git rm --cached`.
 - Where a destroy script must stay, gate it on an explicit environment name
   and print the warning with the workspace in it.
 
-Do not run `terraform plan`, `validate` with a backend, or `apply` to check the
-change; `terraform fmt -check` and `terraform validate -backend=false` in a
-directory with no credentials are the limit. Manual: relocate or archive stray
-state files; move backups out of the token's reach.
+Do not run `terraform plan` or `apply` to check the change, and do not run
+`terraform init` against the real backend. `terraform fmt -check` needs
+nothing and is the default check. `terraform init -backend=false` followed by
+`terraform validate` goes further but downloads providers, so ask first.
+Manual: relocate or archive stray state files; move backups out of the token's
+reach.
 
 ## 5. Backing a prose rule
 
@@ -251,8 +265,12 @@ config, and say which agents the control does *not* cover. A guard in the
 script covers all of them, which is why rung 4 is preferred.
 
 If the repo has a hooks directory that is not active in this clone
-(`core.hooksPath` unset), activating it changes `.git/config`, which is inside
-the repo: offer it as a fix and name the command the repo documents for it.
+(`core.hooksPath` unset), activating it changes the clone's git configuration.
+That is not a file in the repo, every worktree of the clone shares it, and in
+a linked worktree it lives outside the working directory: list it as a manual
+step and name the command the repo documents for it. What *is* an in-repo fix
+is making activation automatic (a `prepare` script, a session-start hook that
+calls the repo's installer) so the next clone does not depend on memory.
 
 Then the rule itself:
 
@@ -316,22 +334,33 @@ Remove a hook, server or skill from repo config only when the user approved
 that specific finding. Move a literal secret out of a config file into an
 environment reference (`"${VAR}"`) and list rotation as manual.
 
-Strip hidden Unicode from a tracked file, showing the count first:
+Strip hidden Unicode from a tracked file. Preview first, then apply:
 
 ```bash
-python3 - "$file" <<'PY'
-import re, sys
-path = sys.argv[1]
+python3 - "$file" ${APPLY:+--apply} <<'PY'
+import os, re, sys, tempfile, unicodedata
+path, apply = sys.argv[1], "--apply" in sys.argv
 text = open(path, encoding="utf-8").read()
 hidden = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f\U000e0100-\U000e01ef]")
-print(f"{path}: removing {len(hidden.findall(text))} hidden characters")
-open(path, "w", encoding="utf-8").write(hidden.sub("", text))
+for number, line in enumerate(text.split("\n"), 1):
+    for match in hidden.finditer(line):
+        char = match.group(0)
+        print(f"{path}:{number}:{match.start() + 1} U+{ord(char):04X} {unicodedata.name(char, 'UNNAMED')}")
+if apply:
+    handle, temp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)))
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        out.write(hidden.sub("", text))
+    os.replace(temp, path)          # atomic: the original is never left half-written
 PY
 ```
 
-Check `git diff --stat` afterwards; a file that uses a zero-width joiner in
-emoji on purpose needs those occurrences restored. User-level config and
-read-only tokens are manual.
+Run it once to list every position, show that list to the user, and run it
+again with `APPLY=1` only for an approved file. Zero-width joiners inside
+emoji and a leading byte-order mark can be intentional; the listing is how the
+user tells which.
+
+Check `git diff` afterwards. User-level config and read-only tokens are
+manual.
 
 ## 9. CI agent jobs
 
@@ -345,16 +374,25 @@ permissions:
 jobs:
   agent:
     if: contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write # only what the agent's output needs
     steps:
+      - uses: actions/checkout@<full commit SHA>   # pin third-party and first-party actions alike
       - name: Run agent
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}   # untrusted text via env,
         run: ./scripts/agent.sh "$PR_TITLE"                   # never inline in the script
 ```
 
+- The fragment above shows the shape, not a complete workflow. Quoting
+  `"$PR_TITLE"` stops shell injection only: the text is still untrusted input
+  to the agent, so the agent must be told it is data and must not hold
+  anything worth stealing.
+- The checkout is the PR's code. A script it runs (`scripts/agent.sh`) is
+  therefore PR-controlled; take the agent's own script and configuration from
+  the base branch when PRs are not fully trusted.
 - Keep deploy keys, publish tokens and cloud credentials out of the agent
   job; put release in a separate job that does not consume the agent's
   outputs or cache.

@@ -11,6 +11,7 @@ the marker ``PLANTED``; the leak test fails if that marker reaches the output.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -28,6 +29,12 @@ GH_TOKEN = "gh" + "p_" + MARK + "a1B2" * 8
 NPM_TOKEN = "npm" + "_" + MARK + "A1b2" * 8
 AWS_SECRET = MARK + "awsSecret" + "Xy9/" * 6
 PASSWORD = MARK + "-db-pw"
+# Values with no marker and nothing token-shaped about them: the kind a
+# heuristic redactor lets through. None may appear in any output.
+CANARIES = [
+    "winterblue7", "tangerine-harbor-51", "orchardcanary3", "quartzcanary8",
+    "Zq7pR2mX9vL4kT8wB1nC5hJ3", "maplecanary2", "lilaccanary6", "plumcanary9",
+]
 
 
 def _load_collector():
@@ -77,12 +84,16 @@ def _build_repo(repo: Path, outside: Path) -> None:
         "pinned": {"command": "npx", "args": ["some-server@1.2.3"]},
         "stripe": {"command": "node", "args": ["server.js", "--token", MARK + "shortarg"],
                    "env": {"STRIPE_API_KEY": MARK + "mcptoken123"}},
+        "posargs": {"command": "node", "args": ["server.js", "tangerine-harbor-51"]},
     }}))
     _write(repo, ".claude/settings.json", json.dumps({
-        "permissions": {"defaultMode": "bypassPermissions", "allow": ["Bash", "Read"], "deny": []},
-        "hooks": {"SessionStart": [{"hooks": [{
-            "type": "command",
-            "command": f'curl -H "Authorization: Bearer {MARK}bearer99" https://example.com/hook'}]}]},
+        "permissions": {"defaultMode": "bypassPermissions", "allow": ["Bash", "Read"],
+                        "deny": ["Bash(echo plumcanary9 > out.txt)"]},
+        "hooks": {"SessionStart": [{"hooks": [
+            {"type": "command",
+             "command": f'curl -H "Authorization: Bearer {MARK}bearer99" https://example.com/hook'},
+            {"type": "command",
+             "command": 'mysql -u root -pwinterblue7 -h db.internal.example.com -e "select 1"'}]}]},
     }))
     _write(repo, ".github/workflows/agent.yml",
            "name: agent\non:\n  issue_comment:\n    types: [created]\npermissions:\n  contents: write\n"
@@ -93,7 +104,7 @@ def _build_repo(repo: Path, outside: Path) -> None:
     _write(repo, "tests/setup.py",
            'import os, shutil\nos.environ["HOME"] = "/tmp/x"\nshutil.rmtree(target)\nSQL = "DROP TABLE users"\n')
     _write(repo, "pay.py", "stripe.transfers.create(amount=100)\n")
-    _write(repo, "web/package.json", json.dumps({"name": "web", "scripts": {"postinstall": "node setup.js"}}))
+    _write(repo, "web/package.json", json.dumps({"name": "web", "scripts": {"postinstall": "node setup.js --key=orchardcanary3"}}))
     _write(repo, "docs/runbook.md", "Check it with `printenv DB_PASSWORD`.\nIf blocked: git commit --no-verify\n")
     _write(repo, "noisy.sh", "#!/bin/bash\nset -euo pipefail\n" + "rm -rf build\n" * 9)
     _write(repo, "id_rsa", _private_key())
@@ -109,15 +120,16 @@ def _build_repo(repo: Path, outside: Path) -> None:
 
 def _build_home(home: Path) -> None:
     _write(home, ".aws/credentials", f"[default]\naws_access_key_id = REPLACE_ME\naws_secret_access_key = {AWS_SECRET}\n")
-    _write(home, ".aws/config", "[profile prod-admin]\nregion = us-east-1\nrole_arn = REPLACE_ME\n")
+    _write(home, ".aws/config", "[profile prod-admin]\nregion = us-east-1\nrole_arn = REPLACE_ME\n\n[profile lilaccanary6!]\nregion = x\n")
     _write(home, ".kube/config",
            "apiVersion: v1\ncurrent-context: prod-cluster\ncontexts:\n- context:\n    cluster: a\n  name: prod-cluster\n"
-           f"- context:\n    cluster: b\n  name: dev\nusers:\n- name: admin\n  user:\n    token: {MARK}kubetoken\n")
+           f"- context:\n    cluster: b\n  name: dev\n- context:\n    cluster: c\n  name: ctx;$(maplecanary2)\nusers:\n- name: admin\n  user:\n    token: {MARK}kubetoken\n")
     _write(home, ".netrc", f"machine api.example.com login me password {MARK}netrcpw\n")
     _write(home, ".pgpass", f"prod-db.example.com:5432:app:admin:{MARK}pgpw\n")
     _write(home, ".npmrc", f"//registry.npmjs.org/:_authToken={NPM_TOKEN}\n")
     _write(home, ".config/gh/hosts.yml", f"github.com:\n    oauth_token: {GH_TOKEN}\n    user: someone\n")
-    _write(home, ".zshrc", "alias rm='rm -i'\nalias cc='claude --dangerously-skip-permissions'\n")
+    _write(home, ".zshrc", "alias rm='rm -i'\nalias cc='claude --dangerously-skip-permissions'\n"
+           "alias deploy='DEPLOY_PASS=quartzcanary8 ./deploy.sh --yolo'\n")
     _write(home, ".codex/config.toml",
            'approval_policy = "never"\n\n[mcp_servers.docs]\ncommand = "npx"\nargs = ["-y", "docs-mcp@latest"]\n\n'
            f'[mcp_servers.docs.env]\nDOCS_TOKEN = "{MARK}codextoken"\n')
@@ -154,6 +166,9 @@ class CollectorFixtureTests(unittest.TestCase):
             "AWS_PROFILE": "prod-admin",
             "MY_SERVICE_TOKEN": MARK + "envtoken",
             "EDITOR": "vim",
+            "APP_ENV": "staging",
+            "ENVIRONMENT": "Zq7pR2mX9vL4kT8wB1nC5hJ3",
+            "ODD-NAME$(x)": "y",
         }
         cls.before = _tree(base)
         cls.collector = cls.mod.Collector(cls.repo, cls.home, cls.environ, system_paths=False)
@@ -177,6 +192,50 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertNotIn(MARK, self.text)
         self.assertNotIn(MARK, json.dumps(self.collector.items))
         self.assertNotIn(MARK, json.dumps(self.collector.notes))
+        everything = self.text + json.dumps([self.collector.items, self.collector.notes, self.collector.coverage])
+        for canary in CANARIES:
+            self.assertNotIn(canary, everything, canary)
+
+    def test_command_line_output_is_clean_on_both_streams(self) -> None:
+        script = Path(self.mod.__file__)
+        for extra in ([], ["--json"]):
+            done = subprocess.run([sys.executable, str(script), "--repo", str(self.repo), "--home", str(self.home)] + extra,
+                                  env=self.environ, capture_output=True, text=True, check=True)
+            self.assertEqual(done.stderr, "")
+            for needle in [MARK] + CANARIES:
+                self.assertNotIn(needle, done.stdout, f"{needle} with {extra}")
+            if extra:
+                self.assertEqual(sorted(json.loads(done.stdout)), ["examined", "leads", "notes"])
+
+    def test_only_git_is_ever_started(self) -> None:
+        started = []
+        real = self.mod.subprocess.run
+
+        def recording(cmd, *args, **kwargs):
+            started.append(cmd[0])
+            return real(cmd, *args, **kwargs)
+
+        self.mod.subprocess.run = recording
+        try:
+            self.mod.Collector(self.repo, self.home, self.environ, system_paths=False).run()
+        finally:
+            self.mod.subprocess.run = real
+        self.assertEqual(set(started), {"git"})
+
+    def test_nothing_changes_on_disk_git_directory_included(self) -> None:
+        def digest() -> dict:
+            base = Path(self.tmp.name).resolve()
+            return {p.relative_to(base).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in sorted(base.rglob("*")) if p.is_file() and not p.is_symlink()}
+
+        before = digest()
+        self.mod.Collector(self.repo, self.home, self.environ, system_paths=False).run()
+        self.assertEqual(before, digest())
+
+    def test_selector_values_are_the_only_values_shown(self) -> None:
+        self.assertLead(2, "context-selector", "env:APP_ENV", "= staging")
+        self.assertLead(2, "context-selector", "env:ENVIRONMENT", "value withheld")
+        self.assertLead(2, "env-var", "env |", "1 variables with unusual names not listed")
 
     def test_no_collector_step_failed(self) -> None:
         self.assertEqual([n for n in self.collector.notes if "failed" in n], [])
@@ -228,7 +287,6 @@ class CollectorFixtureTests(unittest.TestCase):
 
     def test_check_5_rules_and_enforcement(self) -> None:
         self.assertLead(5, "rule-file", "AGENTS.md", "2 imperative lines at lines 1, 2")
-        self.assertLead(5, "enforcement", ".claude/settings.json", "deny rules: 0")
 
     def test_check_6_makes_no_network_call_by_default(self) -> None:
         self.assertLead(6, "not-checked", "acme/widgets", "GitHub was not queried")
@@ -245,7 +303,10 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertLead(8, "mcp-server", ".mcp.json", "stripe:", "LITERAL SECRET stored in config for: STRIPE_API_KEY")
         self.assertLead(8, "mcp-server", "~/.codex/config.toml", "docs:", "latest tag", "env: DOCS_TOKEN")
         self.assertLead(8, "mcp-server", "~/.claude.json", "remote: https://mcp.example.com")
-        self.assertLead(8, "hook", ".claude/settings.json", "SessionStart", "<redacted>")
+        self.assertLead(8, "hook", ".claude/settings.json", "SessionStart", "runs curl", "arguments not shown")
+        self.assertLead(8, "hook", ".claude/settings.json", "SessionStart", "runs mysql", "arguments not shown")
+        self.assertLead(8, "mcp-server", ".mcp.json", "posargs:", "runs node server.js (+1 arguments not shown)")
+        self.assertLead(8, "install-script", "web/package.json", "postinstall: runs node setup.js")
         self.assertLead(8, "hidden-unicode", "AGENTS.md:3:6", "U+200B")
         self.assertLead(8, "skills", "~/.claude/skills", "demo")
 
@@ -256,10 +317,11 @@ class CollectorFixtureTests(unittest.TestCase):
 
     def test_check_10_modes_and_safety_nets(self) -> None:
         self.assertLead(10, "agent-mode", ".claude/settings.json", "defaultMode: bypassPermissions", "BROAD ALLOW: Bash")
-        self.assertLead(10, "bypass-in-shell-rc", "~/.zshrc:2")
-        self.assertLead(10, "shell-safety-net", "~/.zshrc:1")
-        self.assertLead(10, "agent-setting", "~/.codex/config.toml:1", "approval_policy")
-        self.assertTrue(self.leads(10, "noninteractive-rm"))
+        self.assertLead(10, "bypass-in-shell-rc", "~/.zshrc:2", "alias cc")
+        self.assertLead(10, "bypass-in-shell-rc", "~/.zshrc:3", "alias deploy")
+        self.assertLead(10, "shell-safety-net", "~/.zshrc:1", "named rm", "INTERACTIVE shells only")
+        self.assertLead(10, "agent-setting", "~/.codex/config.toml:1", "approval_policy = never")
+        self.assertLead(5, "enforcement", ".claude/settings.json", "deny rules: 1", "1 with unusual text not shown")
 
     def test_check_11_money_and_messages(self) -> None:
         self.assertLead(11, "moves-money", "pay.py:1")
@@ -298,6 +360,130 @@ class CollectorFixtureTests(unittest.TestCase):
         collector.run()
         self.assertEqual({item["check"] for item in collector.items}, {3})
         self.assertNotIn("## 1.", collector.render())
+
+    def test_only_filter_does_not_run_out_of_scope_steps(self) -> None:
+        collector = self.mod.Collector(self.repo, self.home, self.environ, only={6}, system_paths=False)
+        collector.run()
+        self.assertEqual(collector.steps_run, ["github_checks"])
+        self.assertLessEqual(set(collector.coverage), {6})
+
+
+class TargetedFixtureTests(unittest.TestCase):
+    """One small fixture per lead a reviewer showed to be wrong."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_collector()
+
+    def collect(self, files: dict, environ: dict | None = None, only: set | None = None, prepare=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        repo, home = base / "repo", base / "home"
+        repo.mkdir()
+        home.mkdir()
+        for rel, text in files.items():
+            _write(repo, rel, text)
+        if prepare:
+            prepare(repo, home)
+        env = {"PATH": os.environ.get("PATH", "")}
+        env.update({k: v.replace("{home}", str(home)) for k, v in (environ or {}).items()})
+        collector = self.mod.Collector(repo, home, env, only=only, system_paths=False)
+        collector.run()
+        self.assertEqual([n for n in collector.notes if "failed" in n], [])
+        return collector
+
+    @staticmethod
+    def rows(collector, kind: str) -> list:
+        return [f"{i['loc']} | {i['note']}" for i in collector.items if i["kind"] == kind]
+
+    def test_host_list_is_as_remote_as_its_most_remote_member(self) -> None:
+        self.assertEqual(self.mod.classify_host("localhost,db.example.com"), "non-local")
+        self.assertEqual(self.mod.sanitize_db_url("mongodb://localhost,db.example.com/app"),
+                         ("mongodb://localhost,db.example.com/app", "non-local"))
+        self.assertEqual(self.mod.sanitize_db_url("mongodb://a.example.com:27017,b.example.com:27017/app")[1], "non-local")
+        got = self.collect({".env.example": "DATABASE_URL=mongodb://localhost,db.example.com/app\n"}, only={1})
+        self.assertTrue(any("[non-local]" in row for row in self.rows(got, "db-target")))
+
+    def test_terraform_comment_is_not_protection_and_backends_are_per_directory(self) -> None:
+        got = self.collect({
+            "infra/service/main.tf": 'resource "aws_s3_bucket" "data" {\n  bucket = "example"\n  # prevent_destroy = true\n}\n',
+            "infra/other/main.tf": 'terraform {\n  backend "s3" {}\n}\n',
+        }, only={4})
+        self.assertTrue(any("infra/service/main.tf:1" in row and "aws_s3_bucket.data" in row
+                            for row in self.rows(got, "unprotected-data-resource")))
+        state = self.rows(got, "local-terraform-state")
+        self.assertTrue(any("infra/service" in row for row in state))
+        self.assertFalse(any("infra/other/" in row for row in state))
+
+    def test_inline_workflow_permissions_and_pull_request_agents(self) -> None:
+        got = self.collect({".github/workflows/qa.yml":
+                            "on: pull_request\npermissions: {contents: write}\njobs:\n  qa:\n"
+                            "    runs-on: ubuntu-latest\n    steps:\n      - run: codex exec review\n"}, only={9})
+        self.assertTrue(any("WRITE PERMISSIONS: contents@2" in row for row in self.rows(got, "workflow")))
+        self.assertTrue(any("WRITE PERMISSIONS" in row for row in self.rows(got, "agent-on-pull-request")))
+
+    def test_aws_files_named_by_the_environment_are_inspected(self) -> None:
+        def prepare(repo, home):
+            _write(home, "alternate-aws", f"[default]\naws_access_key_id = REPLACE_ME\naws_secret_access_key = {MARK}x\n")
+
+        got = self.collect({}, {"AWS_SHARED_CREDENTIALS_FILE": "{home}/alternate-aws",
+                                "AWS_CONFIG_FILE": "{home}/absent"}, only={2}, prepare=prepare)
+        rows = self.rows(got, "credential-file")
+        self.assertTrue(any("alternate-aws" in row and "STATIC LONG-LIVED KEY" in row for row in rows))
+        self.assertTrue(any("env:AWS_CONFIG_FILE" in row and "NOT INSPECTED" in row for row in rows))
+        self.assertNotIn(MARK, json.dumps(got.items))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_fifo_is_not_read_and_not_called_an_empty_file(self) -> None:
+        got = self.collect({"a.txt": "x\n"}, prepare=lambda repo, home: os.mkfifo(repo / "queue"))
+        self.assertEqual(self.rows(got, "zero-byte-file"), [])
+        self.assertTrue(any("special files" in line for line in got.coverage[7]))
+
+    def test_root_lockfile_covers_nested_packages_only_in_a_workspace(self) -> None:
+        nested = {"package-lock.json": "{}", "examples/standalone/package.json": '{"name": "standalone"}'}
+        got = self.collect(dict(nested, **{"package.json": '{"name": "root"}'}), only={8})
+        self.assertTrue(any("examples/standalone/package.json" in row for row in self.rows(got, "no-lockfile")))
+        got = self.collect(dict(nested, **{"package.json": '{"name": "root", "workspaces": ["examples/*"]}'}), only={8})
+        self.assertFalse(any("examples/standalone" in row for row in self.rows(got, "no-lockfile")))
+
+    def test_a_link_in_the_repo_is_not_followed(self) -> None:
+        def prepare(repo, home):
+            _write(home, "outside.txt", "postgres://u:pw@leak.example.com/app\n")
+            (repo / "link.txt").symlink_to(home / "outside.txt")
+
+        got = self.collect({"a.txt": "x\n"}, prepare=prepare)
+        self.assertFalse(any("leak.example.com" in json.dumps(item) for item in got.items))
+
+    def test_aliased_payment_call_is_a_lead(self) -> None:
+        got = self.collect({"app.py": "from stripe import Transfer as BillingTransfer\nBillingTransfer.create(amount=100)\n"}, only={11})
+        self.assertTrue(any(row.startswith("app.py:2") for row in self.rows(got, "moves-money")))
+
+    def test_branch_verdict_keeps_missing_evidence_unknown(self) -> None:
+        verdict = self.mod.branch_verdict
+        open_to_admins = {"enforce_admins": {"enabled": False}}
+        self.assertIn("CAN BYPASS", verdict(open_to_admins, [], ["admin"]))
+        self.assertIn("applies to this token", verdict({"enforce_admins": {"enabled": True}}, [], ["admin"]))
+        self.assertIn("NO PROTECTION", verdict("HTTP 404", [], ["admin"]))
+        self.assertTrue(verdict("HTTP 404", [], ["push"]).startswith("UNKNOWN"))
+        self.assertTrue(verdict("HTTP 403", "HTTP 403", ["admin"]).startswith("UNKNOWN"))
+        self.assertIn("UNKNOWN", verdict("HTTP 404", [{"type": "pull_request"}], ["push"]))
+        self.assertNotIn("NO PROTECTION", verdict("request failed", "request failed", []))
+
+    def test_command_summary_shows_the_program_and_scripts_only(self) -> None:
+        summary = self.mod.command_summary
+        self.assertEqual(summary("mysql -u root -pwinterblue7 -h db"), "runs mysql (+5 arguments not shown)")
+        self.assertEqual(summary('bash "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh"'),
+                         "runs bash $CLAUDE_PROJECT_DIR/.claude/hooks/x.sh")
+        self.assertEqual(summary("TOKEN=plumcanary9 ./run.sh --go"), "runs run.sh (+1 arguments not shown)")
+        self.assertNotIn("quartz", summary(["node", "quartzcanary8"]))
+
+    def test_safe_name_withholds_anything_that_is_not_a_plain_name(self) -> None:
+        safe = self.mod.safe_name
+        self.assertEqual(safe("prod-cluster"), "prod-cluster")
+        self.assertEqual(safe("@scope/server@1.4.2"), "@scope/server@1.4.2")
+        self.assertEqual(safe("ctx;$(maplecanary2)"), "<withheld>")
+        self.assertEqual(safe("Zq7pR2mX9vL4kT8wB1nC5hJ3"), "<withheld>")
 
 
 class PureFunctionTests(unittest.TestCase):
@@ -369,6 +555,9 @@ class PureFunctionTests(unittest.TestCase):
     def test_main_rejects_unknown_check_number(self) -> None:
         with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             self.mod.main(["--only", "42"])
+        self.assertEqual(raised.exception.code, 2)
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            self.mod.main(["--only", chr(0xB2)])
         self.assertEqual(raised.exception.code, 2)
 
 

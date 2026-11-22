@@ -30,21 +30,39 @@ hold values:
   `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.git-credentials`
 - agent config that embeds tokens: `~/.claude.json`, MCP config files
 
-Tracked project config (`.mcp.json`, `.claude/settings.json`) is safe to open
-when the collector reports no `LITERAL SECRET` for it, and a launcher script
-an MCP server or hook runs is code: read it.
-
-For the three kinds above, rely on the collector's output. When a detail is
-missing and the collector cannot supply it, extract names only:
+For those, rely on the collector's output. When a detail is missing and the
+collector cannot supply it, extract names only:
 
 ```bash
-cut -d= -f1 .env.test                      # key names, never values
-grep -n 'DATABASE_URL' .env.test | cut -d= -f1   # which line, not what it says
-grep -c . ~/.netrc                         # how many entries
+cut -s -d= -f1 .env.test                         # key names; -s drops lines with no '='
+grep -n 'DATABASE_URL' .env.test | cut -s -d= -f1   # which line, not what it says
+grep -c . ~/.netrc                               # how many entries
 ```
 
-Do not pipe such a file through `cat`, `head`, `grep` without a `cut`, or a
-JSON pretty-printer.
+For a JSON config, list key paths and value types, never values:
+
+```bash
+python3 -c 'import json, sys
+def walk(node, path=""):
+    if isinstance(node, dict):
+        for key, value in node.items(): walk(value, f"{path}.{key}" if path else str(key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node): walk(value, f"{path}[{index}]")
+    else: print(path, type(node).__name__)
+walk(json.load(open(sys.argv[1])))' .mcp.json
+```
+
+Do not pipe such a file through `cat`, `head`, `grep` without a `cut -s`, or
+a JSON pretty-printer.
+
+A tracked project config (`.mcp.json`, `.claude/settings.json`) may be opened
+only when all three hold: the collector parsed it (no `config-not-parsed`
+lead), it reports no `LITERAL SECRET` for it, and the key listing shows no
+string value under `env`, `headers` or a key named like a credential.
+Otherwise work from the collector's lines and the key listing. A script *file*
+that a hook or MCP server runs is code: read it. The collector names the
+program a hook or server runs and counts its arguments without showing them,
+because arguments are where inline secrets live.
 
 A `token-shaped-string` lead is a line that may hold a real value. Judge it
 without displaying that line: from the path (a fixtures directory), the file's
@@ -98,7 +116,9 @@ mode, profile or host names), `default-context` (the AWS profile, kube context
 and gcloud configuration that unqualified commands use), `env-file`,
 `tracked-sensitive-file`, `token-shaped-string` (file:line with a label),
 `live-payment-key`, `credential-in-remote-url`, `settings-env`,
-`gitignore-coverage`, `instruction-prints-secret`.
+`gitignore-coverage`, `instruction-prints-secret`. AWS credential and config
+files named by `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` are followed;
+`NOT INSPECTED` marks a source that could not be read.
 
 **By hand:**
 
@@ -142,7 +162,8 @@ context the default.
 TARGET, no :? guard`, `glob`, `touches HOME`, `command substitution`),
 `recursive-delete-call` (`rmtree`, `rimraf`, `fs.rm` recursive, `find -delete`,
 `git clean`, `rsync --delete` and equivalents), `shell-without-nounset`
-(scripts with no `set -u`; those that also delete are listed first),
+(scripts with no `set -u` line anywhere; those that also delete are listed
+first; a line inside a branch still counts as present, so read the script),
 `symlink` (target inside or OUTSIDE REPO), `changes-home`.
 
 **By hand:**
@@ -244,9 +265,12 @@ read-only database role, branch protection, required review.
 `gh-token-reach` (what the scopes permit), `repo` (visibility, this token's
 permission on the repo), `branch-protection` (classic protection),
 `branch-rulesets` (rule types on the default branch), `default-branch-verdict`
-(whether this token is bound by the protection or can bypass it), `org`
-(whether members can create public repos). The `examined:` line lists the
-required status checks.
+(whether this token is bound by the protection, can bypass it, or `UNKNOWN`
+when the settings were not readable), `org` (whether members can create public
+repos). The `examined:` line lists the required status checks. Requests go to
+github.com only, are GET only, and the token is neither fetched nor refreshed.
+The verdict does not evaluate ruleset bypass lists: with rulesets present,
+check who may bypass them in the repository settings.
 
 **By hand:**
 
@@ -312,8 +336,11 @@ in tracked files; `hidden-unicode` with file:line:column and code point.
 
 - For each MCP server: is its source known, is the version pinned, and does it
   hold a token with more than read access when it only reads?
-- Read every hook command and the script it runs. A SessionStart hook runs
-  before the user types anything. Unknown origin is a finding.
+- For every hook, read the script file it runs. A SessionStart hook runs
+  before the user types anything. Unknown origin is a finding. For a hook
+  written as an inline command, see "Reading safely" before opening the config.
+- `config-not-parsed` means a config file exists that the collector could not
+  read: it is unexamined, not clean.
 - For skills and plugins the user did not obviously install, list the name
   and location under Questions in the report; do not classify a skill as
   malicious from its name, and do not read every bundled script unprompted.
@@ -342,10 +369,13 @@ read.
 
 **Collector:** one `workflow` lead per GitHub Actions file (triggers, agent or
 LLM markers, write permissions with line numbers, secret names, lines that
-interpolate untrusted event text, cache use, PR-head checkout) and
-`agent-on-untrusted-trigger` where an agent runs on `issues`, `issue_comment`,
-`pull_request_target`, review or discussion events. `agent-in-ci` for other CI
-systems.
+interpolate untrusted event text, cache use, PR-head checkout, reusable
+workflows), `agent-on-untrusted-trigger` where an agent runs on `issues`,
+`issue_comment`, `pull_request_target`, review or discussion events, and
+`agent-on-pull-request` where one runs on `pull_request`. `agent-in-ci` for
+other CI systems. The workflow is read as text, not parsed as YAML:
+permissions set through expressions, anchors or a called workflow are not
+resolved, so read the file.
 
 **By hand:**
 
@@ -372,13 +402,17 @@ count, sandbox state, bypass-prompt settings), `agent-setting` (approval and
 sandbox lines in Codex, Gemini, Cursor and VS Code config),
 `bypass-in-shell-rc` (aliases that launch an agent with a bypass flag),
 `shell-safety-net` (an `rm` or `git` alias or function in a shell startup
-file), `noninteractive-rm` (what `bash -c 'type rm'` resolves to).
+file, with whether that file is read by interactive shells only). The
+collector reads startup files; it does not start a shell, because starting
+one would run them.
 
 **By hand:**
 
-- Compare `shell-safety-net` with `noninteractive-rm`. An alias in `.zshrc`
-  is loaded by interactive shells only. If `type rm` reports the plain binary,
-  the safety net does not exist for an agent.
+- Run `bash -c 'type rm'` (and `zsh -c 'type rm'` where zsh is the login
+  shell). The shell an agent runs commands in is the non-interactive shell in
+  question. If it reports the plain binary while a `shell-safety-net` lead
+  exists, the safety net does not exist for an agent: an alias in `.zshrc` or
+  `.bashrc` is loaded by interactive shells only.
 - A broad allow rule (`Bash`, `Bash(rm *)`, `Bash(git push *)`) is a standing
   auto-approval; read it as one.
 - Is there a sandbox, and does it confine writes to the project directory?
