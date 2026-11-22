@@ -1,9 +1,10 @@
 """Importing this package installs the test sandbox guard, before any test module loads.
 
-The guard is scripts/test-support/sandbox_guard.py at the repository root. It points HOME and the Claude
-config and data overrides at a fresh temp directory and refuses to run a test
-when one of them resolves anywhere else. Do not remove it: without it, a test
-that forgets one override writes into the real Claude config or plugin data.
+The guard is scripts/test-support/sandbox_guard.py at the repository root. It
+points HOME and the Claude config and data overrides at a fresh temp directory
+and refuses to run a test when one of them resolves anywhere else. Do not
+remove it: without it, a test that forgets one override writes into the real
+Claude config or plugin data.
 """
 
 import importlib.util
