@@ -1,8 +1,9 @@
 # Startup dialogs, and why none of them is answered automatically
 
 A newly launched session can be held before it reads anything, by a dialog that
-expects a person. This skill identifies which one, reports the configuration
-entry that settles it, and sends nothing.
+expects a person. This skill identifies which one and reports the
+configuration entry that settles it. It never answers the dialog, and it
+holds back input whenever the CLI's input box is not what the pane shows.
 
 ## The rule
 
@@ -49,28 +50,36 @@ setting that was never the problem.
 Order matters. The first matching row wins, so more specific dialogs belong
 above more general ones.
 
-A pane showing any row of this table is sent nothing. The launcher checks the
-pane before the handshake, not after it, so the diagnosis is made with no
-input having reached the dialog.
+Where the wording is decides what it means. With no input box at the foot of
+the pane, a row's wording anywhere on the pane names the dialog. With the
+input box there, wording above it is earlier output and is ignored, and
+wording under it counts only on a line that reads as a dialog option.
 
-## The prompt table
+A session seen at a dialog is sent nothing. The launcher looks before each
+thing it sends, not after, so the usual diagnosis is made with no input having
+reached the dialog. The exception is a dialog that comes up between a look
+and the send that follows it: `protocol.md` (One look before each send).
 
-`scripts/ready-prompts.tsv` is the other half of that check: the text the CLI
-draws only while its input prompt is on screen. Two columns, `id` and a
-literal `pattern`. The handshake is sent once the pane shows a row of this
-table and no row of the dialog table.
+## The status-line table
 
-Every row is the status line under the input box: the permission mode the
-session is in (`accept edits on`, `bypass permissions on`), or the shortcuts
-hint. A startup dialog is drawn before that line exists. The prompt glyph is
-deliberately not a row, because the same glyph marks the focused option in a
-dialog.
+`scripts/ready-prompts.tsv` is the other half of that check. The launcher
+recognises the input box by its shape, a rule, the prompt line and a rule at
+the foot of the pane, and requires the line under it to be a status line. The
+table lists how a status line begins: the mode symbol, the mode, and `on`
+(`⏵⏵ accept edits on`, `⏸ plan mode on`). The prompt glyph alone is not
+evidence, because the same glyph marks the focused option in a dialog.
 
-The rows were taken from the status-line strings in CLI 2.1.330 and have not
-yet been confirmed against a live pane. If a session is plainly at its prompt
-and the launcher reports that the prompt never appeared, the wording has
-moved: capture the pane (`tmux capture-pane -p -t "=<name>:"`) and add a row.
-A pattern must not match the launch command the pane echoes, or a dialog.
+Three columns: `id`, the literal `pattern`, and `basis`, which is `seen` for
+a row read from a real pane and `inferred` for one that was not. The rows
+marked `seen` were drawn by CLI 2.1.330 in a credential-free pseudo-terminal.
+The `bypass` row is inferred: starting the CLI with permissions bypassed to
+look at it is refused in this repository. A bypass launch that ends not ready
+says so on stderr and names that row.
+
+If a session is plainly at its prompt and the launcher reports it not ready,
+capture the pane (`tmux capture-pane -p -J -t "=<name>:"`) and compare it
+with the shape above. A status line with different wording needs a row. A
+box drawn differently needs a change to the launcher, not to the table.
 
 ## Adding a row
 

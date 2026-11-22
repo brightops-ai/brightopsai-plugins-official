@@ -22,28 +22,63 @@ response to that specific request, settles it.
 
 ## Looking before sending
 
-The handshake is input: it is pasted into the pane and submitted. So before it
-is sent the launcher looks at the pane, once a second, and classifies what it
-sees.
+The handshake and the brief are input: each is pasted into the pane and then
+submitted with Enter. Before any of that is sent the launcher looks at the
+pane and decides what it shows.
+
+Input goes only to the CLI's input box, and the evidence for the box is where
+things are on the pane. The pane has to end in this:
+
+```
+────────────────────────       a rule
+❯ whatever is typed            the input, one line or several
+────────────────────────       a rule
+  ⏵⏵ accept edits on …         a status line: a row of scripts/ready-prompts.tsv
+```
 
 | The pane shows | State | What is sent |
 |---|---|---|
-| A known startup dialog (`scripts/startup-blockers.tsv`) | blocked | Nothing |
-| The input prompt (`scripts/ready-prompts.tsv`) and no known dialog | ready | The handshake |
+| The input box at its foot, a known status line under it | ready | The next send |
+| No box at its foot, and a known startup dialog (`scripts/startup-blockers.tsv`) | blocked | Nothing |
 | Neither: empty, still starting, or not recognised | waiting | Nothing |
 
-Readiness is a positive finding. "No known dialog" also describes a pane that
-is still starting, and one showing a dialog the table has no row for; input
-sent then is typed at whatever comes up next. A dialog wins over a prompt,
-because a dialog drawn over an earlier screen can leave the prompt's text
-visible beside it.
+What does not count:
 
-A running CLI process is not the signal. A session held at a dialog has a
-live process too.
+- **Status-line wording somewhere else.** A dialog can offer `accept edits on`
+  as an option, and the shell echoes a `--pre-launch` command that contains
+  it. Neither is under a box, so neither is readiness.
+- **A running CLI process.** A session held at a dialog has one too.
+- **Dialog wording above the box.** That is earlier output. A session whose
+  scrollback quotes `Yes, I trust this folder` is still ready.
+- **A look that failed.** If tmux cannot capture the pane, what it shows is
+  unknown, whatever was printed before the failure.
 
-If the pane never becomes ready within `--timeout`, the run ends and nothing
-has been sent to the session: no paste, no keypress. See Timing for which exit
-code that is.
+Under the box, up to five lines are allowed, for a status line of the user's
+own. None of them may read as a dialog option: a line that starts with the
+focus glyph `❯`, or that opens with a known dialog's wording, numbered or not.
+A dialog drawn under a box that was never cleared is the dialog's screen.
+
+A narrow pane cuts the status line short: `⏵⏵ accept edits` at 20 columns,
+`⏵⏵` at 12. A cut line counts when what is left of it is the start of a row
+and still holds the mode symbol.
+
+### One look before each send
+
+The launcher sends four separate things: the handshake's paste, its Enter,
+the brief's paste, and its Enter. Each has its own look immediately before
+it. `--resume` sends the same four and looks the same way.
+
+When a look does not find the box, that send and everything after it is held
+back and the run ends. A look that finds nothing recognisable is repeated for
+up to a second first, because a capture can land while the CLI is redrawing;
+a known dialog ends it at once.
+
+**What this guarantees, and what it does not.** Nothing is sent on a look
+that did not find the input box, and no dialog is ever answered. It does not
+guarantee that input never reaches a dialog. Looking and sending are two tmux
+calls, and the pane can change between them. A dialog that comes up in that
+instant receives the one paste or the one Enter that was already on its way.
+The next look sees it, and nothing further is sent.
 
 ## The exchange
 
@@ -90,7 +125,7 @@ flags, and buy no safety in exchange.
 Two marks, doing different jobs.
 
 At **30 seconds** the launcher reports on stderr what it sees — a recognised
-startup dialog by name, that the input prompt has not appeared yet, or that
+startup dialog by name, that the input box has not appeared yet, or that
 the handshake has gone unanswered with nothing obviously in the way. It keeps
 waiting. A first turn loads configuration and starts external servers,
 so a healthy session can legitimately be slow, and failing at the first sign of
@@ -99,20 +134,42 @@ slowness trains people to ignore the warning.
 At the **ceiling** (`--timeout`, default 120 seconds) it decides:
 
 - a recognised dialog is holding the session → **blocked**, exit 4
-- the input prompt never appeared, and nothing recognisable is in the way →
-  **unconfirmed**, exit 5; the handshake was not sent
-- the handshake was sent and not answered, and nothing recognisable is in the
-  way → **unconfirmed**, exit 5
+- the input box never appeared, and no known dialog is showing →
+  **not ready**, exit 5; nothing was sent
+- the handshake was sent and not answered, and no known dialog is showing →
+  **unconfirmed**, exit 5
 
-When the run ends before the handshake is sent, the prose report says that
-nothing was sent, and `--porcelain` adds the pair `handshake<TAB>not_sent`.
-The pair is absent from every other report. A dialog that a person accepts
-while the launcher is still waiting is followed by the handshake in the same
-run.
+A send that is held back ends the run without waiting for the ceiling: exit 4
+when a known dialog is showing, exit 5 (**not ready**) otherwise. A dialog
+that a person accepts while the launcher is still waiting for the box is
+followed by the handshake in the same run.
 
-If the session is plainly at its prompt and the report still says the prompt
-never appeared, the status-line wording has moved in the installed CLI: see
-`blockers.md` (The prompt table).
+### What the report says was sent
+
+Every run that verifies reports how far it got. `--porcelain` carries it in
+two pairs, and the prose report says the same in words.
+
+| Pair | Value | Meaning |
+|---|---|---|
+| `handshake` | `not_sent` | Nothing at all was sent to the session |
+| `handshake` | `not_submitted` | The handshake was pasted; its Enter was held back |
+| `handshake` | `sent` | Pasted and submitted |
+| `brief` | `none` | No brief was pasted: none was given, or the run ended first |
+| `brief` | `not_submitted` | The brief was pasted; its Enter was held back |
+| `brief` | `delivered` | Pasted and submitted |
+
+The `handshake` pair is present on every verified run, including one where no
+CLI process ever appeared, and absent with `--no-verify`, which attempts no
+handshake. The verdict `not_ready` goes with exit 5 and `blocked` with exit 4;
+`identity` is present once the session has answered, so `identity<TAB>ok`
+beside `verdict<TAB>blocked` is a dialog that came up after the handshake.
+
+After `not_submitted` the session's input box may still hold the pasted text.
+Clear it before using `--resume`, which pastes a new handshake.
+
+If the session is plainly at its prompt and the report says it is not ready,
+the installed CLI draws its input box or status line differently: see
+`blockers.md` (The status-line table).
 
 ## Warnings
 
@@ -162,27 +219,48 @@ carries the accurate statement.
 
 ## Refusing a directory
 
-A directory is refused (exit 2) when its path holds a newline or any other
-control character. The refusal comes before the trust configuration is read
-or written and before tmux is asked anything, in a dry run too.
+A directory is refused (exit 2) when its path holds a control character or is
+not valid UTF-8. The refusal comes before the trust configuration is read or
+written and before tmux is asked anything, in a dry run too.
 
-The reason is the newline at the end of a name. Shell command substitution
-drops trailing newlines, so a directory named `repo` plus a newline resolves
-to `repo`, its sibling: trust would be recorded for a directory nobody named,
-and the session would start there. Any other control character breaks a
-different consumer of the path: the tab-separated `--porcelain` pairs, the
-prose report, and the reply the session sends back, where the directory is
-one space-free word.
+The first reason is the newline at the end of a name. Shell command
+substitution drops trailing newlines, so a directory named `repo` plus a
+newline resolves to `repo`, its sibling: trust would be recorded for a
+directory nobody named, and the session would start there. Any other control
+character breaks a different consumer of the path: the tab-separated
+`--porcelain` pairs, the prose report, and the reply the session sends back,
+where the directory is one space-free word.
 
-Three things are checked: the argument as given (or the current directory),
-the absolute path it resolves to, and that path with symbolic links resolved.
-The last two are read with trailing newlines kept. A clean-looking argument
-such as `.` or a symbolic link can still name such a directory. The
-repository root, which is what trust is recorded under, is held to the same
-rule.
+A byte that is not part of well-formed UTF-8 is refused for the same reason
+as a control character. A lone byte from 0x80 to 0x9f is the second control
+block as an 8-bit terminal reads it, and it is not the encoding of any
+character, so no rule about characters catches it. Valid names whose encoding
+uses those byte values (`é`, `ł`, CJK, emoji) are unaffected. The check walks
+bytes with the locale pinned, so it gives the same answer under `LC_ALL=C`, a
+UTF-8 locale, and none. On Linux this refuses names that used to be carried
+through, such as one holding a 0xff byte. macOS cannot create such names.
 
-The refusal prints the path with its control characters written out as text
-(`\n`, `\x1b`), on one line.
+Four things are checked, each read with trailing newlines kept:
+
+- the argument as given, or the current directory;
+- where the argument leads when every symbolic link is followed before every
+  `..`, which is how the kernel reads it;
+- the absolute path the shell resolves it to;
+- that path with symbolic links resolved.
+
+The repository root, which is what trust is recorded under, is held to the
+same rule. A clean-looking argument such as `.`, a symbolic link, or
+`link/..` can still name such a directory.
+
+The shell and the kernel read `link/..` differently when `link` is a symbolic
+link: the shell takes it as the directory holding the link, the kernel as the
+parent of what the link points to. The launcher uses the shell's reading for
+the working directory and the trust record, as it always has, and refuses
+when either reading holds a control character.
+
+The refusal prints the path with those bytes written out as text (`\n`,
+`\x1b`, `\x9b`), on one line. So does every other message that quotes a
+directory or a session name.
 
 ## Refusals around `--bypass`
 
@@ -235,10 +313,10 @@ command — not that the two cannot be automated together.
 | Code | Name | Meaning |
 |---|---|---|
 | 0 | confirmed | Identity confirmed, bridge live, brief delivered if given |
-| 2 | refused | Usage error, unusable name, a directory with a control character in its path, name already taken, `--bypass` with `--trust-folder`, untrusted workspace, `--bypass` when trust cannot be checked, identity mismatch |
+| 2 | refused | Usage error, unusable name, a directory whose path holds a control character or is not valid UTF-8, name already taken, `--bypass` with `--trust-folder`, untrusted workspace, `--bypass` when trust cannot be checked, identity mismatch |
 | 3 | unreachable | Confirmed and briefed, but no remote-control bridge |
-| 4 | never usable | No process appeared, or a startup dialog is holding it |
-| 5 | unconfirmed | Running, nothing recognisable in the way, and within the ceiling either the input prompt never appeared (nothing was sent) or the handshake went unanswered |
+| 4 | never usable | No process appeared, or a startup dialog is showing where the input box should be |
+| 5 | not ready, or unconfirmed | Running, no known dialog showing, and either the input box was not there for a send (not ready) or the handshake went unanswered (unconfirmed) |
 
 **3 and 5 are not failures.** Exit 3 is a connectivity fault around a working
 session; exit 5 is missing evidence, not evidence of a problem. In both cases
@@ -249,9 +327,9 @@ tidy up an unknown — resolve the cause and use `--resume` instead.
 ## Resuming
 
 `--resume` picks up a session that already exists rather than creating one: it
-looks at the pane the same way, re-runs the handshake with a fresh token once
-the prompt shows, and delivers the brief if the reply confirms. A session
-still held at a dialog is sent nothing.
+looks at the pane the same way before each send, re-runs the handshake with a
+fresh token once the input box shows, and delivers the brief if the reply
+confirms. A session seen at a dialog is sent nothing.
 
 Nothing about a spawn's progress is written down. Whether a session exists,
 whether a process is running in it, and whether it answers are all re-derived
@@ -267,4 +345,6 @@ text. Typed input is dispatched keystroke by keystroke, where a newline is a
 submission — so a multi-line brief typed in would arrive as its first line
 followed by the remainder as separate messages, each acted on out of context.
 
-Exactly one submission follows the paste.
+Exactly one submission follows the paste, after a look of its own. If the
+input box is gone by then, the paste stays unsubmitted and is reported that
+way.

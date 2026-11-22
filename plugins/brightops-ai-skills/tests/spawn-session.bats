@@ -748,6 +748,23 @@ Quick safety check: Is this a project you created or one you trust?
 }
 
 # bats test_tags=live
+@test "a dialog that quotes a status line is sent nothing" {
+  live_setup_hs
+  RECORD="$BATS_TEST_TMPDIR/received.txt"
+  # Not a dialog the table knows, and it carries the wording of a status
+  # line. There is no input box on the pane, so nothing is typed at it.
+  use_fake_cli "FAKE_RECORD=$RECORD" "FAKE_PANE_TEXT='Color theme dialog: accept edits on'"
+
+  run spawn_hs "zz-spawn-color" --dir /tmp --timeout 6
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"handshake was not sent"* ]]
+
+  ts has-session -t "=zz-spawn-color"
+  [ -e "$RECORD" ]
+  [ ! -s "$RECORD" ]
+}
+
+# bats test_tags=live
 @test "resume picks up an existing session and delivers the brief" {
   live_setup_hs
   RECORD="$BATS_TEST_TMPDIR/received.txt"
@@ -934,9 +951,14 @@ count() {
 #   MUX_PANE=<file>        capture-pane prints this file (nothing if unset)
 #   MUX_PANE_LATER=<file>  capture-pane prints this one instead, from capture
 #   MUX_PANE_LATER_AT=<n>  number <n> of the run onwards (default 2)
+#   MUX_PANE_ON_PASTE=<file>      ...or this one, once paste number
+#   MUX_PANE_ON_PASTE_AT=<n>      <n> has been made (default 1)
+#   MUX_PANE_ON_SUBMIT=<file>     ...or this one, once a paste has been
+#                                 submitted with Enter
+#   MUX_CAPTURE_RC=<n>     capture-pane prints the pane, then exits with this
 #   MUX_ANSWER_TO=<file>   a submitted paste carrying a handshake is answered
 #   MUX_ANSWER_CWD=<dir>   by appending the acknowledgement to this transcript,
-#                          reporting this directory
+#   MUX_ANSWER_POSTURE=<p> reporting this directory and posture (acceptEdits)
 #   MUX_RECEIVED=<file>    every submitted paste is appended here
 stub_setup() {
   CONFIG_FILE="$BATS_TEST_TMPDIR/claude.json"
@@ -963,17 +985,18 @@ case " $args " in
   *" new-session "*) exit "${MUX_NEW_SESSION:-0}" ;;
   *" send-keys "*)
     # A paste followed by Enter is a submission: the session now has the text.
-    if [[ -r "$TRACE.buffer" && "${!#}" == "Enter" ]]; then
-      text="$(<"$TRACE.buffer")"
-      rm -f "$TRACE.buffer"
+    if [[ -r "$TRACE.pasted" && "${!#}" == "Enter" ]]; then
+      text="$(<"$TRACE.pasted")"
+      rm -f "$TRACE.pasted"
+      : > "$TRACE.submitted"
       if [[ -n "${MUX_RECEIVED:-}" ]]; then
         printf '%s\n' "$text" >> "$MUX_RECEIVED"
       fi
       if [[ -n "${MUX_ANSWER_TO:-}" && "$text" == *"the token "* ]]; then
         nonce="${text##*the token }"
         nonce="${nonce%%[![:alnum:]]*}"
-        printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SPAWN-ACK %s cwd=%s posture=acceptEdits"}]}}\n' \
-          "$nonce" "$MUX_ANSWER_CWD" >> "$MUX_ANSWER_TO"
+        printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"SPAWN-ACK %s cwd=%s posture=%s"}]}}\n' \
+          "$nonce" "$MUX_ANSWER_CWD" "${MUX_ANSWER_POSTURE:-acceptEdits}" >> "$MUX_ANSWER_TO"
       fi
     fi
     exit "${MUX_SEND_KEYS:-0}" ;;
@@ -983,19 +1006,33 @@ case " $args " in
     fi ;;
   *" capture-pane "*)
     # This call is already in the trace, so the count is its own number.
-    n="$(grep -c '^mux: .*capture-pane' "$TRACE")"
+    n="$(grep -c '^mux: .* capture-pane ' "$TRACE")"
+    pastes="$(grep -c '^mux: .* paste-buffer ' "$TRACE")"
     pane="${MUX_PANE:-}"
     if [[ -n "${MUX_PANE_LATER:-}" ]] && (( n >= ${MUX_PANE_LATER_AT:-2} )); then
       pane="$MUX_PANE_LATER"
     fi
+    if [[ -n "${MUX_PANE_ON_PASTE:-}" ]] && (( pastes >= ${MUX_PANE_ON_PASTE_AT:-1} )); then
+      pane="$MUX_PANE_ON_PASTE"
+    fi
+    if [[ -n "${MUX_PANE_ON_SUBMIT:-}" && -e "$TRACE.submitted" ]]; then
+      pane="$MUX_PANE_ON_SUBMIT"
+    fi
     if [[ -n "$pane" && -r "$pane" ]]; then
       printf '%s\n' "$(<"$pane")"
-    fi ;;
+    fi
+    exit "${MUX_CAPTURE_RC:-0}" ;;
   *" load-buffer "*)
-    # The launcher deletes the file once it is pasted, so keep what it held.
+    # The launcher deletes the file once it is loaded, so keep what it held.
     if [[ -r "${!#}" ]]; then
       printf '%s' "$(<"${!#}")" > "$TRACE.buffer"
     fi ;;
+  *" paste-buffer "*)
+    if [[ -r "$TRACE.buffer" ]]; then
+      mv "$TRACE.buffer" "$TRACE.pasted"
+    fi ;;
+  *" delete-buffer "*)
+    rm -f "$TRACE.buffer" ;;
 esac
 exit 0
 STUB
@@ -1033,7 +1070,7 @@ STUB
 spawn_stub() {
   local rc=0
   : > "$TRACE"
-  rm -f "$TRACE.buffer"
+  rm -f "$TRACE.buffer" "$TRACE.pasted" "$TRACE.submitted"
   PATH="$STUB_PATH" TRACE="$TRACE" \
   SPAWN_CONFIG_FILE="$CONFIG_FILE" \
   SPAWN_SESSIONS_DIR="$BATS_TEST_TMPDIR/sessions" \
@@ -1515,10 +1552,12 @@ without_python() {
 # ── looking before sending ──────────────────────────────────────────────────
 #
 # The handshake is input. It is pasted and submitted, so it must not be sent
-# until the pane shows the input prompt, and never to a pane showing a startup
+# until the pane shows the input box, and never to a pane showing a startup
 # dialog. These specs go past the launch with no multiplexer installed: the
 # stand-in reports a pane with a CLI process in it and shows whatever the spec
 # puts in $PANE.
+
+FIXTURES="$BATS_TEST_DIRNAME/fixtures/spawn-session"
 
 @test "has_control finds a control character anywhere, including at the end" {
   local bad
@@ -1536,6 +1575,73 @@ without_python() {
     run has_control "$ok"
     [ "$status" -ne 0 ] || { echo "flagged: $ok"; return 1; }
   done
+}
+
+# utf8_locale
+#
+# Echoes the name of a UTF-8 locale this machine has.
+utf8_locale() {
+  local name
+  for name in en_US.UTF-8 C.UTF-8 C.utf8 en_US.utf8; do
+    if locale -a 2>/dev/null | grep -qx "$name"; then
+      echo "$name"
+      return 0
+    fi
+  done
+  echo "no UTF-8 locale found" >&2
+  return 1
+}
+
+@test "bytes that are not UTF-8 are refused and rendered, whatever the locale" {
+  # A lone byte from 0x80 to 0x9f is the second control block as an 8-bit
+  # terminal reads it: 0x9b opens a control sequence. It is not the UTF-8
+  # encoding of anything, so no rule about characters catches it, and the
+  # answer must not turn on the locale the caller happens to have.
+  local probe='
+source "$1"
+for code in 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 \
+            144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 \
+            192 193 245 255; do
+  printf -v oct "%03o" "$code"
+  printf -v byte "%b" "\\0$oct"
+  printf -v hex "%02x" "$code"
+  for text in "a${byte}b" "${byte}" "tail${byte}"; do
+    has_control "$text" || { echo "not refused: 0x$hex"; exit 1; }
+    shown="$(visible "$text")"
+    want="${text//"$byte"/\\x$hex}"
+    [ "$shown" = "$want" ] || { echo "0x$hex rendered as: $shown"; exit 1; }
+  done
+done
+
+# Forms a decoder must not accept: a sequence cut short, an overlong one that
+# would decode to U+009B, a surrogate, and something past U+10FFFF.
+for text in "$2" "$3" "$4" "$5"; do
+  has_control "$text" || { echo "not refused: $(visible "$text")"; exit 1; }
+  case "$(visible "$text")" in *\\x*) ;; *) echo "not rendered"; exit 1 ;; esac
+done
+
+# Well-formed names keep working and are printed as they are. Each of these
+# has bytes in the 0x80 to 0x9f range inside a valid sequence.
+for text in "é" "ł" "日本" "😀" "a—b" "/tmp/é/ł/日本/😀"; do
+  if has_control "$text"; then echo "flagged: $text"; exit 1; fi
+  [ "$(visible "$text")" = "$text" ] || { echo "changed: $text"; exit 1; }
+done
+'
+  local utf8 cut overlong surrogate beyond
+  utf8="$(utf8_locale)"
+  cut="tr"$'\346\227'
+  overlong="a"$'\340\202\233'"b"
+  surrogate=$'\355\240\200'
+  beyond=$'\364\220\200\200'
+
+  run env LC_ALL=C bash -c "$probe" _ "$LIB" "$cut" "$overlong" "$surrogate" "$beyond"
+  [ "$status" -eq 0 ] || { echo "LC_ALL=C: $output"; return 1; }
+
+  run env LC_ALL="$utf8" bash -c "$probe" _ "$LIB" "$cut" "$overlong" "$surrogate" "$beyond"
+  [ "$status" -eq 0 ] || { echo "LC_ALL=$utf8: $output"; return 1; }
+
+  run env -u LC_ALL -u LC_CTYPE -u LANG bash -c "$probe" _ "$LIB" "$cut" "$overlong" "$surrogate" "$beyond"
+  [ "$status" -eq 0 ] || { echo "no locale set: $output"; return 1; }
 }
 
 @test "exact keeps the trailing newlines a command substitution would drop" {
@@ -1566,72 +1672,213 @@ ready_table() {
   cat "$SKILL_DIR/scripts/ready-prompts.tsv"
 }
 
-@test "input_gate permits input only when the prompt shows and no dialog does" {
-  local dialog="Accessing workspace:
+# verdict <pane-text>
+#
+# Echoes the first word of what pane_verdict makes of the pane, with the real
+# tables.
+verdict() {
+  local out
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$1")"
+  printf '%s\n' "${out%%$'\t'*}"
+}
+
+BOX="────────────────
+❯ 
+────────────────"
+STATUS="  ⏵⏵ accept edits on (shift+tab to cycle)"
+TRUST_DIALOG="Accessing workspace:
   /some/path
 Quick safety check: Is this a project you created or one you trust?
 ❯ 1. Yes, I trust this folder
   2. No, exit"
-  local prompt="────────────────
-❯ 
-────────────────
-  ⏵⏵ accept edits on (shift+tab to cycle)"
 
-  run input_gate "$(blocker_table)" "$(ready_table)" "$prompt"
-  [ "$output" = "ready" ]
+@test "a status line matches its row whole or cut short, and nothing else does" {
+  local row="⏵⏵ accept edits on"
 
-  run input_gate "$(blocker_table)" "$(ready_table)" "$dialog"
-  [ "$output" = "blocked" ]
+  # Whole, with whatever the CLI puts after it.
+  run status_matches "$row" "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+  [ "$status" -eq 0 ]
+  run status_matches "$row" "⏵⏵ accept edits on"
+  [ "$status" -eq 0 ]
 
-  # A dialog drawn over an earlier screen can leave the prompt's text beside
-  # it. The dialog wins.
-  run input_gate "$(blocker_table)" "$(ready_table)" "$prompt
-$dialog"
-  [ "$output" = "blocked" ]
+  # Cut short by a narrow pane, as the real CLI draws it at 20, 16 and 12
+  # columns, and with the ellipsis a cut can leave.
+  local cut
+  for cut in "⏵⏵ accept edits" "⏵⏵ accept  ·" "⏵⏵" "⏵⏵ accept edi…"; do
+    run status_matches "$row" "$cut"
+    [ "$status" -eq 0 ] || { echo "did not match the cut line: $cut"; return 1; }
+  done
 
-  # Nothing recognised is not readiness: an empty pane, a shell that has only
-  # echoed the launch command, and a dialog the table has no row for all look
-  # like "nothing in the way".
-  run input_gate "$(blocker_table)" "$(ready_table)" ""
-  [ "$output" = "waiting" ]
+  # Not this row: another mode, the wording without its symbol, the wording
+  # further along a line, less than the symbol, and nothing.
+  local other
+  for other in "⏸ plan mode on" "accept edits on" "❯ 1. accept edits on" \
+               "Color theme dialog: accept edits on" "⏵" "⏵⏵ accept all" ""; do
+    run status_matches "$row" "$other"
+    [ "$status" -ne 0 ] || { echo "matched: $other"; return 1; }
+  done
 
-  run input_gate "$(blocker_table)" "$(ready_table)" "A dialog nobody has listed yet
-❯ 1. Yes, proceed
-  2. No, exit"
-  [ "$output" = "waiting" ]
+  # Each posture this tool launches has a row, and the table says how each
+  # row is known.
+  run status_row_for "$(ready_table)" "⏵⏵ accept edits on (shift+tab to cycle)"
+  [ "$output" = "accept-edits" ]
+  run status_row_for "$(ready_table)" "⏵⏵ bypass permissions on (shift+tab to cycle)"
+  [ "$output" = "bypass" ]
+  run status_row_for "$(ready_table)" "⏸ manual mode on · ? for shortcuts · ← for agents"
+  [ "$output" = "manual" ]
+  run ready_row_basis "$(ready_table)" accept-edits
+  [ "$output" = "seen" ]
+  run ready_row_basis "$(ready_table)" bypass
+  [ "$output" = "inferred" ]
 
-  # With no ready table there is nothing to find, so nothing is ever ready.
-  run input_gate "$(blocker_table)" "" "$prompt"
-  [ "$output" = "waiting" ]
+  # Prose from the table's own header is not a row.
+  run status_row_for "$(ready_table)" "Columns, tab-separated:"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+
+  # Literal, like the dialog table: a question mark is a question mark.
+  run status_row_for "id	a?c	seen" "abc"
+  [ "$status" -ne 0 ]
+  run status_row_for "id	a?c	seen" "a?c and more"
+  [ "$output" = "id" ]
 }
 
-@test "no ready pattern matches the launch command the pane echoes" {
-  # The pane shows the typed launch line before the CLI draws anything. A
-  # pattern that matched it would call a session ready the moment it was
-  # launched.
+@test "pane_verdict permits input only when the input box is at the foot of the pane" {
+  # The box with its status line under it, and nothing after.
+  run pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+$STATUS"
+  [ "$output" = "ready	accept-edits" ]
+
+  # Whatever is typed in the box, on one line or several, it is still the box.
+  [ "$(verdict "────────────────
+❯ [Pasted text #1 +10 lines]
+────────────────
+$STATUS")" = "ready" ]
+  [ "$(verdict "────────────────
+❯ first line of a draft
+  second line of it
+────────────────
+$STATUS")" = "ready" ]
+
+  # A dialog, and no box.
+  run pane_verdict "$(blocker_table)" "$(ready_table)" "$TRUST_DIALOG"
+  [[ "$output" == "blocked	trust	"* ]]
+
+  # Nothing recognised is not readiness: an empty pane, and a dialog the
+  # table has no row for.
+  [ "$(verdict "")" = "waiting" ]
+  [ "$(verdict "A dialog nobody has listed yet
+❯ 1. Yes, proceed
+  2. No, exit")" = "waiting" ]
+
+  # The wording of a status line is not the box. A dialog can offer it as an
+  # option, a shell can echo it, and a busy screen can show it with no box.
+  [ "$(verdict "Select a color theme
+❯ 1. accept edits on
+  2. Continue")" = "waiting" ]
+  [ "$(verdict "\$ printf '%s' 'accept edits on'; claude --permission-mode acceptEdits")" = "waiting" ]
+  [ "$(verdict "Color theme dialog: accept edits on")" = "waiting" ]
+  [ "$(verdict "Running the previous turn…
+$STATUS")" = "waiting" ]
+
+  # The pane shows the typed launch command before the CLI draws anything.
   local posture line
   for posture in "" "bypass"; do
     line="$(spawn_launch_command "zz-spawn-demo" "$posture" 'export PATH=/some/bin:$PATH')"
-    run prompt_shown "$(ready_table)" "\$ $line"
-    [ "$status" -ne 0 ] || { echo "matched the launch line: $output"; return 1; }
-    [ -z "$output" ]
+    [ "$(verdict "\$ $line")" = "waiting" ]
   done
 
-  # Nor does prose from the table's own header, which quotes the status line.
-  run prompt_shown "$(ready_table)" "Columns, tab-separated: id pattern"
-  [ "$status" -ne 0 ]
+  # A box is not enough without a status line under it, and two rules with
+  # something other than the prompt glyph between them are not a box.
+  [ "$(verdict "$BOX")" = "waiting" ]
+  [ "$(verdict "────────────────
+Some heading
+────────────────
+$STATUS")" = "waiting" ]
+  [ "$(verdict "$BOX
+  some line that is not a status line")" = "waiting" ]
 
-  # Each posture this tool launches has a row.
-  run prompt_shown "$(ready_table)" "  ⏵⏵ accept edits on (shift+tab to cycle)"
-  [ "$output" = "accept-edits" ]
-  run prompt_shown "$(ready_table)" "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
-  [ "$output" = "bypass" ]
+  # The box has to be the last thing on the pane. A box that was never
+  # cleared, with something else drawn after it, is not where input goes.
+  [ "$(verdict "$BOX
+$STATUS
+A dialog nobody has listed yet
+with several lines of explanation
+and more of it
+and more
+and more still
+  1. Yes, proceed")" = "waiting" ]
 
-  # Literal, like the dialog table: a dot is a dot.
-  run prompt_shown "id	a.c" "abc"
-  [ "$status" -ne 0 ]
-  run prompt_shown "id	a.c" "xxa.cxx"
-  [ "$output" = "id" ]
+  # With no ready table there is nothing to find, so nothing is ever ready.
+  run pane_verdict "$(blocker_table)" "" "$BOX
+$STATUS"
+  [ "$output" = "waiting" ]
+}
+
+@test "dialog wording counts by where it is, not by being on the pane" {
+  # Earlier output that quotes a dialog is above the box, or is prose on a
+  # line of its own under it. The box is what is showing: ready.
+  [ "$(verdict "Earlier output: the menu option is Yes, I trust this folder
+$BOX
+$STATUS")" = "ready" ]
+  [ "$(verdict "$BOX
+$STATUS
+Earlier output: the menu option is Yes, I trust this folder")" = "ready" ]
+
+  # A dialog drawn under a box that was never cleared is the dialog's screen.
+  # Its options are options: focused, numbered, or bare.
+  local out
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+$STATUS
+Dialog
+❯ Yes, I trust this folder")"
+  [[ "$out" == "blocked	trust	"* ]]
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+$STATUS
+  2. Yes, I trust this folder")"
+  [[ "$out" == "blocked	trust	"* ]]
+  [ "$(verdict "$BOX
+$STATUS
+  Yes, I accept")" = "blocked" ]
+
+  # A focused option of a dialog nobody has listed is still not a status
+  # line: not ready, and not a diagnosis either.
+  [ "$(verdict "$BOX
+$STATUS
+❯ 1. Yes, proceed")" = "waiting" ]
+
+  # Above a box, dialog wording is earlier output whichever way the verdict
+  # goes: a box with a status line nobody has listed is unknown, not blocked.
+  [ "$(verdict "Earlier output: Yes, I trust this folder
+$BOX
+  some line that is not a status line")" = "waiting" ]
+
+  # Every row of the dialog table blocks when it is what the pane shows, and
+  # when it is drawn as an option under a stale box.
+  local line id pattern rest
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+    IFS=$'\t' read -r id pattern rest <<< "$line"
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "Dialog
+❯ $pattern")"
+    [[ "$out" == "blocked	$id	"* ]] || { echo "$id alone: $out"; return 1; }
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+$STATUS
+Dialog
+❯ $pattern")"
+    [[ "$out" == "blocked	$id	"* ]] || { echo "$id under a box: $out"; return 1; }
+  done < "$SKILL_DIR/scripts/startup-blockers.tsv"
+}
+
+@test "the real CLI's input box reads as ready at every pane width" {
+  # What tmux captured from the real CLI, from 100 columns down to 12. Below
+  # 25 the status line is cut short, and at 12 only its symbol is left.
+  local width out
+  for width in 100 40 25 20 16 12; do
+    [ -r "$FIXTURES/pane-accept-edits-$width.txt" ]
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-accept-edits-$width.txt")")"
+    [ "$out" = "ready	accept-edits" ] || { echo "at $width columns: $out"; return 1; }
+  done
 }
 
 # stub_cli_running [bridge-json]
@@ -1684,8 +1931,7 @@ pane_dialog() {
 }
 
 pane_prompt() {
-  printf '%s\n' "────────────────" "❯ " "────────────────" \
-    "  ⏵⏵ accept edits on (shift+tab to cycle)" > "${1:-$PANE}"
+  printf '%s\n' "$BOX" "$STATUS" > "${1:-$PANE}"
 }
 
 pane_starting() {
@@ -1697,6 +1943,28 @@ pane_starting() {
 # Echoes how many times the launcher asked the multiplexer to do this.
 sent() {
   count "^mux: .* $1 " "$TRACE"
+}
+
+# submitted
+#
+# Echoes how many times the launcher pressed Enter on its own: a send-keys
+# carrying nothing else. The launch command is typed with its Enter in one
+# call and is not counted.
+submitted() {
+  count '^mux: .* send-keys -t =[^ ]*: Enter$' "$TRACE"
+}
+
+# looked_before_every <pattern>
+#
+# Fails unless each multiplexer call matching the pattern comes straight
+# after a look at the pane, with no other call between the two.
+looked_before_every() {
+  awk -v pat="$1" '
+    /^mux: / {
+      if ($0 ~ pat) { seen = 1; if (prev !~ / capture-pane /) { print "no look before: " $0; bad = 1 } }
+      prev = $0
+    }
+    END { if (!seen) { print "nothing matched " pat; bad = 1 } exit bad }' "$TRACE"
 }
 
 @test "a pane showing a startup dialog receives no input before it is diagnosed" {
@@ -1752,7 +2020,7 @@ sent() {
 
   SPAWN_CLI_VERSION="$(cli_version_in_driver READY_CLI_VERSION)" SPAWN_INSPECT_AFTER=1 \
     run spawn_stub "zz-spawn-slow" --dir "$WORK" --timeout 2
-  # Running, and nothing known about it: unconfirmed, not failed.
+  # Running, and nothing known about it: not failed.
   [ "$status" -eq 5 ] || { cat "$TRACE"; return 1; }
   [ "$(sent load-buffer)" = "0" ] || { echo "input was sent to a pane that never showed the prompt:"; cat "$TRACE"; return 1; }
   [ "$(sent paste-buffer)" = "0" ]
@@ -1761,6 +2029,7 @@ sent() {
   [ "$(sent capture-pane)" -ge 2 ]
   has "$(cat "$OUT")" "the input prompt never appeared"
   has "$(cat "$OUT")" "handshake was not sent"
+  has "$(cat "$OUT")" "nothing was sent to it"
   has "$(cat "$OUT")" "--resume"
   has "$(cat "$OUT")" "ready-prompts.tsv"
   lacks "$(cat "$OUT")" "differs from"
@@ -1773,16 +2042,45 @@ sent() {
   rm -f "$PANE"
   SPAWN_CLI_VERSION="9.9.9" MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-slow" --dir "$WORK" --timeout 1 --resume --porcelain
   [ "$status" -eq 5 ]
-  has "$(cat "$OUT")" $'verdict\tunconfirmed'
+  has "$(cat "$OUT")" $'verdict\tnot_ready'
   has "$(cat "$OUT")" $'handshake\tnot_sent'
   has "$(cat "$OUT")" $'brief\tnone'
   [ "$(sent load-buffer)" = "0" ]
   [ "$(sent send-keys)" = "0" ]
+  [ ! -s "$ERR" ]
 
   SPAWN_CLI_VERSION="9.9.9" MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-slow" --dir "$WORK" --timeout 1 --resume
   [ "$status" -eq 5 ]
   has "$(cat "$OUT")" "CLI 9.9.9 differs from $(cli_version_in_driver READY_CLI_VERSION), which these"
   has "$(cat "$OUT")" "prompt patterns were taken from"
+}
+
+@test "a bypass launch that never shows readiness points at the inferred row" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_starting
+
+  # The row for a bypass launch is the one row nobody has seen in a real
+  # pane, so it is the first thing to check, and the caller is told so
+  # whether it reads prose or pairs.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-byp" --dir "$WORK" --timeout 1 --resume --bypass --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; return 1; }
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "the 'bypass' row of scripts/ready-prompts.tsv is inferred, not seen in a real pane; if 'zz-spawn-byp' is at its prompt, correct that row first"
+
+  # No other posture is told that: its rows were seen.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-byp" --dir "$WORK" --timeout 1 --resume --porcelain
+  [ "$status" -eq 5 ]
+  [ ! -s "$ERR" ]
+
+  # A bypass session that does show its status line is delivered to.
+  printf '%s\n' "$BOX" "  ⏵⏵ bypass permissions on (shift+tab to cycle)" > "$PANE"
+  MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_ANSWER_POSTURE=bypass MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-byp" --dir "$WORK" --timeout 10 --resume --bypass --prompt "BRIEF-TEXT"
+  [ "$status" -eq 0 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  [ ! -s "$ERR" ]
 }
 
 @test "a pane showing the prompt is sent the handshake, then the brief, and is confirmed" {
@@ -1813,8 +2111,23 @@ sent() {
   [ "$(sent load-buffer)" = "2" ]
   [ "$(sent paste-buffer)" = "2" ]
   [ "$(sent send-keys)" = "3" ]
+  [ "$(submitted)" = "2" ]
   has "$(cat "$RECEIVED")" "the word SPAWN-ACK"
   has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+
+  # Each of the four things sent has its own look straight before it.
+  looked_before_every ' paste-buffer ' || { cat "$TRACE"; return 1; }
+  looked_before_every ' send-keys -t =[^ ]*: Enter$' || { cat "$TRACE"; return 1; }
+
+  # As pairs, a run that verified says the handshake went.
+  : > "$TRANSCRIPT"
+  MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-ready" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 0 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\thealthy'
+  has "$(cat "$OUT")" $'identity\tok'
+  has "$(cat "$OUT")" $'brief\tdelivered'
+  has "$(cat "$OUT")" $'handshake\tsent'
 
   # The exit codes after the handshake are what they were. No bridge: 3.
   stub_cli_running 'null'
@@ -1840,18 +2153,21 @@ sent() {
   [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
   [ "$(sent load-buffer)" = "1" ]
   has "$(cat "$OUT")" $'verdict\tunconfirmed'
+  has "$(cat "$OUT")" $'handshake\tsent'
   lacks "$(cat "$OUT")" "not_sent"
 
-  # A dialog that comes up after the handshake went out is still diagnosed,
-  # and that report does not claim that nothing was sent either.
+  # A dialog that comes up once the handshake has been submitted and goes
+  # unanswered is still diagnosed, and that report does not claim that
+  # nothing was sent either.
   stub_cli_running
   pane_prompt
   local later="$BATS_TEST_TMPDIR/pane.later"
   pane_dialog "$later"
-  MUX_PANE_LATER="$later" MUX_HAS_SESSION=0 \
+  MUX_PANE_ON_SUBMIT="$later" MUX_HAS_SESSION=0 \
     run spawn_stub "zz-spawn-ready" --dir "$WORK" --timeout 2 --resume
   [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
   [ "$(sent load-buffer)" = "1" ]
+  [ "$(submitted)" = "1" ]
   has "$(cat "$OUT")" "blocked  trust"
   lacks "$(cat "$OUT")" "nothing was sent"
 }
@@ -1879,6 +2195,222 @@ sent() {
   [ "$(sent load-buffer)" = "1" ]
 }
 
+@test "status-line wording outside the input box is not readiness" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  # A dialog nobody has listed, one of whose options reads like a status
+  # line. Nothing is sent to it.
+  printf '%s\n' "Select a color theme" "❯ 1. accept edits on" "  2. Continue" > "$PANE"
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-quote" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; return 1; }
+  [ "$(sent load-buffer)" = "0" ] || { echo "input was sent to a dialog that quotes a status line:"; cat "$TRACE"; return 1; }
+  [ "$(sent paste-buffer)" = "0" ]
+  [ "$(sent send-keys)" = "0" ]
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tnot_ready'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+
+  # The same wording, echoed by the shell from the caller's own pre-launch
+  # command, before the CLI has drawn anything.
+  printf '%s\n' "\$ printf '%s' 'accept edits on'; claude --permission-mode acceptEdits" > "$PANE"
+  run spawn_stub "zz-spawn-quote" --dir "$WORK" --timeout 2 --porcelain \
+    --pre-launch "printf '%s' 'accept edits on'"
+  [ "$status" -eq 5 ] || { cat "$TRACE"; return 1; }
+  [ "$(sent load-buffer)" = "0" ] || { echo "input was sent on the strength of an echoed command:"; cat "$TRACE"; return 1; }
+  [ "$(sent paste-buffer)" = "0" ]
+  # The one send-keys is the launch command.
+  [ "$(sent send-keys)" = "1" ]
+  [ "$(submitted)" = "0" ]
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+}
+
+@test "a dialog that replaces the input box holds back whatever comes next" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  local dialog="$BATS_TEST_TMPDIR/pane.dialog"
+  pane_dialog "$dialog"
+
+  # Between the look that found the box and the look before the paste: the
+  # paste is held back, and what was staged for it is dropped.
+  pane_prompt
+  MUX_PANE_LATER="$dialog" MUX_PANE_LATER_AT=2 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "0" ] || { echo "pasted at a dialog:"; cat "$TRACE"; return 1; }
+  [ "$(sent send-keys)" = "0" ]
+  [ "$(sent delete-buffer)" -ge 1 ]
+  has "$(cat "$OUT")" $'verdict\tblocked'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+
+  # After the paste, before its Enter: the paste went to the box, the Enter
+  # is held back, and the report says exactly that.
+  pane_prompt
+  MUX_PANE_ON_PASTE="$dialog" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 3 --resume --porcelain
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ]
+  [ "$(sent send-keys)" = "0" ] || { echo "Enter was sent to a dialog:"; cat "$TRACE"; return 1; }
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tblocked'
+  has "$(cat "$OUT")" $'handshake\tnot_submitted'
+  has "$(cat "$OUT")" $'brief\tnone'
+
+  MUX_PANE_ON_PASTE="$dialog" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 3 --resume
+  [ "$status" -eq 4 ]
+  has "$(cat "$OUT")" "the handshake was pasted, and Enter was not sent"
+  has "$(cat "$OUT")" "blocked  trust"
+  lacks "$(cat "$OUT")" "nothing was sent"
+
+  # The same when what replaced the box is nothing the launcher knows: not
+  # a diagnosis, and still no Enter.
+  local unknown="$BATS_TEST_TMPDIR/pane.unknown"
+  printf '%s\n' "Something else entirely" "❯ 1. Continue" > "$unknown"
+  MUX_PANE_ON_PASTE="$unknown" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 3 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ]
+  [ "$(sent send-keys)" = "0" ]
+  has "$(cat "$OUT")" $'verdict\tnot_ready'
+  has "$(cat "$OUT")" $'handshake\tnot_submitted'
+
+  # After a valid acknowledgement, before the brief: identity is confirmed
+  # and reported, and the brief is not pasted.
+  : > "$TRANSCRIPT"
+  MUX_PANE_ON_SUBMIT="$dialog" MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ] || { echo "the brief was pasted at a dialog:"; cat "$TRACE"; return 1; }
+  [ "$(submitted)" = "1" ]
+  lacks "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  has "$(cat "$OUT")" $'verdict\tblocked'
+  has "$(cat "$OUT")" $'identity\tok'
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'brief\tnone'
+  lacks "$(cat "$OUT")" $'brief\tdelivered'
+
+  : > "$TRANSCRIPT"
+  MUX_PANE_ON_SUBMIT="$dialog" MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 5 --resume --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ]
+  has "$(cat "$OUT")" "a startup dialog came up after the session identified itself"
+  has "$(cat "$OUT")" "identity was confirmed. The brief was not sent"
+  lacks "$(cat "$OUT")" "brief    delivered"
+
+  # After the brief's paste, before its Enter.
+  : > "$TRANSCRIPT"
+  : > "$RECEIVED"
+  MUX_PANE_ON_PASTE="$dialog" MUX_PANE_ON_PASTE_AT=2 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-gone" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "2" ]
+  [ "$(submitted)" = "1" ] || { echo "the brief's Enter was sent to a dialog:"; cat "$TRACE"; return 1; }
+  lacks "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'brief\tnot_submitted'
+}
+
+@test "a narrow pane with the input box showing is still delivered to" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  # The real CLI's screen as tmux captured it, where the status line is cut
+  # short: "accept edits" at 20 columns, "accept  ·" at 16, the symbol alone
+  # at 12.
+  local width
+  for width in 20 16 12; do
+    cp "$FIXTURES/pane-accept-edits-$width.txt" "$PANE"
+    : > "$TRANSCRIPT"
+    : > "$RECEIVED"
+    MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+      run spawn_stub "zz-spawn-narrow" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+    [ "$status" -eq 0 ] || { echo "at $width columns:"; cat "$TRACE"; cat "$OUT"; return 1; }
+    has "$(cat "$OUT")" $'verdict\thealthy'
+    has "$(cat "$OUT")" $'brief\tdelivered'
+    has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  done
+}
+
+@test "dialog wording in earlier output does not stop a visible input box being used" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  # A working session whose screen still shows a line that quotes a dialog,
+  # under the status line and then above the box.
+  local shape
+  for shape in under above; do
+    if [[ "$shape" == "under" ]]; then
+      printf '%s\n' "$BOX" "$STATUS" "Earlier output: the menu option is Yes, I trust this folder" > "$PANE"
+    else
+      printf '%s\n' "Earlier output: the menu option is Yes, I trust this folder" "$BOX" "$STATUS" > "$PANE"
+    fi
+    : > "$TRANSCRIPT"
+    : > "$RECEIVED"
+    MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+      run spawn_stub "zz-spawn-quoted" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+    [ "$status" -eq 0 ] || { echo "quotation $shape the box:"; cat "$TRACE"; cat "$OUT"; return 1; }
+    has "$(cat "$OUT")" $'verdict\thealthy'
+    has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  done
+
+  # The other way round: a dialog drawn under a box that was never cleared
+  # is a dialog, and gets nothing.
+  printf '%s\n' "$BOX" "$STATUS" "Dialog" "❯ Yes, I trust this folder" > "$PANE"
+  : > "$RECEIVED"
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-quoted" --dir "$WORK" --timeout 2 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent load-buffer)" = "0" ]
+  [ "$(sent send-keys)" = "0" ]
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tblocked'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+}
+
+@test "a look that fails is not readiness, whatever it printed" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_prompt
+
+  # The multiplexer prints a frame showing the prompt and then fails. What
+  # the pane shows is not known, so nothing is sent.
+  MUX_CAPTURE_RC=1 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-nolook" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent capture-pane)" -ge 2 ]
+  [ "$(sent load-buffer)" = "0" ] || { echo "input was sent after a failed look:"; cat "$TRACE"; return 1; }
+  [ "$(sent paste-buffer)" = "0" ]
+  [ "$(sent send-keys)" = "0" ]
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tnot_ready'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+}
+
+@test "every run that verifies says how far the handshake got" {
+  stub_setup
+  pretrust "$WORK"
+
+  # No CLI process ever appears: the run ends before the handshake, and the
+  # pairs say so, as they do for every other ending before it.
+  run spawn_stub "zz-spawn-none" --dir "$WORK" --timeout 1 --porcelain
+  [ "$status" -eq 4 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'brief\tnone'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  [ "$(sent load-buffer)" = "0" ]
+
+  # A launch that is not verified attempts no handshake and has no pair for
+  # one. Its output is pinned byte for byte in an earlier spec.
+  run spawn_stub "zz-spawn-none" --dir "$WORK" --no-verify --porcelain
+  [ "$status" -eq 0 ]
+  lacks "$(cat "$OUT")" "handshake"
+}
+
 # ── the directory ───────────────────────────────────────────────────────────
 #
 # A path is carried through command substitutions, which drop every trailing
@@ -1902,11 +2434,21 @@ refused_dir() {
   [ ! -s "$OUT" ] || { echo "stdout: $(cat "$OUT")"; return 1; }
   [ "$(count '' "$ERR")" = "1" ] || { cat "$ERR"; return 1; }
   clean "$ERR" || return 1
-  has "$(cat "$ERR")" "has a control character in its path" || return 1
+  utf8_only "$ERR" || return 1
+  has "$(cat "$ERR")" "has a control character, or a byte that is not valid UTF-8, in its path" || return 1
   [ "$(count '^read: python3 ' "$TRACE")" = "0" ] || { cat "$TRACE"; return 1; }
   [ "$(count '^mux: ' "$TRACE")" = "0" ] || { cat "$TRACE"; return 1; }
   cmp "$BATS_TEST_TMPDIR/config.before" "$CONFIG_FILE" || return 1
   [ ! -e "$CONFIG_FILE.lock" ] || return 1
+}
+
+# utf8_only <file>
+#
+# Fails if the file holds a byte that is not part of well-formed UTF-8. A
+# lone byte from 0x80 to 0x9f is one, and `clean` does not look for it.
+utf8_only() {
+  python3 -c 'import sys; open(sys.argv[1], "rb").read().decode("utf-8")' "$1" 2>/dev/null ||
+    { echo "bytes that are not UTF-8 in $1:"; LC_ALL=C od -c "$1"; return 1; }
 }
 
 @test "a directory whose name ends in a newline is refused, not resolved to its sibling" {
@@ -1951,6 +2493,42 @@ refused_dir() {
   has "$(cat "$ERR")" "repo\\n'"
 }
 
+@test "a name that leads through a link and back out is held to where it really leads" {
+  stub_setup
+  stub_readers
+  cp "$CONFIG_FILE" "$BATS_TEST_TMPDIR/config.before"
+
+  # From `work`, `link` points into a directory whose name ends in a newline.
+  # The shell reads `link/..` as `work`; the kernel reads it as the parent of
+  # what the link points to, which is the directory with the newline. Trust
+  # for `work`, and a session started there, is not what the name leads to.
+  local work="$BATS_TEST_TMPDIR/ws/work"
+  mkdir -p "$work/repo"$'\n'"/leaf"
+  ln -s "$work/repo"$'\n'"/leaf" "$work/link"
+
+  local rc=0
+  ( cd "$work" && refused_dir "zz-spawn-dots" --dir link/.. --trust-folder --no-verify ) || rc=$?
+  [ "$rc" -eq 0 ]
+  ( cd "$work" && refused_dir "zz-spawn-dots" --dir link/.. --trust-folder --dry-run ) || rc=$?
+  [ "$rc" -eq 0 ]
+  ( cd "$work" && refused_dir "zz-spawn-dots" --dir link/.. --no-verify ) || rc=$?
+  [ "$rc" -eq 0 ]
+  ( cd "$work" && spawn_stub "zz-spawn-dots" --dir link/.. --trust-folder --no-verify ) || true
+  has "$(cat "$ERR")" "the location the directory resolves to"
+  has "$(cat "$ERR")" "repo\\n'"
+
+  # Where the two readings differ and neither holds a control character, the
+  # launcher uses the shell's, as it always has: the directory holding the
+  # link, not the parent of what the link points to.
+  local plain="$BATS_TEST_TMPDIR/ws/plain"
+  mkdir -p "$plain/from" "$plain/target/leaf"
+  ln -s "$plain/target/leaf" "$plain/from/link"
+  rc=0
+  ( cd "$plain/from" && spawn_stub "zz-spawn-dots" --dir link/.. --trust-folder --no-verify ) || rc=$?
+  [ "$rc" -eq 0 ] || { cat "$TRACE"; return 1; }
+  [ "$(count "^mux: .*new-session -d -s zz-spawn-dots -c $plain/from\$" "$TRACE")" = "1" ] || { cat "$TRACE"; return 1; }
+}
+
 @test "a directory with any control character in its path is refused as usage" {
   stub_setup
   stub_readers
@@ -1977,4 +2555,68 @@ refused_dir() {
     [ "$status" -eq 0 ] || { echo "refused: $dir"; cat "$TRACE"; return 1; }
     [ "$(count '^mux: .*new-session -d -s zz-spawn-ok' "$TRACE")" = "1" ]
   done
+}
+
+@test "a path that is not valid UTF-8 is refused, and names that are keep working" {
+  stub_setup
+  stub_readers
+  cp "$CONFIG_FILE" "$BATS_TEST_TMPDIR/config.before"
+  local ws="$BATS_TEST_TMPDIR/ws" utf8
+  mkdir -p "$ws"
+  utf8="$(utf8_locale)"
+
+  # A lone 0x9b is what an 8-bit terminal reads as the start of a control
+  # sequence, and it is not the encoding of any character. Refused on the
+  # name alone, before trust is looked at, whatever the caller's locale; and
+  # the refusal prints it as text.
+  local byte dir
+  for byte in $'\200' $'\233' $'\237' $'\377'; do
+    dir="$ws/a${byte}b"
+    LC_ALL=C refused_dir "zz-spawn-raw" --dir "$dir" --trust-folder --no-verify
+    LC_ALL="$utf8" refused_dir "zz-spawn-raw" --dir "$dir" --trust-folder --no-verify
+    LC_ALL="$utf8" refused_dir "zz-spawn-raw" --dir "$dir" --trust-folder --dry-run
+    LC_ALL="$utf8" refused_dir "zz-spawn-raw" --dir "$dir" --no-verify
+    LC_ALL="$utf8" refused_dir "zz-spawn-raw" --dir "$dir" --bypass --no-verify
+  done
+  LC_ALL="$utf8" refused_dir "zz-spawn-raw" --dir "$ws/a"$'\233'"b" --no-verify
+  has "$(cat "$ERR")" "a\\x9bb'"
+
+  # Where the filesystem will hold such a name, the routes that reach it
+  # without it being the argument are refused too. macOS will not create one,
+  # so this half runs on Linux.
+  local raw="$ws/raw"$'\233'"dir" rc=0
+  if mkdir "$raw" 2>/dev/null; then
+    git init -q "$raw"
+    mkdir "$raw/sub"
+    refused_dir "zz-spawn-raw" --dir "$raw" --trust-folder --no-verify
+    refused_dir "zz-spawn-raw" --dir "$raw/sub" --trust-folder --no-verify
+    ( cd "$raw" && refused_dir "zz-spawn-raw" --trust-folder --no-verify ) || rc=$?
+    [ "$rc" -eq 0 ]
+    ( cd "$raw" && refused_dir "zz-spawn-raw" --dir . --trust-folder --dry-run ) || rc=$?
+    [ "$rc" -eq 0 ]
+    ln -s "$raw" "$ws/rawlink"
+    refused_dir "zz-spawn-raw" --dir "$ws/rawlink" --trust-folder --no-verify
+  fi
+
+  # Valid names whose encoding uses those same byte values keep working, in
+  # each locale: an accent, a stroke, CJK, an emoji.
+  local name locale
+  for name in "é" "ł" "日本" "😀"; do
+    mkdir -p "$ws/$name"
+    for locale in C "$utf8"; do
+      rc=0
+      LC_ALL="$locale" spawn_stub "zz-spawn-utf8" --dir "$ws/$name" --trust-folder --no-verify || rc=$?
+      [ "$rc" -eq 0 ] || { echo "refused '$name' under LC_ALL=$locale:"; cat "$TRACE"; return 1; }
+      [ "$(count '^mux: .*new-session -d -s zz-spawn-utf8' "$TRACE")" = "1" ]
+      cp "$BATS_TEST_TMPDIR/config.before" "$CONFIG_FILE"
+    done
+  done
+
+  # A session name is printed in its refusal, and is rendered the same way.
+  rc=0
+  spawn_stub "zz"$'\233'"31mred" --dir "$WORK" --no-verify || rc=$?
+  [ "$rc" -eq 2 ]
+  [ "$(count '' "$ERR")" = "1" ]
+  utf8_only "$ERR"
+  has "$(cat "$ERR")" "'zz\\x9b31mred' is not a usable session name"
 }

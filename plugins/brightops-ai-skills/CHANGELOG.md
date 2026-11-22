@@ -13,29 +13,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `spawn-session`: the handshake was pasted and submitted before the pane was
   looked at, so a session held at a startup dialog received input. The
-  launcher now sends nothing until the pane shows the CLI's input prompt and
-  no known startup dialog. A session held at a dialog is diagnosed (exit 4)
-  with no paste and no keypress sent to it.
+  launcher now sends nothing until the CLI's input box is at the foot of the
+  pane with a status line under it, and it looks again before each thing it
+  sends: the handshake's paste, its Enter, the brief's paste, its Enter. A
+  session seen at a dialog is diagnosed (exit 4) and sent nothing further.
+  The pane can still change between a look and the send that follows it, so
+  a dialog that comes up in that instant can receive that one paste or Enter.
 - `spawn-session`: a directory whose name ended in a newline resolved to its
   sibling, which was then trusted by `--trust-folder` and used as the working
-  directory. A directory whose path holds a newline or any other control
-  character is now refused as usage (exit 2), before the trust configuration
-  is read or written, in a dry run too.
+  directory. A directory whose path holds a control character, or is not
+  valid UTF-8, is now refused as usage (exit 2), before the trust
+  configuration is read or written, in a dry run too. The argument is checked
+  as given, as the kernel resolves it, and as the shell resolves it, so `.`,
+  a symbolic link and `link/..` are covered.
+- `spawn-session`: a byte that is not valid UTF-8 in a directory or session
+  name was printed raw in refusals and warnings. It is rendered as text
+  (`\x9b`).
 
 ### Changed
 
-- `spawn-session`: when the input prompt never appears within `--timeout` and
-  no known dialog is showing, the run ends with exit 5 and reports that the
-  handshake was not sent. It previously sent the handshake regardless.
-  `--porcelain` adds the pair `handshake<TAB>not_sent` whenever a run ends
-  before the handshake.
+- `spawn-session`: when the input box is not showing and no known dialog is,
+  the run ends with exit 5 and the new verdict `not_ready`, having held back
+  whatever came next. It previously sent the handshake regardless.
+- `spawn-session`: `--porcelain` adds a `handshake` pair to every run that
+  verifies: `not_sent`, `not_submitted` (pasted, Enter held back) or `sent`.
+  `brief` gains the value `not_submitted`. A run with `--no-verify` is
+  unchanged.
 - `spawn-session`: a launch in a directory with a control character in its
   path used to go ahead, with the name rendered as text in the warning. It is
-  now refused; rename the directory or launch elsewhere.
-- `spawn-session`: the input prompt is recognised by the status-line text
-  listed in `scripts/ready-prompts.tsv`, taken from CLI 2.1.330 and not yet
-  confirmed against a live session. If a session at its prompt is reported
-  as never having shown it, add a row there.
+  now refused; rename the directory or launch elsewhere. On Linux the same
+  applies to a name that is not valid UTF-8, which used to be carried
+  through.
+- `spawn-session`: the status lines the launcher accepts are listed in
+  `scripts/ready-prompts.tsv`, each marked `seen` (read from a real CLI
+  2.1.330 pane) or `inferred`. The row for a `--bypass` session is inferred;
+  a bypass launch that ends not ready names it on stderr.
 
 ## [1.5.0] - 2026-11-22
 

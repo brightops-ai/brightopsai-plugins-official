@@ -25,7 +25,7 @@ Common options:
 
 | Option | Effect |
 |---|---|
-| `--dir <dir>` | Where to launch. Defaults to the current directory. Refused when its path holds a newline or another control character. |
+| `--dir <dir>` | Where to launch. Defaults to the current directory. Refused when its path holds a control character or is not valid UTF-8. |
 | `--prompt <text>` / `--prompt-file <path>` | The brief. `-` reads standard input. |
 | `--bypass` | Launch with permissions bypassed. Default is `acceptEdits`. Warns on stderr. Refused with `--trust-folder`. |
 | `--trust-folder` | Pre-authorise the workspace if it is not trusted yet. Inside a repository that is the whole repository, and a warning says so. |
@@ -40,10 +40,10 @@ Read the exit code, not the prose:
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | Confirmed, and briefed if a brief was given | Nothing |
-| 2 | Usage error, or a refusal, including `--bypass` with `--trust-folder` and a directory with a control character in its path | Fix the invocation |
+| 2 | Usage error, or a refusal, including `--bypass` with `--trust-folder` and a directory whose path holds a control character or is not valid UTF-8 | Fix the invocation |
 | 3 | Running, but not reachable from the web client | Usable locally; note it |
 | 4 | Never became usable — never started, or held at a dialog | Apply the reported remedy, then `--resume` |
-| 5 | Running and unconfirmed — the prompt never appeared, or no answer in time | Leave it alone; look at it |
+| 5 | Running, and not ready or unconfirmed — the input box is not showing, or no answer in time | Leave it alone; look at it |
 
 ## Bypass and trust
 
@@ -74,11 +74,16 @@ does not guarantee: `references/protocol.md`.
 
 ## How it works, and why it is worth knowing
 
-Nothing is sent until the launcher has **looked at the pane**. It waits for
-the pane to show the CLI's input prompt and none of the known startup dialogs.
-A process that is running proves nothing about what it is showing, and input
-sent early is typed at whatever comes up. If the prompt never appears, the run
+Nothing is sent until the launcher has **looked at the pane** and found the
+CLI's input box at the foot of it: a rule, the prompt line, a rule, and a
+status line under them. Status-line wording anywhere else on the pane does not
+count, and neither does a running process. If the box never appears, the run
 ends having sent nothing.
+
+The launcher looks again before each thing it sends: the handshake's paste,
+its Enter, the brief's paste, its Enter. When the box is gone, that send and
+everything after it is held back, and the report says what went and what did
+not.
 
 Delivery then happens in two phases, and the order is the safety property.
 
@@ -97,9 +102,12 @@ Two habits follow from this, and both matter more than they look:
 - **A busy indicator is not confirmation.** A session that was already working
   looks identical to one that just accepted your input. Only the token coming
   back proves the message was received by *that* session.
-- **Nothing is ever typed at a dialog.** A session held at a startup prompt
-  receives no input: it is diagnosed and reported with the configuration entry
-  that resolves it. See `references/blockers.md`.
+- **A dialog is never answered, and a send is held back when the input box
+  is not showing.** That is what is guaranteed. The launcher looks and then
+  sends, and the pane can change in the instant between the two, so a dialog
+  that comes up in that instant can still receive one paste or one Enter. A
+  session seen at a startup dialog is diagnosed and reported with the
+  configuration entry that resolves it. See `references/blockers.md`.
 
 ## Writing a brief worth sending
 
@@ -123,29 +131,33 @@ the most common way a spawned session causes damage.
 ## When it does not come up
 
 At 30 seconds the launcher reports what it can see rather than waiting in
-silence, and at the ceiling it distinguishes two different situations:
+silence, and at the ceiling it distinguishes three situations:
 
 - **Blocked (exit 4).** A known startup dialog is holding the session. The
-  report names it and what settles it, and nothing was sent. Resolve that,
-  then re-run with `--resume` to deliver the brief into the same session.
-  Re-running without `--resume` is refused: the name is taken.
-- **Unconfirmed (exit 5).** Nothing recognisable in the way, and either the
-  input prompt never appeared, so the handshake was not sent, or it was sent
-  and not answered. The report says which. The session is left running — it
-  may simply be slow. Look at it before doing anything:
-  `tmux attach -t "=<name>"`.
+  report names it and what settles it. Resolve that, then re-run with
+  `--resume` to deliver the brief into the same session. Re-running without
+  `--resume` is refused: the name is taken.
+- **Not ready (exit 5).** The input box is not showing and no known dialog
+  is: the pane is still starting, or shows something the launcher does not
+  recognise.
+- **Unconfirmed (exit 5).** The handshake was sent and not answered, with
+  nothing recognisable in the way. The session may simply be slow.
 
-Never respond to either by killing and re-spawning. A session that came up
+In all three the session is left running. The report says what was sent:
+nothing, a paste without its Enter, or the handshake without the brief. Look
+at the session before doing anything: `tmux attach -t "=<name>"`.
+
+Never respond to any of them by killing and re-spawning. A session that came up
 holds a real conversation, and destroying it to tidy up an unknown throws that
 away.
 
 ## References
 
-- `references/protocol.md` — the readiness check, the handshake format, how
-  the reply is located, the warnings and refusals, and the full exit-code
-  contract
+- `references/protocol.md` — how the input box is recognised, what each send
+  is checked against, the handshake format, the warnings and refusals, and the
+  full exit-code contract
 - `references/blockers.md` — the startup dialogs, why none is ever answered
-  automatically, and how to extend the dialog and prompt tables
+  automatically, and how to extend the dialog and status-line tables
 
 ## Requirements
 
