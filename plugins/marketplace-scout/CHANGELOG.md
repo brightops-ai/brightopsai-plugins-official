@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used to have the lockfile written through it to wherever it pointed), and a
   `node_modules` that is a symlink or a regular file (which used to count as
   installed). A lockfile is written only where nothing exists.
+  The target path is normalised first: a trailing `/` or `/.` resolves
+  through a symlink, so `link/` used to pass where `link` was refused.
 
 ## [1.2.0] - 2026-09-05
 

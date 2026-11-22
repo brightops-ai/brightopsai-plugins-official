@@ -42,6 +42,16 @@ if [[ -z "${CLAUDE_PLUGIN_DATA:-}" || -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
 fi
 
 TARGET="${1:-$CLAUDE_PLUGIN_DATA/dashboard}"
+# Name the entry itself, not what it leads to: a path ending in "/" or "/."
+# is resolved through a symlink, so "link/" would pass every check below
+# while "link" is refused.
+while [[ "$TARGET" == */ || "$TARGET" == */. ]] && [[ "$TARGET" != / ]]; do
+  TARGET="${TARGET%/.}"
+  TARGET="${TARGET%/}"
+done
+if [[ -z "$TARGET" ]]; then
+  TARGET=/
+fi
 
 # This script writes through no symlink and treats nothing but a real
 # directory as a dashboard. A dangling link is neither "present" nor "absent".
@@ -120,6 +130,10 @@ place() {
   if [[ -e "$dst" || -L "$dst" ]]; then
     return 1
   fi
+  # Known transient: no portable mv renames onto a path without ever treating
+  # it as a directory (GNU has -T, BSD has -h, POSIX has neither). If a
+  # symlink to a directory appears at dst right here, mv follows it for the
+  # moment it takes the check below to move the source back out.
   mv -n "$src" "$dst" 2>/dev/null || true
   if [[ -e "$dst/$name" || -L "$dst/$name" ]]; then
     if ! mv "$dst/$name" "$src"; then

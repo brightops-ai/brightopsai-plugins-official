@@ -332,6 +332,42 @@ STUB
   [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
 }
 
+@test "trailing slash or /. does not get a symlinked target past the refusal" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  # What the link points at looks like an uninstalled dashboard, so a script
+  # that followed the link would install into it.
+  local referent="$BATS_TEST_TMPDIR/referent" form
+  mkdir -p "$referent"
+  cp "$CLAUDE_PLUGIN_ROOT/skills/marketplace-scout/assets/dashboard/package.json" "$referent/package.json"
+  ln -s "$referent" "$CLAUDE_PLUGIN_DATA/linked"
+
+  # `[ ]` and grep, not `[[ ]]`: under bash 3.2 bats cannot fail a test on a
+  # `[[ ]]` that is not its last command.
+  for form in "linked" "linked/" "linked//" "linked/." "linked/./"; do
+    run "$SCRIPT" "$CLAUDE_PLUGIN_DATA/$form"
+    [ "$status" -eq 1 ]
+    printf '%s\n' "$output" | grep -q "linked is a symlink"
+    [ "$(npm_calls)" -eq 0 ]
+    [ "$(ls -A "$referent")" = "package.json" ]
+  done
+  assert_no_staging_left
+}
+
+@test "trailing slash on a plain target is the same target" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  run "$SCRIPT" "$CLAUDE_PLUGIN_DATA/custom/"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx "dashboard ready at $CLAUDE_PLUGIN_DATA/custom"
+  [ -f "$CLAUDE_PLUGIN_DATA/custom/node_modules/complete" ]
+
+  run "$SCRIPT" "$CLAUDE_PLUGIN_DATA/custom/."
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx "dashboard present at $CLAUDE_PLUGIN_DATA/custom; not overwriting"
+  [ "$(npm_calls)" -eq 1 ]
+}
+
 @test "SKIP_NPM_INSTALL scaffolds without calling npm" {
   stub_npm
 
