@@ -59,11 +59,22 @@ on that file:
   defaults apply.
 - If gitleaks is absent, a bundled high-confidence Python fallback runs and
   prints a `FALLBACK` line. It is not a substitute for gitleaks.
-- Exit 0: continue. Exit 1: hit — stop, do not open Grok, do not upload.
-  Exit 2: scanner error — stop, do not upload.
+- Exit 0: no pattern matched — continue to the confirmation below. Exit 1:
+  hit — stop, do not open Grok, do not upload. Exit 2: scanner error — stop,
+  do not upload.
 
 A clean scan is not clearance. Do not send documents that contain secrets or
 confidential material.
+
+After a clean scan and before the first upload in a run, the skill asks the
+user to confirm the exact file and the destination (grok.com, the named
+project, the account signed in to the Playwright browser), and uploads only on
+an explicit yes to that question. With no user to answer — a headless,
+scheduled, or delegated run — it stops without opening Grok. The skill does
+not pre-approve the Playwright upload tool, so the session's own permission
+rules apply to each upload. The confirmation is an instruction to the agent
+and the permission is a default the user can change; neither is a technical
+boundary, and an upload cannot be recalled.
 
 ## Secret scanning in this repository
 

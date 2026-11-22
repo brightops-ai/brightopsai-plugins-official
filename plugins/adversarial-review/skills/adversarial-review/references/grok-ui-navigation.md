@@ -148,7 +148,7 @@ Grok's page contains multiple `.prose` / `.markdown` elements — the user's ech
 }
 ```
 
-Identify the assistant response as the largest element whose preview does NOT start with the submitted prompt content (matching the rule in SKILL.md Step 9). It often begins with "Thought for Xs" followed by the findings. Then extract that specific element by its index from the enumeration:
+Identify the assistant response as the largest element whose preview does NOT start with the submitted prompt content (matching the rule in SKILL.md Step 10). It often begins with "Thought for Xs" followed by the findings. Then extract that specific element by its index from the enumeration:
 
 ```javascript
 () => {

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-22
+
+### Added
+
+- Upload confirmation (#82). After a clean scan and before opening Grok, the
+  skill asks the user to confirm the exact file and the destination and
+  uploads only on an explicit yes. With no user to answer — a headless,
+  scheduled, or delegated run — it stops without uploading. The confirmation
+  covers the same file and project for the rest of the run.
+- `scan-secrets.sh` prints a `WARNING` on a clean scan: a clean scan is not
+  clearance, confirm the file and destination with the user, stop if no user
+  can answer. Exit codes are unchanged.
+
+### Changed
+
+- The description triggers only on requests that name Grok or an adversarial
+  review. General phrases ("critique this plan", "find the flaws", "poke
+  holes in this" and similar) no longer invoke a skill that uploads a
+  document.
+- `browser_file_upload` is no longer in the skill's `allowed-tools`, so the
+  skill does not pre-approve the upload; the session's permission rules
+  apply. Expect a permission prompt per upload unless the tool is already
+  allowed.
+- `--aggressive`: the flag's description now states that the backup at
+  `{filename}.pre-review.md` is taken before the first edit in both modes.
+  The backup is checked against the original, an existing backup is not
+  overwritten, and no edit is applied if the backup cannot be written.
+
 ## [1.4.0] - 2026-09-05
 
 ### Added

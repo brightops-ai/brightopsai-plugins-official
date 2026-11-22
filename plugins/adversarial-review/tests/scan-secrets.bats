@@ -49,6 +49,23 @@ EOF
   [[ "$output" != *"BLOCKED:"* ]]
 }
 
+@test "clean scan says it is not clearance and names the file to confirm" {
+  local doc="$BATS_TEST_TMPDIR/plan.md"
+  printf '%s\n' '# Plan' 'No credentials belong in this file.' >"$doc"
+
+  run "$SCAN" "$doc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARNING: no secret pattern matched in $doc"* ]]
+  [[ "$output" == *"not clearance"* ]]
+  [[ "$output" == *"Ask the user to confirm this exact file and the destination"* ]]
+  [[ "$output" == *"If no user can answer, stop."* ]]
+
+  run env SCAN_SECRETS_GITLEAKS= "$SCAN" "$doc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"FALLBACK"* ]]
+  [[ "$output" == *"WARNING: no secret pattern matched in $doc"* ]]
+}
+
 @test "private key fixture exits 1 and names the rule and file" {
   local doc="$BATS_TEST_TMPDIR/leaky.md"
   write_key_fixture "$doc"

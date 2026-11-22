@@ -3,10 +3,19 @@
 ## Overview
 
 Send plans, designs, and working documents to Grok (`grok.com`) for adversarial
-feedback via Playwright browser automation. The loop navigates to Grok, creates
-or finds the matching project, uploads the document, submits a structured
-review prompt, extracts findings with severity tags and self-improvement notes,
-and integrates approved suggestions back into the source file.
+feedback via Playwright browser automation. The loop scans the document for
+secrets, asks for confirmation of the exact file and destination, navigates to
+Grok, creates or finds the matching project, uploads the document, submits a
+structured review prompt, extracts findings with severity tags and
+self-improvement notes, and integrates approved suggestions back into the
+source file.
+
+An upload cannot be recalled. Before the first upload in a run the skill asks
+to confirm the file path and the destination (grok.com, the project, the
+signed-in account) and uploads only on an explicit yes. With no user to answer
+— a headless, scheduled, or delegated run — it stops without opening Grok. The
+skill does not pre-approve the Playwright upload tool, so the session's own
+permission rules apply to each upload as well.
 
 Use this for a cross-model second opinion on a plan or design. Use Claude
 Code's built-in `/code-review` for a Claude-on-Claude diff review — that path
@@ -15,7 +24,9 @@ does not need a browser.
 Review prompt variants: Standard, Architecture, Implementation, Security,
 UX/Product. Auto-apply is conservative by default (Minor and Nit); pass
 `--aggressive` to also auto-apply Major. Critical findings always wait for
-confirmation.
+confirmation. In either mode the original is copied to
+`{filename}.pre-review.md` before the first edit, and no edit is made if that
+backup cannot be written.
 
 ## Install
 
@@ -44,8 +55,9 @@ another marketplace otherwise — install Playwright **first**, then
 |--------|----------------|
 | `/adversarial-review:adversarial-review` | Upload a document to Grok, run the review, and apply approved edits. |
 
-The skill is model-invocable. Pass a path to the document, and optionally
-`--aggressive`.
+The skill is model-invocable, on requests that name Grok or an adversarial
+review; a general request for critique does not invoke it. Pass a path to the
+document, and optionally `--aggressive`.
 
 ## Prerequisites
 
