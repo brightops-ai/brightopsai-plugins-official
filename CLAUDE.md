@@ -163,18 +163,27 @@ scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
 The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
 complete, they block the commit. Install gitleaks (the hook prints how).
 `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
-case only; an agent never sets it. `install-hooks.sh` never replaces an
-existing `core.hooksPath` unless run with `--force`.
+case only; an agent never sets it.
 
-Commits that no hook scans, so CI is the only scan for them (observed with git
-2.56.1; `scripts/tests/test_commit_hook_coverage.py` holds the fixture):
+`install-hooks.sh` never replaces an existing `core.hooksPath` unless run with
+`--force`, and an empty value counts as existing. `--force` replaces only what
+is written in `.git/config` itself: it refuses a value that comes from a
+worktree's own config, the command line, the environment or an included file.
+A run that does not end with the hooks active leaves file modes and config as
+they were, so exit 0 means active and any other exit means unchanged.
 
-- `git rebase`, including `git rebase --continue` after a conflict. The one
-  exception is a commit an interactive rebase stops to `reword`.
-- `git cherry-pick` and `git revert` when they apply without a conflict.
+Assume a commit made by `git rebase`, `git cherry-pick` or `git revert` was not
+scanned locally; CI is the scan that covers it. Git runs `pre-commit` for only
+some of those commits. Observed with git 2.56.1
+(`scripts/tests/test_commit_hook_coverage.py` holds the fixture):
 
-After a conflict, `git cherry-pick --continue` and `git revert --continue` do
-run `pre-commit`, as `git commit` does.
+- No hook: a cherry-pick or revert that applies without a conflict, with or
+  without `--edit`; a rebase's picks, `squash` and `fixup`;
+  `git rebase --continue` after a conflict; a merge that a `--rebase-merges`
+  rebase re-creates with `merge -C`.
+- `pre-commit` runs: `git cherry-pick --continue` and `git revert --continue`
+  after a conflict; a commit an interactive rebase stops to `reword`; a merge
+  that an interactive `--rebase-merges` rebase re-creates with `merge -c`.
 
 ### Guardrails
 
@@ -186,7 +195,7 @@ names the control that holds each rule when the tripwire is stepped around.
 
 | Rule | What holds it | What the tripwire refuses | Do this instead |
 |---|---|---|---|
-| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word; `git push` with `<src>:main`, or with `refs/heads/main` as its own word or straight after a `:` or `+`; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
+| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word, first or after a remote; `git push` with `<src>:main`; `git push` with `refs/heads/main` as its own word, first or after a remote, or straight after a `:`; `git push` with `+refs/heads/main` as its own word; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
 | No force push | Branch protection refuses a force push to `main`. Nothing holds other branches | `git push` with `--force` or `-f` as its own word | `git push --force-with-lease origin <branch>`, on your own branch only |
 | No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the tree on every pull request and on `main`, so a skipped hook is caught before merge | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
 | No agent started with a permission-bypass flag | Nothing else | `claude` with `dangerously-skip-permissions` or `bypassPermissions` in its arguments; `codex` with `--yolo` or `--dangerously-bypass-approvals-and-sandbox`; `gemini` with `yolo` anywhere (`--yolo`, `--approval-mode=yolo`) or `-y` as its own word | Start it in its default permission mode |
@@ -196,8 +205,10 @@ names the control that holds each rule when the tripwire is stepped around.
 
 Known misses, none of them matched:
 
-- Any of the above run by path (`/usr/bin/git`), inside `bash -c` or `sh -c`,
-  from a script, or by another agent.
+- Any of the above inside `bash -c` or `sh -c`, from a script, or by another
+  agent. A command run by path (`/usr/bin/git push origin main`) was refused
+  when tried on Claude Code 2.1.330, but the permissions documentation says
+  such a command is not matched, so do not count on it.
 - Pushes: a bare `git push` from a local `main`; `+main`; `git -c <key>=<value>
   push`; `git -C <dir> push` with a refspec, `--all`, `--mirror` or a force
   flag.
@@ -212,19 +223,26 @@ Known misses, none of them matched:
 Known false positives: a commit message that contains `--no-verify`, or `-n`
 as its own word, is refused; write the message to a file and use
 `git commit -F <file>`. A ref whose name contains `--all` or `--mirror` cannot
-be pushed by that name. A branch whose name merely ends in `refs/heads/main`
-(`feature/refs/heads/main`) and a `gh auth status --hostname` value that ends
-in `-t` are no longer refused: those rules need a word boundary first
-(`scripts/tests/test_agent_settings.py`).
+be pushed by that name. `git push main <branch>` is refused when `main` is a
+remote or a directory named `main`, not a branch.
+
+`scripts/tests/test_agent_settings.py` holds every form above as a command:
+what is refused, what must stay runnable, the known misses and the known
+false positives. Each was also put to the real matcher (Claude Code 2.1.330).
 
 The SessionStart hook runs for a new session only (the `startup` matcher), not
 on resume, `/clear` or compaction. The registered command finds it through
-`CLAUDE_PROJECT_DIR` or, when that is unset, at the root of the checkout the
-session started in, so a session started in a subdirectory still runs it. It installs `mattpocock-skills` only when
-`claude plugin list --json` succeeds and shows no install that applies to this
-project; if the listing fails, cannot be parsed, or has a row it cannot
-identify (no `id`, or a project row for the plugin with no absolute
-`projectPath`), it warns and installs nothing. It never updates an installed copy and prints the installed version
+`CLAUDE_PROJECT_DIR`; when that is unset, in the directory the session
+started in; failing that, at the root of the checkout around that directory,
+so a session started in a subdirectory still runs it.
+
+It installs `mattpocock-skills` only when `claude plugin list --json` succeeds,
+is a well-formed listing, and shows no install that applies to this project.
+The listing is untrusted input, read by a Python program inside the hook
+file: strict JSON (no `NaN`, no duplicate keys), and in every row a plugin id, a
+scope and, where present, a version and a clean absolute `projectPath`. If
+the listing fails or any row is malformed, the hook warns and installs
+nothing. It never updates an installed copy and prints the installed version
 to stderr. A plugin it installs loads in the next session, or after
 `/reload-plugins`.
 

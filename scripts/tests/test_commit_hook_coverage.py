@@ -1,15 +1,18 @@
 """Which commit-creating git commands run the commit hooks, and what the docs say.
 
 The guidance used to say that rebase, cherry-pick and revert run no commit
-hook. That is true of rebase and of a cherry-pick or revert that applies
-cleanly. After a conflict, `git cherry-pick --continue` and
-`git revert --continue` run `pre-commit`.
+hook. Git runs `pre-commit` for some of the commits those commands make and
+not for others, so the guidance now says the cautious thing (assume such a
+commit was not scanned; CI is the scan that covers it) and lists what was
+observed.
 
 Two halves:
 
 * a fixture that runs each command in a throwaway repository with recording
-  hooks, so the statement is checked against the git that is installed;
-* a check that no tracked guidance still carries the unqualified sentence.
+  hooks, so every case the guidance lists is checked against the git that is
+  installed;
+* checks that the guidance makes the cautious statement, lists the cases, and
+  no longer carries a blanket "runs no hook" sentence.
 
 The repository is built under a temp directory with a temp HOME and no global
 or system git config. This checkout's own config is never read or written.
@@ -155,7 +158,7 @@ class TestCommitHookCoverage(unittest.TestCase):
         self.assertTrue(self._subject().startswith("Revert "))
         self.assertEqual(self._ran(), [], "a clean revert ran a hook")
 
-    def test_rebase_runs_no_hook_with_or_without_a_conflict(self) -> None:
+    def test_rebase_picks_and_continue_run_no_hook(self) -> None:
         self._history()
         self._git("checkout", "-q", "-b", "clean", "main~1")
         self._write("c", "x")
@@ -174,6 +177,76 @@ class TestCommitHookCoverage(unittest.TestCase):
                 self._git("rebase", "--continue")
                 self.assertEqual(self._subject(), "side adds g2")
                 self.assertEqual(self._ran(), [], "rebase --continue ran a hook")
+
+    def test_edit_flag_on_a_clean_cherry_pick_or_revert_runs_no_hook(self) -> None:
+        self._history()
+        self._git("cherry-pick", "--edit", "side")
+        self.assertEqual(self._subject(), "side adds g2")
+        self.assertEqual(self._ran(), [], "cherry-pick --edit ran a hook")
+
+        self._history()
+        self._git("revert", "--edit", "HEAD")
+        self.assertTrue(self._subject().startswith("Revert "))
+        self.assertEqual(self._ran(), [], "revert --edit ran a hook")
+
+    def _todo_editor(self, name: str, *, line: int | None = None, old: str, new: str) -> str:
+        """A sequence editor that rewrites the todo list, so no editor opens.
+
+        Replaces `old` with `new` at the start of todo line `line` (counted
+        from 0), or wherever a line starts with it when `line` is None.
+        """
+        editor = self.base / name
+        which = '[ "$n" = %d ] && ' % line if line is not None else ""
+        editor.write_text(
+            "#!/bin/sh\n"
+            "n=0\n"
+            'while IFS= read -r todo; do\n'
+            f'  {which}case "$todo" in "{old}"*) todo="{new}${{todo#"{old}"}}" ;; esac\n'
+            '  printf "%s\\n" "$todo"\n'
+            "  n=$((n + 1))\n"
+            'done < "$1" > "$1.new" && mv "$1.new" "$1"\n',
+            encoding="utf-8",
+        )
+        editor.chmod(0o755)
+        return str(editor)
+
+    def test_squash_and_fixup_run_no_hook(self) -> None:
+        for label, new in (("squash", "squash "), ("fixup -c", "fixup -c ")):
+            with self.subTest(todo=label):
+                editor = self._todo_editor(f"todo-{label.split()[0]}", line=1, old="pick ", new=new)
+                self._history()
+                self._git("checkout", "-q", "side")
+                self._git("rebase", "-i", "main~1", GIT_SEQUENCE_EDITOR=editor)
+                self.assertEqual(self._git("rev-list", "--count", "main~1..HEAD").stdout.strip(), "1")
+                self.assertEqual(self._ran(), [], f"{label} ran a hook")
+
+    def _merged_history(self) -> None:
+        """main with a clean merge of a topic branch on top, for a rebase that keeps merges."""
+        self._history()
+        quiet = ("-c", "core.hooksPath=/dev/null")
+        self._git("checkout", "-q", "-b", "topic", "main~1")
+        self._write("t", "topic")
+        self._git("add", "t")
+        self._git(*quiet, "commit", "-q", "-m", "topic adds t")
+        self._git("checkout", "-q", "main")
+        self._git(*quiet, "merge", "--no-ff", "-q", "-m", "merge topic", "topic")
+        self.log.write_text("", encoding="utf-8")
+
+    def test_a_rebased_merge_runs_pre_commit_only_when_its_message_is_edited(self) -> None:
+        # `merge -C` re-creates the merge commit with its message as it was;
+        # `merge -c` opens the message for editing, and that commit is made
+        # the way `git commit` makes one.
+        for todo, ran in (("merge -C", []), ("merge -c", ["pre-commit"])):
+            with self.subTest(todo=todo):
+                editor = self._todo_editor("todo-merge", old="merge -C", new=todo)
+                self._merged_history()
+                self._git(
+                    "rebase", "-i", "--force-rebase", "--rebase-merges", "HEAD~1",
+                    GIT_SEQUENCE_EDITOR=editor,
+                )
+                self.assertEqual(self._subject(), "merge topic")
+                self.assertEqual(self._git("rev-list", "--count", "--merges", "main~1..HEAD").stdout.strip(), "1")
+                self.assertEqual(self._ran(), ran)
 
     # -- pre-commit does run ---------------------------------------------------
 
@@ -200,23 +273,18 @@ class TestCommitHookCoverage(unittest.TestCase):
         self.assertEqual(self._ran(), ["pre-commit"])
 
     def test_interactive_reword_runs_pre_commit(self) -> None:
-        # The todo list is edited by a script, so no editor opens.
-        editor = self.base / "reword-first"
-        editor.write_text(
-            "#!/bin/sh\n"
-            'first=1\nwhile IFS= read -r line; do\n'
-            '  if [ "$first" = 1 ]; then first=0; line="reword ${line#pick }"; fi\n'
-            '  printf "%s\\n" "$line"\n'
-            'done < "$1" > "$1.new" && mv "$1.new" "$1"\n',
-            encoding="utf-8",
-        )
-        editor.chmod(0o755)
+        editor = self._todo_editor("todo-reword", line=0, old="pick ", new="reword ")
         self._history()
         self._git("checkout", "-q", "side")
-        self._git("rebase", "-i", "main~1", GIT_SEQUENCE_EDITOR=str(editor))
+        self._git("rebase", "-i", "main~1", GIT_SEQUENCE_EDITOR=editor)
         self.assertEqual(self._ran(), ["pre-commit"])
 
     # -- the guidance ----------------------------------------------------------
+
+    @staticmethod
+    def _flat(name: str) -> str:
+        text = (ROOT / name).read_text(encoding="utf-8")
+        return " ".join(line.lstrip("# ").strip() for line in text.splitlines())
 
     def test_guidance_no_longer_says_all_three_run_no_hook(self) -> None:
         # The unqualified sentence, in any of the forms it was written in:
@@ -228,21 +296,49 @@ class TestCommitHookCoverage(unittest.TestCase):
         )
         for name in GUIDANCE:
             with self.subTest(file=name):
-                text = (ROOT / name).read_text(encoding="utf-8")
-                flat = " ".join(line.lstrip("# ").strip() for line in text.splitlines())
                 self.assertIsNone(
-                    named_together.search(flat),
+                    named_together.search(self._flat(name)),
                     f"{name} still says rebase, cherry-pick and revert all run no hook",
                 )
 
-    def test_guidance_names_the_continue_exception(self) -> None:
-        for name in ("CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md", "scripts/install-hooks.sh"):
-            with self.subTest(file=name):
-                text = (ROOT / name).read_text(encoding="utf-8")
-                flat = " ".join(line.lstrip("# ").strip() for line in text.splitlines())
-                self.assertIn("git cherry-pick --continue", flat)
-                self.assertIn("git revert --continue", flat)
-                self.assertRegex(flat, r"run(?:s)? (?:it|`pre-commit`)")
+    def test_guidance_makes_no_blanket_claim_about_rebase(self) -> None:
+        # A rebase runs pre-commit for a `reword` and for a `merge -c`, so no
+        # sentence may say that rebase as such runs no hook, or that reword is
+        # the one exception.
+        blanket = (
+            re.compile(r"rebase`?\s+runs\s+no\s+(?:commit\s+)?hook", re.IGNORECASE),
+            re.compile(r"rebase`?\s+creates\s+commits\s+without\s+running", re.IGNORECASE),
+            re.compile(r"rebase`?,\s+and\s+a\s+`git cherry-pick`[^.]*still\s+run\s+no\s+hook", re.IGNORECASE),
+            re.compile(r"the\s+one\s+exception\s+is", re.IGNORECASE),
+            re.compile(r"the\s+only\s+rebase\s+commit\s+a\s+hook\s+sees", re.IGNORECASE),
+        )
+        for name in GUIDANCE:
+            flat = self._flat(name)
+            for pattern in blanket:
+                with self.subTest(file=name, pattern=pattern.pattern):
+                    found = pattern.search(flat)
+                    self.assertIsNone(found, f"{name} says: ...{flat[found.start() - 40 : found.end() + 40] if found else ''}...")
+
+    def test_guidance_says_the_cautious_thing(self) -> None:
+        for name in ("CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"):
+            flat = self._flat(name)
+            for phrase in (
+                # The statement to act on.
+                "Assume a commit made by `git rebase`, `git cherry-pick` or `git revert` was not scanned",
+                # What was observed, each pinned by a test above.
+                "git cherry-pick --continue",
+                "git revert --continue",
+                "`reword`",
+                "`merge -c`",
+                "git rebase --continue",
+                "git 2.56.1",
+            ):
+                with self.subTest(file=name, phrase=phrase):
+                    self.assertTrue(phrase in flat, f"{name} does not say: {phrase}")
+        with self.subTest(file="scripts/install-hooks.sh"):
+            flat = self._flat("scripts/install-hooks.sh")
+            self.assertIn("a commit made by rebase, cherry-pick or revert may not have been scanned", flat)
+            self.assertIn("git runs pre-commit for only some of them", flat)
 
 
 if __name__ == "__main__":

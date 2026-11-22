@@ -110,14 +110,28 @@ the repository root:
 That points `core.hooksPath` at `.githooks/` so the gitleaks scan runs on
 `git commit` (`pre-commit`) and on merge commits (`pre-merge-commit`). The
 script is safe to re-run: when the hooks are already active it writes
-nothing. If `core.hooksPath` already names another directory it changes
-nothing and exits 1; `./scripts/install-hooks.sh --force` replaces that value
-on purpose, in the repository config. `--force` does not touch a value set at
-a level that outranks the repository config (a worktree's own config, the
-command line, the environment): it changes nothing, exits 1 and names the
-command that removes it. The script reports the hooks as active only when both
-hook files exist and are executable and the value git will really use in that
-worktree is `.githooks`.
+nothing. Its rule:
+
+- **It writes** `core.hooksPath=.githooks` to the repository config
+  (`.git/config`) when no config level sets `core.hooksPath`, or when
+  `--force` was given and every value in effect is written in that file. It
+  may add the owner's exec bit to the hook files.
+- **It refuses, before changing anything,** when `core.hooksPath` is already
+  set to something else, an empty value included, and `--force` was not
+  given; when `--force` was given but the value in effect comes from a
+  worktree's own config, the command line, the environment or a file
+  `.git/config` includes; when git is too old to say where the value comes
+  from (before 2.26); and when a hook file is missing.
+- **It leaves nothing behind when it fails.** A run that does not end with the
+  hooks active puts back the file modes it changed and the config values it
+  replaced, including when git cannot write the config. Exit 0 means active;
+  any other exit means as it was.
+
+It reports the hooks as active only when both hook files exist and are
+executable and the hooks directory git itself reports
+(`git rev-parse --git-path hooks`) is `.githooks`. It ignores `GIT_CONFIG`,
+which only `git config` reads and which would otherwise let it report a
+directory git does not use.
 
 The hooks fail closed: if `gitleaks` is not on `PATH` they block the commit
 and print how to install it (`brew install gitleaks` on macOS; on Linux the
@@ -132,8 +146,10 @@ A new Claude Code session opened in the clone runs the same script, from
 the SessionStart hook `.claude/hooks/install-plugins.sh` (registered for
 the `startup` source, so not on resume, `/clear` or compaction). That hook
 also installs the `mattpocock-skills` plugin, only when
-`claude plugin list --json` shows it is missing; if the listing fails or has
-a row the hook cannot identify, it warns and installs nothing. It never updates an installed copy and prints
+`claude plugin list --json` shows it is missing. The listing is read as
+untrusted input by a Python program inside the hook file; if it fails, is not
+strict JSON, or has a row that is not well-formed, the hook warns and
+installs nothing. It never updates an installed copy and prints
 the installed version to stderr. A plugin it installs loads in the next
 session, or after `/reload-plugins`. The plugin cannot be pinned, so
 `.claude/settings.json` turns off auto-update for its marketplace; what
@@ -141,13 +157,15 @@ that does and does not prevent is in [CLAUDE.md](CLAUDE.md) (Guardrails).
 Update on purpose with
 `claude plugin update mattpocock-skills@claude-plugins-official`.
 
-`git rebase` creates commits without running either hook, and so do
-`git cherry-pick` and `git revert` when they apply without a conflict. After
-a conflict, `git cherry-pick --continue` and `git revert --continue` do run
-`pre-commit`; `git rebase --continue` does not, and the only rebase commit a
-hook sees is one an interactive rebase stops to `reword` (observed with git
-2.56.1). CI (`.github/workflows/ci.yml`) scans the checked-out tree on pull
-requests and `main` and is the backstop for the unscanned ones. Identifier and credential rules are in
+Assume a commit made by `git rebase`, `git cherry-pick` or `git revert` was not
+scanned locally. Git runs `pre-commit` for only some of them. With git 2.56.1
+it runs for `git cherry-pick --continue` and `git revert --continue` after a
+conflict, for a commit an interactive rebase stops to `reword`, and for a
+merge a `--rebase-merges` rebase re-creates with `merge -c`. It does not run
+for a clean cherry-pick or revert, for a rebase's picks, `squash` and
+`fixup`, for `git rebase --continue`, or for `merge -C`. CI
+(`.github/workflows/ci.yml`) scans the checked-out tree on pull requests and
+`main` and is the scan that covers them. Identifier and credential rules are in
 [CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).
 Never write a literal maintainer home or workspace path; use
 `<workspace>`, `<project-root>`. Example credentials must look fake
