@@ -18,8 +18,9 @@ human checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 - agent-teams — 1 skill: agent-teams
 - adversarial-review — 1 skill: adversarial-review
 - marketplace-scout — 1 skill: marketplace-scout
-- brightops-ai-skills — 7 skills: improve-prompt, calibrate-style, dream,
-  improve-memory, session-analysis, send-result, spawn-session
+- brightops-ai-skills — 8 skills: improve-prompt, calibrate-style, dream,
+  improve-memory, session-analysis, send-result, spawn-session,
+  blast-radius-audit
 
 ## Adding a New Skill
 
@@ -41,6 +42,13 @@ each. Add the skill under a category subdirectory and list its path in the plugi
     v2.1.196+), so a scheduled routine would fire and do nothing, reporting no error. `dream` is
     the case in this repo: it is person-driven but omits the flag and carries a trigger-phrase
     description deliberately. Do not "correct" it to match the other skills.
+  - **Exception — `blast-radius-audit` is model-invocable and portable on purpose.** It
+    is meant to be run by any agent, including spawned and delegated ones, and to work
+    when its folder is copied into another agent's skills directory. Its frontmatter
+    therefore carries only Agent Skills standard fields (`name`, `description`,
+    `compatibility`): no `disable-model-invocation`, `argument-hint` or other Claude
+    Code-only keys, and its body names no Claude-specific tool or `${CLAUDE_*}`
+    variable.
 - SKILL.md body uses imperative form, not second person
 - Keep SKILL.md under ~2,000 words; move detailed content to references/
 - No duplication between SKILL.md body and reference files
@@ -57,8 +65,8 @@ Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
 and pass explicit directories. One test leaked into the real plugin data
 directory during development, which is silent and only found by looking.
 
-Commands (dream unittest, bats `--unit` and full, `scripts/tests`, evals as
-manual), packaging gates (`python3 scripts/check-marketplace.py`,
+Commands (dream unittest, the `blast-radius-audit` collector unittest, bats
+`--unit` and full, `scripts/tests`, evals as manual), packaging gates (`python3 scripts/check-marketplace.py`,
 `claude plugin validate . --strict`), `/reload-plugins`, and the PR checklist:
 [CONTRIBUTING.md](CONTRIBUTING.md). The packaging gate is
 `.github/workflows/ci.yml` (pull requests and `main`). Behavioural evals stay

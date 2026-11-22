@@ -127,6 +127,16 @@ plugins/brightops-ai-skills/tests/run.sh --unit
 plugins/brightops-ai-skills/tests/run.sh
 ```
 
+### blast-radius-audit collector (Python unittest, stdlib only)
+
+Builds a throwaway repository and a throwaway home directory with planted
+hazards, then asserts the leads and that no planted secret reaches the
+output. It never reads the real home directory. Needs `git`.
+
+```bash
+cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
+```
+
 ### Marketplace checker (`scripts/tests`)
 
 When touching `scripts/check-marketplace.py` or its fixtures:
@@ -185,6 +195,8 @@ empty temp directory.
       `claude plugin validate . --strict` pass
 - [ ] dream unittest and `plugins/brightops-ai-skills/tests/run.sh --unit`
       pass; full bats when the change needs the live tmux specs
+- [ ] `blast-radius-audit` collector unittest passes when that skill's
+      `scripts/` changed; any new output path is covered by the leak test
 - [ ] `python3 -m unittest discover -s scripts/tests -t scripts` when the
       marketplace checker changed
 - [ ] `evals/run.sh` when `improve-prompt` changed (manual); eval index

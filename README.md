@@ -22,7 +22,7 @@
 | **[agent-teams](plugins/agent-teams)** | 1.2.3 | Deprecated; a replacement skill will be published separately. Orchestrate multi-agent Claude Code teams for parallel research, review, debugging, and feature development. |
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.2.0 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.4.0 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
-| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.3.2 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief. |
+| **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.4.0 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, spawning verified Claude Code sessions with a starter brief, and auditing a repo and dev setup for agent blast radius. |
 
 Install commands, namespaced invoke names, prerequisites, data directories, and
 uninstall behaviour are in each plugin's `README.md` (linked under Plugin
@@ -87,8 +87,9 @@ See [plugins/adversarial-review/README.md](plugins/adversarial-review/README.md)
 
 ### brightops-ai-skills
 
-Workflow skills in one plugin: prompt shaping, memory consolidation, and
-verified session spawn. Invoke by namespaced name, for example
+Workflow skills in one plugin: prompt shaping, memory consolidation,
+verified session spawn, and a blast-radius safety audit of a repo and dev
+setup. Invoke by namespaced name, for example
 `/brightops-ai-skills:improve-prompt`. Dream scheduling needs Claude Code
 v2.1.196+. See [plugins/brightops-ai-skills/README.md](plugins/brightops-ai-skills/README.md).
 
