@@ -932,6 +932,60 @@ count() {
   has "$output" "'demo' in /some/where; without --dry-run this LAUNCHES "
 }
 
+@test "bypass_warning in a dry run says the name was not checked" {
+  # A dry run asks the multiplexer nothing, so it cannot know whether the
+  # name is free. The preview announces a launch; it has to say what it did
+  # not look at.
+  run bypass_warning "demo" "/some/where" dry-run
+  [ "${#lines[@]}" -eq 1 ]
+  has "$output" "A dry run does not check the name: if a session named 'demo' is already running, the real run refuses and launches nothing."
+
+  # The real run has checked by the time it warns, so it makes no such
+  # reservation.
+  run bypass_warning "demo" "/some/where"
+  [ "${#lines[@]}" -eq 1 ]
+  lacks "$output" "does not check the name"
+
+  # The name is quoted a second time, and is rendered there too.
+  run bypass_warning "de"$'\n'"mo" "/some/where" dry-run
+  [ "${#lines[@]}" -eq 1 ]
+  has "$output" "a session named 'de\nmo' is already running"
+}
+
+@test "the trust helper keeps each message on one line, whatever the config path holds" {
+  local tool="$SKILL_DIR/scripts/lib/trust-config.py"
+  local forged="WARNING: fixture line; this RECORDS nothing"
+
+  # Unparseable, so the helper refuses and names the file. The directory
+  # holds a newline, an escape sequence and a backslash.
+  local dir="$BATS_TEST_TMPDIR/cfg"$'\n'"$forged"$'\033'"[2K"$'\r'"back\\slash"
+  mkdir -p "$dir"
+  echo "not json" > "$dir/claude.json"
+  run python3 "$tool" grant "$dir/claude.json" "/some/key"
+  [ "$status" -eq 1 ]
+  [ "${#lines[@]}" -eq 1 ] || { echo "$output"; return 1; }
+  has "$output" "refusing to write: $BATS_TEST_TMPDIR/cfg\\n$forged\\x1b[2K\\rback\\\\slash/claude.json exists but could not be parsed"
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/helper.err"
+  clean "$BATS_TEST_TMPDIR/helper.err"
+  [ "$(cat "$dir/claude.json")" = "not json" ]
+
+  # Unwritable: a regular file stands where a directory is needed, which no
+  # user, root included, can write through.
+  echo "in the way" > "$BATS_TEST_TMPDIR/blocker"
+  local blocked="$BATS_TEST_TMPDIR/blocker/sub"$'\n'"$forged/claude.json"
+  run python3 "$tool" grant "$blocked" "/some/key"
+  [ "$status" -eq 1 ]
+  [ "${#lines[@]}" -eq 1 ] || { echo "$output"; return 1; }
+  has "$output" "could not write $BATS_TEST_TMPDIR/blocker/sub\\n$forged/claude.json: "
+  [ "$(cat "$BATS_TEST_TMPDIR/blocker")" = "in the way" ]
+
+  # The action is quoted too.
+  run python3 "$tool" "check"$'\n'"$forged" "$dir/claude.json" "/some/key"
+  [ "$status" -eq 2 ]
+  [ "${#lines[@]}" -eq 1 ] || { echo "$output"; return 1; }
+  has "$output" "unknown action: check\\n$forged"
+}
+
 @test "trust_is_wider is true only for a directory below a repository root" {
   run trust_is_wider "/repo/sub/dir" "/repo"
   [ "$status" -eq 0 ]
@@ -1205,6 +1259,50 @@ LAUNCH_PREFIX='unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID
   [ "$(count '^mux: ' "$TRACE")" = "0" ]
 }
 
+@test "a dry run with --bypass against a name in use does not promise a launch" {
+  stub_setup
+  pretrust "$WORK"
+
+  # A session of that name exists. The dry run never asks, so its one line
+  # of warning has to carry the reservation: the name was not checked.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-taken" --dir "$WORK" --bypass --dry-run
+  [ "$status" -eq 0 ]
+  [ "$(count '^mux: ' "$TRACE")" = "0" ]
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "without --dry-run this LAUNCHES "
+  has "$(cat "$ERR")" "A dry run does not check the name: if a session named 'zz-spawn-taken' is already running, the real run refuses and launches nothing."
+
+  # And the real run does refuse, announcing no launch.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-taken" --dir "$WORK" --bypass --no-verify
+  [ "$status" -eq 2 ]
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "a session named 'zz-spawn-taken' is already running"
+  lacks "$(cat "$ERR")" "this LAUNCHES"
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
+}
+
+@test "an unparseable config at a path with a newline is refused in two lines, not three" {
+  stub_setup
+  local forged="WARNING: fixture line; this RECORDS nothing"
+  local dir="$BATS_TEST_TMPDIR/cfg"$'\n'"$forged"
+  mkdir -p "$dir"
+  CONFIG_FILE="$dir/claude.json"
+  echo "not json" > "$CONFIG_FILE"
+
+  run spawn_stub "zz-spawn-cfgnl" --dir "$WORK" --trust-folder --no-verify
+  [ "$status" -eq 2 ]
+  # The helper's refusal, then the launcher's. A third line would be the path
+  # breaking the first in two.
+  [ "$(count '' "$ERR")" = "2" ] || { cat "$ERR"; return 1; }
+  [ "$(count '^WARNING' "$ERR")" = "0" ] || { cat "$ERR"; return 1; }
+  has "$(cat "$ERR")" "refusing to write: $BATS_TEST_TMPDIR/cfg\\n$forged/claude.json exists but could not be parsed"
+  has "$(cat "$ERR")" "spawn-session: could not record workspace trust"
+  clean "$ERR"
+  [ "$(cat "$CONFIG_FILE")" = "not json" ]
+  [ ! -e "$CONFIG_FILE.lock" ]
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
+}
+
 @test "stdout is byte for byte what it was before the warnings existed" {
   stub_setup
   local key
@@ -1304,6 +1402,37 @@ LAUNCH_PREFIX='unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID
   done
   [ ! -s "$ERR" ]
   [ "$(count '^mux: ' "$TRACE")" = "0" ]
+}
+
+@test "--help is acted on where it is read, and the usage text says so" {
+  stub_setup
+
+  # Reached first, it answers whatever follows it.
+  run spawn_stub "zz-spawn-help" --help --unknown
+  [ "$status" -eq 0 ]
+  [ ! -s "$ERR" ]
+  local text
+  text="$(cat "$OUT")"
+
+  # An argument the parser refuses before it gets there is still a refusal.
+  run spawn_stub "zz-spawn-help" --unknown --help
+  [ "$status" -eq 2 ]
+  [ ! -s "$OUT" ]
+  has "$(cat "$ERR")" "unknown option: --unknown"
+
+  # An option that takes a value takes --help as that value.
+  run spawn_stub "zz-spawn-help" --dir --help
+  [ "$status" -eq 2 ]
+  [ ! -s "$OUT" ]
+  has "$(cat "$ERR")" "no such directory: --help"
+  [ "$(count '^mux: ' "$TRACE")" = "0" ]
+
+  # So the usage text must not claim more than that.
+  lacks "$text" "wins over every other argument"
+  has "$text" "acted on where it is read"
+  has "$text" "An argument refused before it is"
+  has "$text" "reached (an unknown option) still exits 2"
+  has "$text" "option that takes a value takes --help as that value"
 }
 
 @test "an untrusted workspace under --bypass is refused with the two steps" {

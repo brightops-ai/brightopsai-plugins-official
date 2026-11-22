@@ -388,15 +388,22 @@ has_control() {
 #
 # Echoes the warning for a launch with permissions bypassed. In a dry run the
 # consequence is worded as what the real run does, since nothing launches.
+#
+# A dry run also asks the multiplexer nothing, so it cannot know whether the
+# name is free, and the real run refuses a name that is in use. The preview
+# says so, in the same line: it announces a launch it has not fully checked.
 bypass_warning() {
   local name dir mode="${3:-}"
   name="$(visible "$1")"
   dir="$(visible "$2")"
-  local act="this LAUNCHES"
-  [[ "$mode" == "dry-run" ]] && act="without --dry-run this LAUNCHES"
+  local act="this LAUNCHES" unchecked=""
+  if [[ "$mode" == "dry-run" ]]; then
+    act="without --dry-run this LAUNCHES"
+    unchecked=" A dry run does not check the name: if a session named '$name' is already running, the real run refuses and launches nothing."
+  fi
 
-  printf "WARNING: --bypass turns ALL permission prompts off for '%s' in %s; %s a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.\n" \
-    "$name" "$dir" "$act"
+  printf "WARNING: --bypass turns ALL permission prompts off for '%s' in %s; %s a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.%s\n" \
+    "$name" "$dir" "$act" "$unchecked"
 }
 
 # trust_is_wider <physical_dir> <git_root>

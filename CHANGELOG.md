@@ -11,6 +11,95 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/install-hooks.sh` reports the hooks active only when both
+  `.githooks/pre-commit` and `.githooks/pre-merge-commit` exist and are
+  executable, and the hooks directory git itself reports is `.githooks`. With
+  a hook file missing it used to report the scan live. It now ignores
+  `GIT_CONFIG`, which only `git config` reads and which could make it report
+  a directory git does not use.
+- `scripts/install-hooks.sh` leaves nothing behind when it does not succeed.
+  Every check that can end in a refusal runs before anything is changed. The
+  write replaces `.git/config` under git's config lock, and only if the file
+  is still byte for byte what the script read; a run that fails afterwards
+  puts the old bytes back the same way, and file modes are changed last. A
+  refusal that said "nothing was changed" had already made the hook files
+  executable. One exception is reported, not hidden: if another process
+  changed `.git/config` or took its lock after the write, the file is left
+  alone and the message says what was left and how to remove it. Only the
+  owner's exec bit is added. The script now needs `cp`, `mv`, `rm` and `cmp`.
+- `scripts/install-hooks.sh --force` no longer writes the shared repository
+  config when that cannot change which value wins. It asks git for every
+  `core.hooksPath` value in effect, in order, with scope and origin, so
+  includes and their conditions count as git counts them. It writes when the
+  winner is written in `.git/config` itself or comes from the global or
+  system config, and refuses a winner from a worktree's own config, the
+  command line, the environment or an included file. It used to change every
+  other worktree's `core.hooksPath` and then fail. An empty value is treated
+  like any other, and it refuses when git is too old (before 2.26) to say.
+  Without `--force`, an empty `core.hooksPath` is no longer overwritten as if
+  it were unset.
+- `scripts/install-hooks.sh` compares the hooks directory exactly. A
+  `core.hooksPath` of `.githooks` followed by a newline, or a relative path
+  beginning with a dash, was reported as active while git ran no hook. It
+  refuses a bare repository and a symlinked `.git/config`, and cannot exit 0
+  without having confirmed the hooks.
+- `scripts/install-hooks.sh`: when only `gitleaks version` fails, the warning
+  no longer says every commit will be blocked; the hooks run their own scan.
+- `scripts/install-hooks.sh --force` replaces a `core.hooksPath` that has
+  several values in the repository config (`--replace-all`) instead of
+  failing.
+- `scripts/install-hooks.sh` and the SessionStart hook work in a checkout
+  whose directory name ends in a newline.
+- `scripts/evict-plugin-cache.sh` works when the cache directories are
+  capitalized differently on a case-insensitive filesystem (`Plugins/Cache`).
+  It used to refuse them as outside the cache. Each managed directory
+  (`plugins`, `cache`, the marketplace, the plugin, the version) is now tested
+  for a symlink directly, so a link is refused whatever a path resolver
+  reports, and capitalization is ignored only in those five names below the
+  resolved config directory.
+- The guidance on what the commit hooks do not cover (`CLAUDE.md`,
+  `CONTRIBUTING.md`, `SECURITY.md`, the installer's output) no longer makes a
+  blanket statement about `git rebase`, `git cherry-pick` and `git revert`. It
+  says to assume such a commit was not scanned locally, and lists what git 2.56.1
+  was seen to do: `pre-commit` runs for `git cherry-pick --continue` and
+  `git revert --continue` after a conflict, for an interactive `reword` and
+  for `merge -c` under `--rebase-merges`, and not for the rest
+  (`scripts/tests/test_commit_hook_coverage.py`).
+- `.claude/settings.json`: the deny rules for `refs/heads/main` and
+  `gh auth status -t` need a word boundary first, so a branch named
+  `feature/refs/heads/main` and `gh auth status --hostname git-t` are no
+  longer refused. `main`, `refs/heads/main` and `+refs/heads/main` are
+  refused as the first word after `push` as well as after a remote;
+  `git push main` and `git -C <dir> push main` were documented as refused and
+  were not. `CLAUDE.md` (Guardrails) lists the rules, the known misses and the
+  known false positives as shipped, and `scripts/tests/test_agent_settings.py`
+  holds each as a command.
+- The SessionStart hook `.claude/hooks/install-plugins.sh` reads the plugin
+  listing as untrusted input, with a Python program it carries in the same
+  file: strict JSON (no `NaN`, no duplicate keys, UTF-8), with size, nesting
+  depth and number length bounded by the hook, not by the Python version;
+  and in every row each field the CLI is known to emit (`id`, `scope`,
+  `version`, `enabled`, `projectEnabled`, `installPath`, `projectPath`,
+  `installedAt`, `lastUpdated`) must have its shape when it is there. Fields
+  it does not know are left alone. Anything else makes the answer unknown: it
+  warns and installs nothing. A row with no `id`, a whitespace `id`, a
+  duplicate `id` key, a `NaN`, or a wrong type in another field used to
+  trigger an install, and an empty `projectPath` counted as this project. A
+  listing that does not answer within 20 seconds is stopped, and a project
+  path is matched as a directory, so a spelling that differs only in
+  capitals on a case-insensitive filesystem is the same project.
+- The registered SessionStart command finds the hook from a subdirectory when
+  `CLAUDE_PROJECT_DIR` is unset: it looks in the starting directory first,
+  then at the root of the checkout around it. A relative `CLAUDE_PROJECT_DIR`
+  that begins with a dash is no longer read as an option.
+- The docs and the installer's output no longer describe the CI scan as
+  covering commits the local hook did not see. CI runs
+  `gitleaks detect --no-git`: it scans the files in the tree it checks out,
+  not history, so it does not catch a value that one commit added and a later
+  commit removed.
+
 ### Changed
 
 - `.githooks/pre-commit` fails closed: without `gitleaks` on `PATH` the commit
@@ -69,8 +158,9 @@ rather than numbered.
   test directory does not load the guard. CI now creates its
   `CLAUDE_CONFIG_DIR` under the system temp directory so the suites accept it.
 - `.githooks/pre-merge-commit`: runs the same gitleaks gate on the commit an
-  automatic merge creates, which `pre-commit` does not see. `git rebase`,
-  `git cherry-pick` and `git revert` still run no hook; CI is the backstop.
+  automatic merge creates, which `pre-commit` does not see. A commit made by
+  `git rebase`, `git cherry-pick` or `git revert` may still go unscanned, and
+  CI scans only the files still in the tree.
 - `scripts/evict-plugin-cache.sh <plugin> <old-version>`: removes one old
   version from the plugin cache after a version bump. It validates both
   arguments, refuses a target that does not resolve inside the marketplace

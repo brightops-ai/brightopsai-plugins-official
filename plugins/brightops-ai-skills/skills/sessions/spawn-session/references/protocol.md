@@ -203,11 +203,18 @@ when the run gets that far:
 verb, and only when the real run would reach that point. Where the real run
 would refuse, or would resume, it says that on stderr instead.
 
+One refusal a dry run cannot foresee: it asks tmux nothing, so it does not
+know whether the name is already in use. The bypass warning of a dry run ends
+by saying so (`A dry run does not check the name: …`), in the same line. The
+real run refuses a name that is already running and launches nothing.
+
 **One message is one line.** A session name, a directory and a repository root
 come from outside, and a file name may hold a newline or a terminal escape
 sequence. Every warning and every refusal renders control characters as text —
 `\n`, `\t`, `\r`, `\x1b`, `\u009b` — and doubles a backslash, so a name cannot
-put a second, forged line on stderr or repaint the real one.
+put a second, forged line on stderr or repaint the real one. The helper that
+reads and writes the trust configuration renders the configuration path the
+same way in its own errors.
 
 **Nothing here changes stdout.** Warnings, and every correction a dry run
 makes, go to stderr. stdout — `--porcelain` pairs, the prose report and the
@@ -286,8 +293,12 @@ launch fails closed: the refusal names `python3`. Every other posture launches
 as before, stops at the trust prompt if there is one, and is diagnosed there.
 
 `--help` is the exception to all of it: it is acted on where it is read, prints
-the usage text and exits 0 whatever else is on the line, including the refused
-combination. Nothing is launched.
+the usage text and exits 0, whatever follows it and whatever accepted
+arguments precede it, including the refused combination. Nothing is launched.
+It wins only once the parser reaches it. An argument refused first is still a
+refusal: `--unknown --help` exits 2 with `unknown option`. An option that
+takes a value takes `--help` as that value, so `--dir --help` is a directory
+named `--help`.
 
 ### What the refusal does and does not guarantee
 

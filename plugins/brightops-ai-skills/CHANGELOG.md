@@ -7,18 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.5.1] - 2026-11-22
+## [1.5.2] - 2026-11-22
 
 ### Fixed
 
 - `spawn-session`: the handshake was pasted and submitted before the pane was
   looked at, so a session held at a startup dialog received input. The
-  launcher now sends nothing until the CLI's input box is at the foot of the
-  pane with a status line under it, and it looks again before each thing it
-  sends: the handshake's paste, its Enter, the brief's paste, its Enter. A
-  session seen at a dialog is diagnosed (exit 4) and sent nothing further.
-  The pane can still change between a look and the send that follows it, so
-  a dialog that comes up in that instant can receive that one paste or Enter.
+  launcher now sends only to the CLI's input box, and looks at the pane
+  before each thing it sends: the handshake's paste, its Enter, the brief's
+  paste, its Enter. A session seen at a dialog is diagnosed (exit 4) and sent
+  nothing further. The pane can still change between a look and the send that
+  follows it, so a dialog that comes up in that instant can receive that one
+  paste or Enter.
 - `spawn-session`: a directory whose name ended in a newline resolved to its
   sibling, which was then trusted by `--trust-folder` and used as the working
   directory. A directory whose path holds a control character, or is not
@@ -26,9 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration is read or written, in a dry run too. The argument is checked
   as given, as the kernel resolves it, and as the shell resolves it, so `.`,
   a symbolic link and `link/..` are covered.
+- `spawn-session`: a directory whose name holds tmux format syntax, such as
+  `a-#{session_name}`, started the session in the home directory while trust
+  was recorded for the directory named. The directory is now passed to tmux
+  so that it is not expanded.
 - `spawn-session`: a byte that is not valid UTF-8 in a directory or session
   name was printed raw in refusals and warnings. It is rendered as text
   (`\x9b`).
+- `spawn-session`: when the CLI's transcript directory did not exist yet, as
+  on a machine's first session, a verified launch ended with status 1 and no
+  output while waiting for the reply. It now waits and reports as usual.
 
 ### Changed
 
@@ -37,17 +44,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whatever came next. It previously sent the handshake regardless.
 - `spawn-session`: `--porcelain` adds a `handshake` pair to every run that
   verifies: `not_sent`, `not_submitted` (pasted, Enter held back) or `sent`.
-  `brief` gains the value `not_submitted`. A run with `--no-verify` is
-  unchanged.
+  `brief` gains the value `not_submitted`, and `verdict` gains `not_ready`,
+  `mismatch` and `mux_error`. An acknowledgement from the wrong session now
+  prints its report before the exit 2. A run with `--no-verify` is unchanged.
+- `spawn-session`: a tmux command that fails during a delivery ends the run
+  with tmux's own status after a report of what had been delivered. A CLI
+  that starts and exits at once is reported as never started (exit 4), where
+  it could be reported as running.
+- `spawn-session`: a session the launcher creates is 120 columns by 40 rows
+  until a client attaches, instead of the tmux server's default size.
 - `spawn-session`: a launch in a directory with a control character in its
   path used to go ahead, with the name rendered as text in the warning. It is
   now refused; rename the directory or launch elsewhere. On Linux the same
   applies to a name that is not valid UTF-8, which used to be carried
   through.
-- `spawn-session`: the status lines the launcher accepts are listed in
-  `scripts/ready-prompts.tsv`, each marked `seen` (read from a real CLI
-  2.1.330 pane) or `inferred`. The row for a `--bypass` session is inferred;
-  a bypass launch that ends not ready names it on stderr.
+- `spawn-session`: the mode lines the launcher accepts under the input box
+  are listed in `scripts/ready-prompts.tsv`, each marked `seen` (read from a
+  real CLI 2.1.330 pane) or `inferred`. The row for a `--bypass` session is
+  inferred; a bypass launch that ends not ready names it on stderr.
+
+## [1.5.1] - 2026-11-22
+
+### Fixed
+
+- `spawn-session`: the helper that reads and writes the trust configuration
+  renders control characters in the configuration path and the action it
+  quotes (`\n`, `\x1b`, a doubled backslash), as every other message already
+  did. A configuration path containing a newline used to split its refusal
+  into two lines on stderr.
+- `spawn-session`: the warning of a `--bypass --dry-run` now ends by saying
+  that a dry run does not check the name, and that the real run refuses a name
+  already in use. The preview used to promise a launch the real run would
+  refuse. It is still one line on stderr, and stdout is unchanged.
+
+### Changed
+
+- `spawn-session`: the usage text and `references/protocol.md` describe
+  `--help` as it behaves: acted on where it is read. An argument the parser
+  refuses first still exits 2 (`--unknown --help`), and an option that takes a
+  value takes `--help` as that value. Behaviour is unchanged; the text used to
+  say `--help` wins over every other argument.
 
 ## [1.5.0] - 2026-11-22
 

@@ -139,11 +139,19 @@ scan failed, which is different from a finding.
 accepts an unscanned commit. It applies only when the scanner is missing; it
 never overrides a finding or a failed scan.
 
-The hooks do not cover every way a commit is made. `git rebase`,
-`git cherry-pick` and `git revert` create commits without running either
-hook, and `--no-verify` skips them. The CI scan below is the backstop for
-all of those.
+The hooks do not cover every way a commit is made. `--no-verify` skips them.
+Assume a commit made by `git rebase`, `git cherry-pick` or `git revert` was not
+scanned locally either: git runs `pre-commit` for only some of them. With git
+2.56.1 it runs for `git cherry-pick --continue` and `git revert --continue`
+after a conflict, for a commit an interactive rebase stops to `reword`, and
+for a merge a `--rebase-merges` rebase re-creates with `merge -c`. It does not
+run for a clean cherry-pick or revert, for a rebase's picks, `squash` and
+`fixup`, for `git rebase --continue`, or for `merge -C`.
 
-CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
-requests and pushes to `main` with `gitleaks detect --no-git` and
-`.gitleaks.toml`. That scan does not depend on the hook.
+CI (`.github/workflows/ci.yml`) also runs `gitleaks detect --no-git` with
+`.gitleaks.toml` on pull requests and pushes to `main`. That scan does not
+depend on the hook, and it is not a scan of commits: it reads the files in
+the tree it checks out, not history. It catches a value that is still in the
+tree of a pull request or of `main`. It does not catch a value that a commit
+added and a later commit removed; that value stays in the branch's history,
+and in the repository's if the branch is merged without squashing.
