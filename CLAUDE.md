@@ -21,6 +21,7 @@ human checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 - brightops-ai-skills — 8 skills: improve-prompt, calibrate-style, dream,
   improve-memory, session-analysis, send-result, spawn-session,
   blast-radius-audit
+- t3-code — 2 skills: restart, 1password-secrets
 
 ## Adding a New Skill
 
