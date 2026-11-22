@@ -226,6 +226,112 @@ assert_no_staging_left() {
   assert_no_staging_left
 }
 
+# Put an `mv` first on PATH that creates RACE_DST just before the script moves
+# something onto it: the destination appears between the script's existence
+# check and its move, which is the window a real concurrent run would hit.
+stub_racing_mv() {
+  local bin="$BATS_TEST_TMPDIR/racebin" real
+  real="$(command -v mv)"
+  mkdir -p "$bin"
+  cat >"$bin/mv" <<STUB
+#!/usr/bin/env bash
+last="\${@: -1}"
+if [[ "\$last" == "\$RACE_DST" && ! -e "\$RACE_DST" ]]; then
+  mkdir -p "\$RACE_DST"
+  echo 'someone-else' >"\$RACE_DST/theirs.txt"
+fi
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/mv"
+  PATH="$bin:$PATH"
+}
+
+@test "target that appears during the move is not nested into, and is reported" {
+  stub_npm
+  stub_racing_mv
+  unset SKIP_NPM_INSTALL
+  export RACE_DST="$CLAUDE_PLUGIN_DATA/dashboard"
+
+  run "$SCRIPT"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"appeared while this run was working"* ]]
+  # The other party's directory holds exactly what it held: nothing of ours.
+  [ "$(find "$RACE_DST" -mindepth 1 | wc -l | tr -d '[:space:]')" -eq 1 ]
+  [ "$(cat "$RACE_DST/theirs.txt")" = "someone-else" ]
+  assert_no_staging_left
+}
+
+@test "node_modules that appears during the move is not nested into, and is reported" {
+  stub_npm
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  stub_racing_mv
+  unset SKIP_NPM_INSTALL
+  export RACE_DST="$CLAUDE_PLUGIN_DATA/dashboard/node_modules"
+
+  run "$SCRIPT"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"appeared while this run was working"* ]]
+  [ "$(find "$RACE_DST" -mindepth 1 | wc -l | tr -d '[:space:]')" -eq 1 ]
+  [ ! -e "$RACE_DST/complete" ]
+  assert_no_staging_left
+}
+
+@test "dangling package-lock.json symlink is refused, not written through" {
+  stub_npm
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  unset SKIP_NPM_INSTALL
+  local dest="$CLAUDE_PLUGIN_DATA/dashboard" outside="$BATS_TEST_TMPDIR/outside/lock.json"
+  mkdir -p "$BATS_TEST_TMPDIR/outside"
+  rm "$dest/package-lock.json"
+  ln -s "$outside" "$dest/package-lock.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"package-lock.json is a symlink"* ]]
+  [ ! -e "$outside" ]
+  [ "$(npm_calls)" -eq 0 ]
+  [ ! -e "$dest/node_modules" ]
+  assert_no_staging_left
+}
+
+@test "a regular file named node_modules does not count as installed" {
+  stub_npm
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  unset SKIP_NPM_INSTALL
+  printf '%s\n' 'not a directory' >"$CLAUDE_PLUGIN_DATA/dashboard/node_modules"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"node_modules is not a directory"* ]]
+  [ "$(npm_calls)" -eq 0 ]
+}
+
+@test "symlinked node_modules and symlinked target are refused" {
+  stub_npm
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  unset SKIP_NPM_INSTALL
+  mkdir -p "$BATS_TEST_TMPDIR/elsewhere"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" "$CLAUDE_PLUGIN_DATA/dashboard/node_modules"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"node_modules is a symlink"* ]]
+
+  run "$SCRIPT" "$CLAUDE_PLUGIN_DATA/linked"
+  [ "$status" -eq 0 ]
+  rm -rf "$CLAUDE_PLUGIN_DATA/linked"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" "$CLAUDE_PLUGIN_DATA/linked"
+  run "$SCRIPT" "$CLAUDE_PLUGIN_DATA/linked"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"linked is a symlink"* ]]
+  [ "$(npm_calls)" -eq 1 ]
+  [ -z "$(ls -A "$BATS_TEST_TMPDIR/elsewhere")" ]
+}
+
 @test "SKIP_NPM_INSTALL scaffolds without calling npm" {
   stub_npm
 

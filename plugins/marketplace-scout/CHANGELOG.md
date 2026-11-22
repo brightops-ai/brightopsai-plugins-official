@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A target scaffolded before the lockfile shipped, with no `node_modules`,
   gets the plugin's lockfile only if its `package.json` is still the
   plugin's; otherwise the script exits 1 and does not install unpinned.
+- A destination that appears while a run is working is never nested into.
+  `mv` moves its source into a directory that already exists, so a target or
+  `node_modules` created between the existence check and the move used to
+  end up holding the scaffold as a subdirectory, with exit 0. The move now
+  uses a source name no destination can contain, checks the result, takes
+  anything nested back out, and exits 5.
+- Symlinks and unexpected entry types are refused (exit 1) instead of
+  followed or misread: a target that is a symlink or not a directory, a
+  `package.json` or `package-lock.json` that is a symlink (a dangling link
+  used to have the lockfile written through it to wherever it pointed), and a
+  `node_modules` that is a symlink or a regular file (which used to count as
+  installed). A lockfile is written only where nothing exists.
 
 ## [1.2.0] - 2026-09-05
 

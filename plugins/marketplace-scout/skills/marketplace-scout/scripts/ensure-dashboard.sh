@@ -6,11 +6,15 @@
 # Usage: ensure-dashboard.sh [target]
 #   exit 0  dashboard present or freshly scaffolded; prints the path
 #   exit 1  dashboard assets or their package-lock.json missing from the plugin,
-#           or an existing target cannot be given a pinned install
+#           an existing target cannot be given a pinned install, or the target
+#           (or its package.json, package-lock.json or node_modules) is a
+#           symlink or not the kind of entry it should be
 #   exit 2  CLAUDE_PLUGIN_DATA or CLAUDE_PLUGIN_ROOT unset
 #   exit 3  leftover ./dashboard or ./data in cwd; prints an mv instruction
 #   exit 4  `npm ci` failed; the target is as it was before the run, so the
 #           next run tries again
+#   exit 5  the destination appeared while this run was working; nothing was
+#           overwritten or nested inside it. Run again.
 #
 # Dependencies install with `npm ci --ignore-scripts`: exactly the versions
 # package-lock.json pins, and no package's install script runs.
@@ -39,6 +43,28 @@ fi
 
 TARGET="${1:-$CLAUDE_PLUGIN_DATA/dashboard}"
 
+# This script writes through no symlink and treats nothing but a real
+# directory as a dashboard. A dangling link is neither "present" nor "absent".
+refuse_entry() {
+  echo "ensure-dashboard.sh: $1 is $2; refusing to use it. Move it aside and run again." >&2
+  exit 1
+}
+# require_plain <path> <file|dir>: nothing there, or exactly that kind of entry.
+require_plain() {
+  if [[ -L "$1" ]]; then
+    refuse_entry "$1" "a symlink"
+  fi
+  if [[ -e "$1" ]]; then
+    if [[ "$2" == dir && ! -d "$1" ]]; then
+      refuse_entry "$1" "not a directory"
+    fi
+    if [[ "$2" == file && ! -f "$1" ]]; then
+      refuse_entry "$1" "not a regular file"
+    fi
+  fi
+}
+require_plain "$TARGET" dir
+
 legacy_dashboard=0
 legacy_data=0
 [[ -e ./dashboard ]] && legacy_dashboard=1
@@ -59,6 +85,7 @@ fi
 
 STAGING=""
 WORK=""
+INCOMING=""
 cleanup() {
   # Only ever removes a directory this run created with the name below.
   if [[ -n "$STAGING" && -d "$STAGING" && "${STAGING##*/}" == .dashboard-staging.* ]]; then
@@ -79,6 +106,33 @@ new_staging() {
   STAGING="$(mktemp -d "$parent/.dashboard-staging.XXXXXX")"
   WORK="$STAGING/dashboard"
   mkdir "$WORK"
+  # A name that cannot already exist inside the destination; see place().
+  INCOMING="$STAGING/.incoming.${STAGING##*.}"
+}
+
+# place <src> <dst>: rename src to dst only if dst does not exist. `mv` moves
+# its source *into* a directory that is already there, so a destination that
+# appears after the check would end up holding the scaffold as a subdirectory.
+# src therefore has a name no destination can already contain, and the result
+# is checked: anything nested is taken back out. Returns 1 when dst exists.
+place() {
+  local src=$1 dst=$2 name=${1##*/}
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    return 1
+  fi
+  mv -n "$src" "$dst" 2>/dev/null || true
+  if [[ -e "$dst/$name" || -L "$dst/$name" ]]; then
+    if ! mv "$dst/$name" "$src"; then
+      echo "ensure-dashboard.sh: could not take $dst/$name back out; remove it by hand" >&2
+    fi
+    return 1
+  fi
+  [[ ! -e "$src" && -d "$dst" && ! -L "$dst" ]]
+}
+
+lost_race() {
+  echo "ensure-dashboard.sh: $1 appeared while this run was working; nothing was overwritten. Run again." >&2
+  exit 5
 }
 
 # `npm ci` installs only what package-lock.json pins and fails if it and
@@ -102,6 +156,9 @@ fi
 src="${CLAUDE_PLUGIN_ROOT}/skills/marketplace-scout/assets/dashboard"
 
 if [[ -e "$TARGET" ]]; then
+  require_plain "$TARGET/node_modules" dir
+  require_plain "$TARGET/package.json" file
+  require_plain "$TARGET/package-lock.json" file
   if [[ -d "$TARGET/node_modules" || ! -f "$TARGET/package.json" ]]; then
     echo "dashboard present at $TARGET; not overwriting"
     exit 0
@@ -131,14 +188,19 @@ if [[ -e "$TARGET" ]]; then
   cp "$lock" "$WORK/package-lock.json"
   install_in_staging
 
-  if [[ -e "$TARGET/node_modules" ]]; then
-    echo "dashboard present at $TARGET; not overwriting"
-    exit 0
+  # Write the lockfile only where nothing exists. noclobber opens the path
+  # exclusively, so a file or a link that appeared since the check is not
+  # written through.
+  require_plain "$TARGET/package-lock.json" file
+  if [[ ! -e "$TARGET/package-lock.json" ]]; then
+    if ! (set -o noclobber && cat "$WORK/package-lock.json" >"$TARGET/package-lock.json") 2>/dev/null; then
+      lost_race "$TARGET/package-lock.json"
+    fi
   fi
-  if [[ ! -f "$TARGET/package-lock.json" ]]; then
-    cp "$WORK/package-lock.json" "$TARGET/package-lock.json"
+  mv "$WORK/node_modules" "$INCOMING"
+  if ! place "$INCOMING" "$TARGET/node_modules"; then
+    lost_race "$TARGET/node_modules"
   fi
-  mv "$WORK/node_modules" "$TARGET/node_modules"
   mkdir -p "${CLAUDE_PLUGIN_DATA}/data/images"
   echo "dashboard ready at $TARGET (dependencies installed into the existing copy)"
   exit 0
@@ -170,12 +232,11 @@ if [[ "$skip_install" -eq 0 ]]; then
   install_in_staging
 fi
 
-if [[ -e "$TARGET" ]]; then
-  # Another run finished first. Its copy stands; this one is discarded.
-  echo "dashboard present at $TARGET; not overwriting"
-  exit 0
+mv "$WORK" "$INCOMING"
+if ! place "$INCOMING" "$TARGET"; then
+  # Something created the target first. It stands; this copy is discarded.
+  lost_race "$TARGET"
 fi
-mv "$WORK" "$TARGET"
 mkdir -p "${CLAUDE_PLUGIN_DATA}/data/images"
 
 if [[ "$skip_install" -eq 1 ]]; then
