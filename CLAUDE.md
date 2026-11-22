@@ -74,7 +74,8 @@ development, which is silent and only found by looking.
 Run the suites with the commands in [CONTRIBUTING.md](CONTRIBUTING.md). When a
 refusal names a variable the shell exports, prefix the command with
 `env -u <NAME>`. A new bats file loads the guard as the first line of
-`setup()`; a new Python test directory installs it from `__init__.py`.
+`setup()` (and of `setup_file()`); a new Python test directory installs it
+from `__init__.py`.
 `scripts/tests/test_sandbox_guard.py` fails when either is missing. What the
 guard does not catch is listed in CONTRIBUTING.md (Tests).
 

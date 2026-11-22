@@ -8,25 +8,30 @@
 # Loading this file is what makes "tests never touch the real Claude config or
 # plugin data" hold without any spec having to remember it.
 #
-# Every spec file loads it as the first line of setup():
+# Every spec file loads it as the first line of setup(), and of setup_file()
+# when it has one:
 #
 #   load '../../../scripts/test-support/sandbox-guard'
 #
 # scripts/tests/test_sandbox_guard.py fails when a spec file does not.
 #
-# Loading does three things, in this order, before anything else in the test:
+# Loading does four things, in this order, before anything else in the test:
 #
-#   1. Refuses an override inherited from the caller that resolves outside the
-#      temp directory. The caller set it on purpose; it is not quietly ignored.
-#   2. Points HOME at a fresh directory under BATS_TEST_TMPDIR, and gives every
-#      unset override a default beside it.
-#   3. Checks that every guarded variable is set and resolves under the temp
+#   1. Works out which directories count as temp, and refuses when the answer
+#      would prove nothing (see claude_sandbox_roots).
+#   2. Refuses an override inherited from the caller that is not a clean
+#      absolute path resolving under a temp directory. The caller set it on
+#      purpose; it is not quietly ignored.
+#   3. Points HOME at a fresh directory under BATS_TEST_TMPDIR, and gives every
+#      unset override a default beside it. Nothing is created before the
+#      directory it goes in has passed the same check.
+#   4. Checks that every guarded variable is set and resolves under a temp
 #      directory.
 #
 # HOME is replaced without asking because every shell has one and it says
 # nothing about intent. The overrides exist only when somebody exported them.
 #
-# The guarded variables, and the scripts whose defaults they replace:
+# The guarded path variables, and the scripts whose defaults they replace:
 #
 #   HOME                 spawn-session.sh ($HOME/.claude/sessions,
 #                        $HOME/.claude/projects, $HOME/.claude.json);
@@ -39,7 +44,14 @@
 #   SPAWN_PROJECTS_DIR   spawn-session.sh
 #   SPAWN_CONFIG_FILE    spawn-session.sh
 #
-# The Python suites enforce the same list from sandbox_guard.py, beside this
+# One more variable is a name, not a path, and is guarded as one:
+#
+#   CLAUDE_CODE_PROJECT_DIR_NAME   lib/dream/claude_env.py joins it onto the
+#                        config directory as written, so a value with a slash
+#                        or ".." leaves the sandbox the six above built. Left
+#                        unset when unset; refused when it is not a plain name.
+#
+# The Python suites enforce the same lists from sandbox_guard.py, beside this
 # file. A variable added to one belongs in the other.
 #
 # Not caught: a spec that points one of these at a real path after loading.
@@ -56,16 +68,92 @@ CLAUDE_SANDBOX_VARS=(
   SPAWN_CONFIG_FILE
 )
 
+CLAUDE_SANDBOX_NAME_VAR="CLAUDE_CODE_PROJECT_DIR_NAME"
+
 # Physical paths a guarded variable may resolve under. Filled by
 # claude_sandbox_roots; the first entry is the one named in a refusal.
 CLAUDE_SANDBOX_ROOTS=()
 
+# The result of the last claude_sandbox_visible call.
+CLAUDE_SANDBOX_VISIBLE=""
+
+# Characters that need no rendering. Spelled out one by one, with no ranges: a
+# range is matched by the locale's collation order, and this list is what
+# decides that a value holds no control character. "-" is last so the bracket
+# expression it is used in reads it as itself.
+CLAUDE_SANDBOX_PLAIN='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /._+=,:;@%~()-'
+
+# claude_sandbox_plain <text>
+#
+# One command for the usual case. bats traces every command a helper runs, so
+# the character-by-character rendering below costs seconds per test if every
+# value goes through it.
+claude_sandbox_plain() {
+  [[ "$1" != *[!$CLAUDE_SANDBOX_PLAIN]* ]]
+}
+
+# claude_sandbox_visible <text>
+#
+# Sets CLAUDE_SANDBOX_VISIBLE to the text on one line, with every control
+# character written out (\n, \t, \r, \xHH, and \u00HH for U+0080 to U+009F)
+# and a backslash doubled so the rendering cannot pass for the real thing.
+#
+# Every value printed here comes from the environment. Printed raw, a value
+# holding a newline followed by "WARNING: ..." forges a second warning, and
+# one holding an escape sequence repaints the line that mattered. The same
+# rendering is how a control character is detected: a value that changes
+# under it, apart from its backslashes, has one.
+#
+# It sets a variable instead of printing because command substitution drops
+# trailing newlines, which is the very thing being looked for.
+claude_sandbox_visible() {
+  local text="$1" code oct ch esc
+  if claude_sandbox_plain "$text"; then
+    CLAUDE_SANDBOX_VISIBLE="$text"
+    return 0
+  fi
+  text="${text//\\/\\\\}"
+
+  for code in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 \
+              25 26 27 28 29 30 31 127; do
+    printf -v oct '%03o' "$code"
+    printf -v ch '%b' "\\0$oct"
+    case "$code" in
+      9)  esc='\t' ;;
+      10) esc='\n' ;;
+      13) esc='\r' ;;
+      *)  printf -v esc '\\x%02x' "$code" ;;
+    esac
+    text="${text//"$ch"/$esc}"
+  done
+
+  for code in 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 \
+              144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159; do
+    printf -v oct '%03o' "$code"
+    printf -v ch '%b' "\\0302\\0$oct"
+    printf -v esc '\\u00%02x' "$code"
+    text="${text//"$ch"/$esc}"
+  done
+
+  CLAUDE_SANDBOX_VISIBLE="$text"
+}
+
+# claude_sandbox_has_control <text>
+claude_sandbox_has_control() {
+  if claude_sandbox_plain "$1"; then
+    return 1
+  fi
+  claude_sandbox_visible "$1"
+  [[ "$CLAUDE_SANDBOX_VISIBLE" != "${1//\\/\\\\}" ]]
+}
+
 # claude_sandbox_refuse <fact; consequence.> [how to proceed]
 #
 # The repo's warning shape: the fact read at run time, the consequence as one
-# capitalised verb, then the refusal.
+# capitalised verb, then the refusal. Always one line.
 claude_sandbox_refuse() {
-  printf 'WARNING: %s Refusing.%s\n' "$1" "${2:+ $2}" >&2
+  claude_sandbox_visible "WARNING: $1 Refusing.${2:+ $2}"
+  printf '%s\n' "$CLAUDE_SANDBOX_VISIBLE" >&2
 }
 
 # claude_sandbox_noun <NAME>
@@ -79,6 +167,7 @@ claude_sandbox_noun() {
     SPAWN_SESSIONS_DIR) echo "session state" ;;
     SPAWN_PROJECTS_DIR) echo "session transcripts" ;;
     SPAWN_CONFIG_FILE) echo "the Claude config file" ;;
+    BATS_TEST_TMPDIR | BATS_FILE_TMPDIR) echo "its sandbox" ;;
     *) echo "files" ;;
   esac
 }
@@ -102,25 +191,28 @@ claude_sandbox_real_target() {
 #
 # Echoes the path with every symbolic link resolved. The path need not exist:
 # the nearest existing directory is resolved and the rest is appended. Fails
-# when the answer cannot be trusted: a dangling link on the way, or a ".." in
-# the part that does not exist yet, which a plain prefix test would let climb
-# back out of the temp directory.
+# when the answer cannot be trusted: a link to a file or to nothing, a ".." in
+# the part that does not exist yet (which a plain prefix test would let climb
+# back out of the temp directory), or a control character anywhere in the
+# result.
+#
+# The command substitution ends in a sentinel, so a directory whose name ends
+# in a newline keeps it and is refused, instead of being read as the directory
+# beside it.
 claude_sandbox_physical() {
-  local path="$1" rest="" target hops=0
+  local path="$1" rest=""
   [[ -n "$path" ]] || return 1
   [[ "$path" == /* ]] || path="$PWD/$path"
   while [[ "$path" == */ && "$path" != "/" ]]; do
     path="${path%/}"
   done
 
-  # cd cannot enter a link to a file, so follow those by hand.
-  while [[ -L "$path" && ! -d "$path" ]]; do
-    hops=$((hops + 1))
-    ((hops <= 32)) || return 1
-    target="$(readlink "$path")" || return 1
-    [[ "$target" == /* ]] || target="${path%/*}/$target"
-    path="$target"
-  done
+  # A link to a file, or to nothing. cd cannot enter it, and readlink does not
+  # say the same thing everywhere about a target that ends in a newline, so
+  # there is no reading it that can be trusted.
+  if [[ -L "$path" && ! -d "$path" ]]; then
+    return 1
+  fi
 
   while [[ ! -d "$path" ]]; do
     [[ ! -L "$path" ]] || return 1
@@ -132,10 +224,16 @@ claude_sandbox_physical() {
     */../*) return 1 ;;
   esac
 
-  path="$(cd -P -- "$path" 2>/dev/null && pwd -P)" || return 1
+  path="$(cd -P -- "$path" 2>/dev/null && pwd -P && printf x)" || return 1
+  path="${path%x}"
+  path="${path%$'\n'}"
   [[ "$path" != "/" ]] || path=""
   path="$path$rest"
-  printf '%s\n' "${path:-/}"
+  path="${path:-/}"
+  if claude_sandbox_has_control "$path"; then
+    return 1
+  fi
+  printf '%s\n' "$path"
 }
 
 # claude_sandbox_within <physical-path> <physical-root>
@@ -143,29 +241,54 @@ claude_sandbox_within() {
   [[ "$1" == "$2" || "$1" == "${2%/}"/* ]]
 }
 
+# claude_sandbox_passwd_home
+#
+# Echoes the home directory from the user database, not from HOME: HOME is one
+# of the variables being checked.
+claude_sandbox_passwd_home() {
+  (
+    unset HOME
+    printf '%s\n' ~
+  )
+}
+
+# claude_sandbox_usable_root <physical-root> <physical-home> <physical-config>
+#
+# "Under a temp directory" proves nothing when that directory contains the
+# home directory, or is, is inside, or contains the real Claude config
+# directory. A temp directory elsewhere under the home directory is fine.
+claude_sandbox_usable_root() {
+  local root="$1" home="$2" config="$3"
+  if [[ -n "$home" ]] && claude_sandbox_within "$home" "$root"; then
+    return 1
+  fi
+  if [[ -n "$config" ]]; then
+    if claude_sandbox_within "$root" "$config" || claude_sandbox_within "$config" "$root"; then
+      return 1
+    fi
+  fi
+}
+
 # claude_sandbox_roots
 #
-# Fills CLAUDE_SANDBOX_ROOTS with the temp directory bats itself uses
-# (TMPDIR, else /tmp) and /tmp.
-#
-# "Under the temp directory" proves nothing when the temp directory contains
-# the home directory, so that is refused rather than believed. The home
-# directory is read from the user database, not from HOME, because HOME is
-# one of the variables being checked.
+# Fills CLAUDE_SANDBOX_ROOTS. The first root is the temp directory bats itself
+# uses (TMPDIR, else /tmp); it must exist, and a refusal follows when it is
+# not usable. /tmp is added when usable, and so is the per-user temp directory
+# on macOS, which is where `mktemp -d` puts things there whatever TMPDIR says.
 claude_sandbox_roots() {
-  local primary fallback home=""
+  local tmp="${TMPDIR:-/tmp}" primary home config="" candidate extra known root
   CLAUDE_SANDBOX_ROOTS=()
 
-  if ! primary="$(claude_sandbox_physical "${TMPDIR:-/tmp}")"; then
+  if [[ ! -d "$tmp" ]] || ! primary="$(claude_sandbox_physical "$tmp")"; then
     claude_sandbox_refuse \
-      "the temp directory ${TMPDIR:-/tmp} cannot be resolved; this test could WRITE into the real Claude config." \
-      "Set TMPDIR to an existing directory outside the home directory."
+      "the temp directory $tmp is not an existing directory this guard can resolve; this test would WRITE its sandbox to a path nobody checked." \
+      "Set TMPDIR to an existing directory, or unset it."
     return 1
   fi
 
-  home="$(unset HOME; printf '%s' ~)"
-  if [[ "$home" == /* ]]; then
-    home="$(claude_sandbox_physical "$home")" || home=""
+  home="$(claude_sandbox_passwd_home)"
+  if [[ "$home" == /* ]] && home="$(claude_sandbox_physical "$home")"; then
+    config="$(claude_sandbox_physical "$home/.claude")" || config=""
   else
     home=""
   fi
@@ -173,25 +296,47 @@ claude_sandbox_roots() {
   if [[ -n "$home" ]] && claude_sandbox_within "$home" "$primary"; then
     claude_sandbox_refuse \
       "the temp directory $primary contains the home directory $home, so a path under it proves nothing; this test could WRITE into the real Claude config." \
-      "Set TMPDIR to a directory outside the home directory."
+      "Set TMPDIR to a directory that does not contain the home directory."
+    return 1
+  fi
+  if [[ -n "$config" ]] && claude_sandbox_within "$primary" "$config"; then
+    claude_sandbox_refuse \
+      "the temp directory $primary is inside the real Claude config directory $config; this test would WRITE its sandbox into the real Claude config." \
+      "Set TMPDIR to a directory outside $config."
+    return 1
+  fi
+  if [[ -n "$config" ]] && claude_sandbox_within "$config" "$primary"; then
+    claude_sandbox_refuse \
+      "the temp directory $primary contains the real Claude config directory $config, so a path under it proves nothing; this test could WRITE into the real Claude config." \
+      "Set TMPDIR to a directory that does not contain $config."
     return 1
   fi
   CLAUDE_SANDBOX_ROOTS=("$primary")
 
-  if fallback="$(claude_sandbox_physical /tmp)" && [[ "$fallback" != "$primary" ]]; then
-    if [[ -z "$home" ]] || ! claude_sandbox_within "$home" "$fallback"; then
-      CLAUDE_SANDBOX_ROOTS+=("$fallback")
-    fi
-  fi
+  for candidate in /tmp "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"; do
+    [[ "$candidate" == /* && -d "$candidate" ]] || continue
+    extra="$(claude_sandbox_physical "$candidate")" || continue
+    claude_sandbox_usable_root "$extra" "$home" "$config" || continue
+    known=0
+    for root in "${CLAUDE_SANDBOX_ROOTS[@]}"; do
+      [[ "$root" != "$extra" ]] || known=1
+    done
+    [[ "$known" -eq 1 ]] || CLAUDE_SANDBOX_ROOTS+=("$extra")
+  done
 }
 
 # claude_sandbox_check <NAME>
 #
-# Returns 0 when the variable is set and resolves under the temp directory.
-# Otherwise prints the refusal and returns 1.
+# Returns 0 when the variable holds a clean absolute path that resolves under
+# a temp directory. Otherwise prints the refusal and returns 1.
 claude_sandbox_check() {
-  local name="$1" value physical root state
+  local name="$1" value physical root state noun remedy
   value="${!name:-}"
+  noun="$(claude_sandbox_noun "$name")"
+  remedy="Unset $name to get a fresh temp directory, or point it under ${CLAUDE_SANDBOX_ROOTS[0]}."
+  case "$name" in
+    BATS_*) remedy="Run bats with TMPDIR unset, or set to an existing temp directory." ;;
+  esac
 
   if [[ -z "$value" ]]; then
     state="unset"
@@ -202,10 +347,29 @@ claude_sandbox_check() {
     return 1
   fi
 
+  # Checked before anything else reads the value: every later step passes it
+  # through a command substitution, which would drop a trailing newline and
+  # check a different path from the one the script under test receives.
+  if claude_sandbox_has_control "$value"; then
+    claude_sandbox_refuse \
+      "$name holds a control character ($value); this test would WRITE $noun to a path nobody checked." \
+      "$remedy"
+    return 1
+  fi
+
+  # A relative value depends on the working directory at the moment it is
+  # used, and the Python code under test expands a leading "~".
+  if [[ "$value" != /* ]]; then
+    claude_sandbox_refuse \
+      "$name is $value, which is not an absolute path; this test would WRITE $noun to a path nobody checked." \
+      "$remedy"
+    return 1
+  fi
+
   if ! physical="$(claude_sandbox_physical "$value")"; then
     claude_sandbox_refuse \
-      "$name is $value, which cannot be resolved to a real path; this test would WRITE $(claude_sandbox_noun "$name") to a path nobody checked." \
-      "Unset $name to get a fresh temp directory, or point it under ${CLAUDE_SANDBOX_ROOTS[0]}."
+      "$name is $value, which cannot be resolved to a real path; this test would WRITE $noun to a path nobody checked." \
+      "$remedy"
     return 1
   fi
 
@@ -216,15 +380,32 @@ claude_sandbox_check() {
   done
 
   claude_sandbox_refuse \
-    "$name resolves to $physical, outside the temp directory ${CLAUDE_SANDBOX_ROOTS[0]}; this test would WRITE $(claude_sandbox_noun "$name") there." \
-    "Unset $name to get a fresh temp directory, or point it under ${CLAUDE_SANDBOX_ROOTS[0]}."
+    "$name resolves to $physical, outside the temp directory ${CLAUDE_SANDBOX_ROOTS[0]}; this test would WRITE $noun there." \
+    "$remedy"
   return 1
+}
+
+# claude_sandbox_check_name
+#
+# Returns 0 when the project directory name is unset or a plain name.
+claude_sandbox_check_name() {
+  local name="$CLAUDE_SANDBOX_NAME_VAR" value
+  value="${!name:-}"
+  [[ -n "$value" ]] || return 0
+
+  if claude_sandbox_has_control "$value" ||
+    [[ "$value" == */* || "$value" == *\\* || "$value" == *..* || "$value" == "." ]]; then
+    claude_sandbox_refuse \
+      "$name is $value, which is a path and not a directory name; this test would WRITE session transcripts and memory outside the sandboxed Claude config directory." \
+      "Unset $name, or set it to a plain name."
+    return 1
+  fi
 }
 
 # claude_sandbox_assert
 #
-# Every guarded variable is set and resolves under the temp directory. Runs
-# at load; a spec that changes one of them afterwards can call it again.
+# Every guarded variable is set and safe. Runs at load; a spec that changes
+# one of them afterwards can call it again.
 claude_sandbox_assert() {
   local name
   if [[ "${#CLAUDE_SANDBOX_ROOTS[@]}" -eq 0 ]]; then
@@ -233,31 +414,35 @@ claude_sandbox_assert() {
   for name in "${CLAUDE_SANDBOX_VARS[@]}"; do
     claude_sandbox_check "$name" || return 1
   done
+  claude_sandbox_check_name
 }
 
 # claude_sandbox_enter
 #
 # The whole guard. Runs when this file is loaded.
 claude_sandbox_enter() {
-  local name base sandbox
+  local name base_name="BATS_TEST_TMPDIR" sandbox
 
   claude_sandbox_roots || return 1
 
-  # What the caller exported is honoured only under the temp directory.
+  # What the caller exported is honoured only when it is safe.
+  claude_sandbox_check_name || return 1
   for name in "${CLAUDE_SANDBOX_VARS[@]}"; do
     [[ "$name" != HOME ]] || continue
     [[ -n "${!name:-}" ]] || continue
     claude_sandbox_check "$name" || return 1
   done
 
-  base="${BATS_TEST_TMPDIR:-${BATS_FILE_TMPDIR:-}}"
-  if [[ -z "$base" ]]; then
+  [[ -n "${BATS_TEST_TMPDIR:-}" ]] || base_name="BATS_FILE_TMPDIR"
+  if [[ -z "${!base_name:-}" ]]; then
     claude_sandbox_refuse \
       "neither BATS_TEST_TMPDIR nor BATS_FILE_TMPDIR is set, so there is nowhere to build a sandbox; this test would WRITE into the real Claude config." \
       "Load the guard from setup() under bats 1.4 or newer."
     return 1
   fi
-  sandbox="$base/.claude-sandbox"
+  # Nothing is created until the directory it would go in has passed.
+  claude_sandbox_check "$base_name" || return 1
+  sandbox="${!base_name}/.claude-sandbox"
 
   if ! mkdir -p "$sandbox/home"; then
     claude_sandbox_refuse \
