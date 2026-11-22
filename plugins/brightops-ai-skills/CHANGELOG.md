@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-22
+
+### Fixed
+
+- `spawn-session`: the helper that reads and writes the trust configuration
+  renders control characters in the configuration path and the action it
+  quotes (`\n`, `\x1b`, a doubled backslash), as every other message already
+  did. A configuration path containing a newline used to split its refusal
+  into two lines on stderr.
+- `spawn-session`: the warning of a `--bypass --dry-run` now ends by saying
+  that a dry run does not check the name, and that the real run refuses a name
+  already in use. The preview used to promise a launch the real run would
+  refuse. It is still one line on stderr, and stdout is unchanged.
+
+### Changed
+
+- `spawn-session`: the usage text and `references/protocol.md` describe
+  `--help` as it behaves: acted on where it is read. An argument the parser
+  refuses first still exits 2 (`--unknown --help`), and an option that takes a
+  value takes `--help` as that value. Behaviour is unchanged; the text used to
+  say `--help` wins over every other argument.
+
 ## [1.5.0] - 2026-11-22
 
 ### Changed

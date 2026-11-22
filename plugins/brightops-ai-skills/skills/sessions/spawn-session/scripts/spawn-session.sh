@@ -88,7 +88,11 @@ usage: spawn-session.sh <name> [options]
       --no-verify        report as soon as the session is launched
   -n, --dry-run          report the plan and launch nothing
       --porcelain        emit tab-separated key/value pairs instead of prose
-  -h, --help             this text; wins over every other argument, exit 0
+  -h, --help             this text, exit 0; acted on where it is read, so it
+                         wins over everything after it and every accepted
+                         argument before it. An argument refused before it is
+                         reached (an unknown option) still exits 2, and an
+                         option that takes a value takes --help as that value.
 
 exit: 0 reachable · 2 usage or refusal · 3 alive but unreachable · 4 never started
       5 running but unconfirmed

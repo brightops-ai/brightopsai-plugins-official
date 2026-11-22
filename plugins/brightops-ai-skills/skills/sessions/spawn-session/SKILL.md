@@ -52,7 +52,9 @@ and to what. Read it before acting on the result, and repeat it to the user
 rather than summarising it away. `--bypass` prints one on every launch: the
 session runs with all permission prompts off, and nobody approves its
 commands. Preview with `--dry-run`, which prints the same warning and launches
-nothing. Use `--bypass` only when the user asked for an unattended session.
+nothing. A dry run does not ask tmux whether the name is in use, and its
+warning says so: the real run refuses a name that is already running. Use
+`--bypass` only when the user asked for an unattended session.
 
 `--bypass` and `--trust-folder` are refused together (exit 2). Trusting a
 workspace and removing supervision are separate decisions, taken in separate
