@@ -27,8 +27,10 @@ import json
 import os
 import random
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -106,14 +108,26 @@ BAD_IDS = JUNK + (
 
 BAD_SCOPES = JUNK + ("User", "user ", " user", "us er", "user\n", "1user", "-user", "x" * 33)
 
-# A version may be absent or null; anything else has to look like one.
-BAD_VERSIONS = tuple(v for v in JUNK if v is not None) + (
+# A version may be absent; one that is there has to look like one.
+BAD_VERSIONS = JUNK + (
     "1.2.3 ",
     " 1.2.3",
     "1.2.3\n",
     "1.2.3 (user scope), 9.9.9",
     "-1",
     "x" * 65,
+)
+
+# The other fields the CLI emits, each with values that are not its shape.
+BAD_FLAGS = tuple(v for v in JUNK if v is not True and v is not False) + ("true", "false", 1, "yes")
+BAD_TIMESTAMPS = JUNK + (
+    "2026-01-01",
+    "2026-01-01 10:00:00Z",
+    "2026-01-01T10:00:00",
+    "2026-01-01T10:00:00Z ",
+    "2026-01-01T10:00:00Z\n",
+    "yesterday",
+    1767261600,
 )
 
 # For a project or local row. Absent and null are bad there too.
@@ -168,6 +182,13 @@ NOT_A_LISTING = {
     "null row": "[null]",
     "number row": "[0]",
     "a good row then a bad one": json.dumps([_row(id=OTHER), None]),
+    "one level deeper than the bound": '[{"id":"other@example","scope":"user","x":'
+    + "[" * 15
+    + "]" * 15
+    + "}]",
+    "an integer longer than the bound": '[{"id":"other@example","scope":"user","x":' + "9" * 33 + "}]",
+    "an integer far longer than the bound": '[{"id":"other@example","scope":"user","x":' + "9" * 5000 + "}]",
+    "a float longer than the bound": '[{"id":"other@example","scope":"user","x":0.' + "1" * 40 + "}]",
     "deep nesting": "[" * 100_000,
     "deep nesting, closed": "[" * 100_000 + "]" * 100_000,
     "deep nesting in an ignored field": '[{"id":"other@example","scope":"user","x":'
@@ -202,18 +223,86 @@ def well_formed(text: str) -> bool:
             raise ValueError
         return dict(items)
 
-    def finite(text_):
-        if float(text_) in (float("inf"), float("-inf")):
-            raise ValueError
-        return float(text_)
+    def number(convert):
+        def parse(digits):
+            if len(digits) > 32:
+                raise ValueError
+            value = convert(digits)
+            if value in (float("inf"), float("-inf")):
+                raise ValueError
+            return value
+
+        return parse
+
+    def depth(value) -> int:
+        if isinstance(value, dict):
+            return 1 + max((depth(v) for v in value.values()), default=0)
+        if isinstance(value, list):
+            return 1 + max((depth(v) for v in value), default=0)
+        return 0
+
+    def clean_path(path) -> bool:
+        if type(path) is not str or not path.startswith("/") or len(path) > 4096:
+            return False
+        if any(ord(c) < 32 or 127 <= ord(c) < 160 or 0xD800 <= ord(c) <= 0xDFFF for c in path):
+            return False
+        return "\u2028" not in path and "\u2029" not in path
+
+    def timestamp(value) -> bool:
+        if type(value) is not str or len(value) < 20 or value[10] != "T":
+            return False
+        date, clock = value[:10], value[11:]
+        if [len(part) for part in date.split("-")] != [4, 2, 2] or not date.replace("-", "").isascii():
+            return False
+        if not date.replace("-", "").isdigit():
+            return False
+        if clock.endswith("Z"):
+            clock = clock[:-1]
+        elif len(clock) > 6 and clock[-6] in "+-" and clock[-3] == ":":
+            zone = clock[-5:].replace(":", "")
+            if len(zone) != 4 or not (zone.isascii() and zone.isdigit()):
+                return False
+            clock = clock[:-6]
+        else:
+            return False
+        whole, dot, fraction = clock.partition(".")
+        if dot and not (1 <= len(fraction) <= 9 and fraction.isascii() and fraction.isdigit()):
+            return False
+        parts = whole.split(":")
+        return [len(part) for part in parts] == [2, 2, 2] and all(p.isascii() and p.isdigit() for p in parts)
 
     try:
         # The listing arrives as bytes; text that is not UTF-8 is not a listing.
         text.encode("utf-8")
-        rows = json.loads(text, parse_constant=refuse, object_pairs_hook=pairs, parse_float=finite)
+        # Nesting is counted on the text first, as brackets outside strings,
+        # because a parser's own limit differs between Python versions.
+        level, quoted, skip = 0, False, False
+        for char in text:
+            if quoted:
+                if skip:
+                    skip = False
+                elif char == "\\":
+                    skip = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in "[{":
+                level += 1
+                if level > 16:
+                    return False
+            elif char in "]}":
+                level -= 1
+        rows = json.loads(
+            text,
+            parse_constant=refuse,
+            object_pairs_hook=pairs,
+            parse_float=number(float),
+            parse_int=number(int),
+        )
     except (ValueError, RecursionError):
         return False
-    if type(rows) is not list:
+    if type(rows) is not list or depth(rows) > 16:
         return False
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
     alnum = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -233,20 +322,23 @@ def well_formed(text: str) -> bool:
             return False
         if not set(scope) <= set("abcdefghijklmnopqrstuvwxyz-") or scope[0] == "-":
             return False
-        version = row.get("version")
-        if version is not None:
+        if "version" in row:
+            version = row["version"]
             if type(version) is not str or not 1 <= len(version) <= 64:
                 return False
             if not set(version) <= allowed | {"+"} or version[0] not in alnum:
                 return False
-        path = row.get("projectPath")
-        if scope in ("project", "local") or path is not None:
-            if type(path) is not str or not path.startswith("/") or len(path) > 4096:
+        for flag in ("enabled", "projectEnabled"):
+            if flag in row and type(row[flag]) is not bool:
                 return False
-            if any(ord(c) < 32 or 127 <= ord(c) < 160 or 0xD800 <= ord(c) <= 0xDFFF for c in path):
+        for stamp in ("installedAt", "lastUpdated"):
+            if stamp in row and not timestamp(row[stamp]):
                 return False
-            if " " in path or " " in path:
+        for path in ("installPath", "projectPath"):
+            if path in row and not clean_path(row[path]):
                 return False
+        if scope in ("project", "local") and "projectPath" not in row:
+            return False
         if ident == PLUGIN and scope not in ("user", "managed", "project", "local"):
             return False
     return True
@@ -290,7 +382,6 @@ class TestListingDecision(unittest.TestCase):
             ("another plugin, scope not known here", [_row(id=OTHER, scope="synced")], ""),
             ("user", [_row()], "1.2.3 (user scope)"),
             ("no version", [_row(scope="managed", version=...)], "unknown version (managed scope)"),
-            ("null version", [_row(version=None)], "unknown version (user scope)"),
             ("a git revision as version", [_row(version="0a1b2c3d4e5f")], "0a1b2c3d4e5f (user scope)"),
             ("this project", [_row(scope="local", projectPath=here)], "1.2.3 (local scope)"),
             ("this project, trailing slash", [_row(scope="project", projectPath=here + "/")], "1.2.3 (project scope)"),
@@ -301,8 +392,22 @@ class TestListingDecision(unittest.TestCase):
             ),
             (
                 "fields this hook does not read",
-                [_row(installPath="/x", installedAt="2026-01-01", nested={"a": [1, 2.5, None, True]})],
+                [_row(futureField="/x", other=None, nested={"a": [1, 2.5, None, True]})],
                 "1.2.3 (user scope)",
+            ),
+            (
+                "every field the CLI emits",
+                [
+                    _row(
+                        scope="project",
+                        projectPath=here,
+                        projectEnabled=False,
+                        installPath="/cache/plugin/1.2.3",
+                        installedAt="2026-05-01T10:20:30.123Z",
+                        lastUpdated="2026-05-01T10:20:30+02:00",
+                    )
+                ],
+                "1.2.3 (project scope)",
             ),
         ):
             with self.subTest(listing=label):
@@ -317,9 +422,72 @@ class TestListingDecision(unittest.TestCase):
             ("lone surrogate in a project path", [_row(scope="project", projectPath="/tmp/\ud800")]),
             ("duplicate id keys", NOT_A_LISTING["duplicate id, target first"]),
             ("NaN", NOT_A_LISTING["NaN"]),
+            # Wrong types in fields the CLI emits, on a row for another plugin.
+            (
+                "metadata of the wrong types",
+                [_row(id=OTHER, enabled=[], projectEnabled={}, installPath=42, installedAt=False, lastUpdated=[])],
+            ),
+            ("enabled as a list, installPath as a number", [{"id": OTHER, "scope": "user", "enabled": [], "installPath": 42}]),
+            ("lone surrogate in installPath", [_row(id=OTHER, installPath="\ud800")]),
+            ("null version", [_row(id=OTHER, version=None)]),
+            ("null projectPath", [_row(id=OTHER, projectPath=None)]),
         ):
             with self.subTest(listing=label):
                 self.assert_unknown(listing)
+
+    def test_bounds_are_the_hooks_own_not_the_interpreters(self) -> None:
+        # Python 3.15 parses 100,000 nested arrays without complaint, and
+        # older versions refuse a 5,000-digit integer that 3.9 accepts. The
+        # answer must not depend on either, so the bounds are checked here at
+        # their edges, where no interpreter limit is anywhere near.
+        def nested(levels: int) -> str:
+            # The list is level 1 and the row level 2.
+            return '[{"id":"other@example","scope":"user","x":' + "[" * (levels - 2) + "]" * (levels - 2) + "}]"
+
+        self.assertEqual(self.decide(nested(16)), "")
+        self.assert_unknown(nested(17))
+        self.assert_unknown(nested(100_000))
+        self.assert_unknown("[" * 17 + "]" * 17)
+        # Brackets inside a string are text, not nesting.
+        self.assertEqual(self.decide([_row(id=OTHER, note="[" * 500 + '"' + "{" * 500 + "\\")]), "")
+
+        def number(text: str) -> str:
+            return '[{"id":"other@example","scope":"user","x":' + text + "}]"
+
+        self.assertEqual(self.decide(number("9" * 32)), "")
+        self.assert_unknown(number("9" * 33))
+        self.assert_unknown(number("9" * 5000))
+        self.assertEqual(self.decide(number("0." + "1" * 30)), "")
+        self.assert_unknown(number("0." + "1" * 31))
+        self.assert_unknown(number("1e999"))
+
+    def test_a_project_row_is_matched_by_directory_not_by_spelling(self) -> None:
+        here = str(self.root)
+        link = self.base / "link"
+        os.symlink(self.root, link)
+        (self.root / "inner").mkdir()
+        for label, path in (
+            ("trailing slash", here + "/"),
+            ("through a link", str(link)),
+            ("with a dot-dot", str(self.root / "inner" / "..")),
+        ):
+            with self.subTest(spelling=label):
+                self.assertEqual(self.decide([_row(scope="project", projectPath=path)]), "1.2.3 (project scope)")
+        for label, path in (
+            ("another directory", self.elsewhere),
+            ("a directory that does not exist", here + "-gone"),
+            ("a directory inside", str(self.root / "inner")),
+        ):
+            with self.subTest(spelling=label):
+                self.assertEqual(self.decide([_row(scope="project", projectPath=path)]), "")
+        # Capitals: one project where the filesystem ignores them, two where
+        # it does not. Either way the answer is the filesystem's.
+        mixed = self.base / "MixedCase"
+        mixed.mkdir()
+        variant = self.base / "mixedcase"
+        raw = json.dumps([_row(scope="project", projectPath=str(variant))]).encode()
+        answer = self.helper.decide(raw, PLUGIN, str(mixed))
+        self.assertEqual(answer, "1.2.3 (project scope)" if variant.exists() else "")
 
     # -- wrong types and shapes, field by field --------------------------------
 
@@ -330,14 +498,15 @@ class TestListingDecision(unittest.TestCase):
         cases += [("scope", bad, _row(scope=bad)) for bad in BAD_SCOPES]
         cases += [("scope", "absent", _row(scope=...))]
         cases += [("version", bad, _row(version=bad)) for bad in BAD_VERSIONS]
+        cases += [("enabled", bad, _row(enabled=bad)) for bad in BAD_FLAGS]
+        cases += [("projectEnabled", bad, _row(projectEnabled=bad)) for bad in BAD_FLAGS]
+        cases += [("installedAt", bad, _row(installedAt=bad)) for bad in BAD_TIMESTAMPS]
+        cases += [("lastUpdated", bad, _row(lastUpdated=bad)) for bad in BAD_TIMESTAMPS]
+        cases += [("installPath", bad, _row(installPath=bad)) for bad in BAD_PATHS if bad is not ...]
         cases += [("projectPath", bad, _row(scope="project", projectPath=bad)) for bad in BAD_PATHS]
         cases += [("projectPath", bad, _row(scope="local", projectPath=bad)) for bad in BAD_PATHS]
         # A path on a row that needs none still has to be a path.
-        cases += [
-            ("projectPath on a user row", bad, _row(projectPath=bad))
-            for bad in BAD_PATHS
-            if bad is not ... and bad is not None
-        ]
+        cases += [("projectPath on a user row", bad, _row(projectPath=bad)) for bad in BAD_PATHS if bad is not ...]
         for field, bad, row in cases:
             shown = repr(bad)[:40]
             # As the only row, beside a good row for the plugin, and on a row
@@ -383,7 +552,9 @@ class TestListingDecision(unittest.TestCase):
             '"', "\\", "{", "}", "[", "]", ",", ":", " ", "\n", "\x00", "\x1b", "\ud800",
             "NaN", "Infinity", "null", "true", "1e999", "-", '"id"', '"scope"', '"version"',
             '"projectPath"', '""', '" "', '"/"', '"."', "user", "synced", "@", "//", "﻿",
-            f'"id":"{PLUGIN}",', '"id":"   ",', '"scope":"user",',
+            f'"id":"{PLUGIN}",', '"id":"   ",', '"scope":"user",', '"enabled":[],', '"enabled":true,',
+            '"installPath":42,', '"installPath":"/p",', '"installedAt":"2026-01-01T00:00:00Z",',
+            '"lastUpdated":false,', '"projectEnabled":null,', '"version":null,', "[[[[[[[[[[[[[[[[", "9" * 33,
         )
         for _ in range(rng.randint(1, 3)):
             at = rng.randrange(len(text) + 1)
@@ -409,7 +580,18 @@ class TestListingDecision(unittest.TestCase):
             json.dumps([_row(id=OTHER, scope="synced"), _row(id="third@marketplace", version=...)]),
             json.dumps([_row(scope="project", projectPath=self.elsewhere), _row(id=OTHER)]),
             json.dumps([_row()], indent=2),
-            json.dumps([_row(scope="local", projectPath=here), _row(scope="managed", version=None)]),
+            json.dumps([_row(scope="local", projectPath=here), _row(scope="managed", version=...)]),
+            json.dumps(
+                [
+                    _row(
+                        id=OTHER,
+                        installPath="/cache/other/1.0.0",
+                        installedAt="2026-05-01T10:20:30.123Z",
+                        lastUpdated="2026-05-01T10:20:30Z",
+                        projectEnabled=True,
+                    )
+                ]
+            ),
         ]
         answered = refused = 0
         for round_ in range(6000):
@@ -439,11 +621,15 @@ class TestListingDecision(unittest.TestCase):
                 ident = f"{rng.choice(names)}@{rng.choice(markets)}"
                 scope = rng.choice(("user", "managed", "project", "local") + (("synced",) if ident != PLUGIN else ()))
                 row: dict[str, object] = {"id": ident, "scope": scope, "enabled": rng.random() < 0.5}
-                version = rng.choice(("1.0.0", "2.3.4-rc.1+build", "abc1234", None, ...))
+                version = rng.choice(("1.0.0", "2.3.4-rc.1+build", "abc1234", ...))
                 if version is not ...:
                     row["version"] = version
                 if scope in ("project", "local"):
                     row["projectPath"] = rng.choice((here, self.elsewhere, "/"))
+                if rng.random() < 0.5:
+                    row["installPath"] = "/cache/" + ident.replace("@", "/")
+                    row["installedAt"] = "2026-0%d-1%dT0%d:00:00.000Z" % (rng.randint(1, 9), rng.randint(0, 9), rng.randint(0, 9))
+                    row["lastUpdated"] = row["installedAt"]
                 rows.append(row)
                 applies = scope in ("user", "managed") or row.get("projectPath") == here
                 if ident == PLUGIN and applies:
@@ -477,7 +663,12 @@ class TestInstallPluginsHook(unittest.TestCase):
             "#!/bin/sh\n"
             'echo "claude $*" >> "$STUB_CALLS"\n'
             'case "$1 $2" in\n'
-            '  "plugin list") cat "$STUB_LISTING"; exit "${STUB_LIST_RC:-0}" ;;\n'
+            '  "plugin list")\n'
+            '    if [ -n "${STUB_LIST_HANGS:-}" ]; then\n'
+            '      [ -z "${STUB_PID_FILE:-}" ] || echo "$$" > "$STUB_PID_FILE"\n'
+            '      sleep "$STUB_LIST_HANGS"; echo late >> "$STUB_CALLS"\n'
+            "    fi\n"
+            '    cat "$STUB_LISTING"; exit "${STUB_LIST_RC:-0}" ;;\n'
             '  "plugin install") cp "$STUB_INSTALLED" "$STUB_LISTING" ;;\n'
             "esac\n",
             encoding="utf-8",
@@ -603,6 +794,77 @@ class TestInstallPluginsHook(unittest.TestCase):
             with self.subTest(listing=label):
                 self._assert_unknown(self._hook(raw))
 
+    def test_wrong_types_in_fields_the_cli_emits_install_nothing(self) -> None:
+        # A listing that is not shaped like the CLI's output is not one to
+        # act on, even when the odd row is for another plugin.
+        for label, listing in (
+            (
+                "enabled as a list, installPath as a number",
+                [{"id": "other@market", "scope": "user", "enabled": [], "installPath": 42}],
+            ),
+            (
+                "every metadata field of the wrong type",
+                [_row(id=OTHER, enabled=[], projectEnabled={}, installPath=42, installedAt=False, lastUpdated=[])],
+            ),
+            ("lone surrogate in installPath", [_row(id=OTHER, installPath="\ud800")]),
+            ("null version", [_row(id=OTHER, version=None)]),
+            ("deep nesting in an ignored field", NOT_A_LISTING["deep nesting in an ignored field"]),
+            ("one level deeper than the bound", NOT_A_LISTING["one level deeper than the bound"]),
+            ("an integer far longer than the bound", NOT_A_LISTING["an integer far longer than the bound"]),
+        ):
+            with self.subTest(listing=label):
+                self._assert_unknown(self._hook(listing))
+        # And a field this hook has never heard of does not switch it off.
+        result = self._hook([_row(id=OTHER, futureField={"extra": [{}, [], False, None]})])
+        self.assertEqual(self._installs(), 1, result.stderr)
+
+    def test_a_listing_that_does_not_answer_is_stopped(self) -> None:
+        # The stand-in sleeps for a minute before it would print an empty
+        # listing, which is the answer that installs. The hook gives up
+        # after the bound, installs nothing, and leaves nothing running.
+        started = time.monotonic()
+        result = self._hook([], STUB_LIST_HANGS="60", INSTALL_PLUGINS_LIST_TIMEOUT="1")
+        elapsed = time.monotonic() - started
+        self._assert_unknown(result)
+        self.assertIn("did not answer in time and was stopped", result.stderr)
+        self.assertLess(elapsed, 30, "the hook waited for the hung listing")
+        calls = self.calls.read_text(encoding="utf-8")
+        self.assertNotIn("late", calls, "the hung listing was left running")
+
+    def test_stopping_the_hook_stops_the_listing(self) -> None:
+        # The listing runs in a process group of its own, so a signal to the
+        # hook has to be passed on, or the listing would outlive it.
+        pid_file = self.base / "listing.pid"
+        self.listing.write_text("[]", encoding="utf-8")
+        self.calls.write_text("", encoding="utf-8")
+        hook = subprocess.Popen(
+            ["bash", str(self.repo / ".claude" / "hooks" / HOOK.name)],
+            cwd=self.repo,
+            env={**self.env, "STUB_LIST_HANGS": "60", "STUB_PID_FILE": str(pid_file)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 20
+        while not pid_file.exists() and hook.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(pid_file.exists(), "the listing never started")
+        time.sleep(0.1)
+        listing_pid = int(pid_file.read_text(encoding="utf-8"))
+        os.killpg(hook.pid, signal.SIGTERM)
+        out, err = hook.communicate(timeout=20)
+        self.assertEqual(self._installs(), 0, err.decode(errors="replace"))
+        gone = False
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(listing_pid, 0)
+            except ProcessLookupError:
+                gone = True
+                break
+            time.sleep(0.05)
+        self.assertTrue(gone, "the listing was left running after the hook was stopped")
+
     def test_other_unreadable_listings_stay_unknown(self) -> None:
         for label, listing in (
             ("a scope this hook does not know", [_row(scope="synced")]),
@@ -681,6 +943,29 @@ class TestInstallPluginsHook(unittest.TestCase):
                 self.assertEqual(self._installs(), 1, result.stderr)
                 self.assertIn(f"WARNING: {PLUGIN} is not installed; this INSTALLS", result.stderr)
                 self.assertIn(f"installed {PLUGIN}: 9.9.9 (user scope)", result.stderr)
+
+    def test_a_checkout_reached_by_a_relative_path_that_starts_with_a_dash(self) -> None:
+        # The hook finds itself from the path it was started by. That path is
+        # used as a path, never as an option to cd or to bash.
+        odd = self.base / "-withdash"
+        self._checkout(odd)
+        self._git_init(odd)
+        self.listing.write_text(json.dumps([_row()]), encoding="utf-8")
+        self.calls.write_text("", encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "--", "-withdash/.claude/hooks/" + HOOK.name],
+            cwd=self.base,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("install-hooks.sh failed", result.stderr)
+        self.assertNotIn("invalid option", result.stderr)
+        self.assertIn("hooks active in this worktree", result.stderr)
+        self.assertIn(f"{PLUGIN} is installed: 1.2.3 (user scope)", result.stderr)
 
     def test_runs_from_anywhere_including_a_checkout_named_with_a_newline(self) -> None:
         # The hook finds the checkout from its own location. Nothing is

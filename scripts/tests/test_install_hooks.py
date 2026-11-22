@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +27,9 @@ LIVE = "the scan is live"
 
 class TestInstallHooks(unittest.TestCase):
     def setUp(self) -> None:
-        tools = {name: shutil.which(name) for name in ("git", "bash", "chmod", "cat")}
+        tools = {
+            name: shutil.which(name) for name in ("git", "bash", "chmod", "cat", "cp", "mv", "rm", "cmp")
+        }
         for name, found in tools.items():
             self.assertIsNotNone(found, f"{name} is required")
         self.git = str(tools["git"])
@@ -45,7 +49,7 @@ class TestInstallHooks(unittest.TestCase):
         # helper programs.
         (self.bin / "git").write_text(f'#!/bin/sh\nexec "{self.git}" "$@"\n', encoding="utf-8")
         (self.bin / "git").chmod(0o755)
-        for name in ("chmod", "cat"):
+        for name in ("chmod", "cat", "cp", "mv", "rm", "cmp"):
             os.symlink(str(tools[name]), self.bin / name)
 
         self.env = {
@@ -484,6 +488,323 @@ class TestInstallHooks(unittest.TestCase):
         self.assertIn("was undone", result.stderr)
         self.assertNotIn(ACTIVE, result.stdout + result.stderr)
 
+    # -- the write is a swap, and so is its undo -------------------------------
+
+    def _git_wrapper(self, body: str) -> None:
+        """Replace the git on PATH with one that runs `body` first.
+
+        `body` is sh. It sees the real git as "$REAL", the arguments as "$@",
+        and falls through to the real git unless it exits.
+        """
+        (self.bin / "git").write_text(
+            f'#!/bin/sh\nREAL="{self.git}"\n{body}\nexec "$REAL" "$@"\n', encoding="utf-8"
+        )
+
+    # sh that is true while the repository config holds the value the
+    # installer writes, which is how a wrapper tells "after the write".
+    WRITTEN = '[ "$("$REAL" config --file .git/config --get core.hooksPath 2>/dev/null)" = ".githooks" ]'
+    # sh that is true for the read-back of git's hooks directory.
+    READ_BACK = '[ "$1 $2 $3" = "rev-parse --git-path hooks" ]'
+
+    def _leftovers(self) -> list[str]:
+        return sorted(p.name for p in (self.repo / ".git").iterdir() if "install-hooks" in p.name)
+
+    def test_force_refuses_a_conditional_include_only_git_can_evaluate(self) -> None:
+        # includeIf "hasconfig:remote.*.url:…" depends on the whole
+        # configuration, so a query of the repository file alone does not see
+        # it. The installer asks git for the list in effect, and the winner is
+        # the included value.
+        global_config = self.base / "gitconfig"
+        global_config.write_text('[remote "marker"]\n\turl = https://fixture.invalid/repo\n', encoding="utf-8")
+        included = self.base / "included.gitconfig"
+        included.write_text("[core]\n\thooksPath = included\n", encoding="utf-8")
+        config = self.repo / ".git" / "config"
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "[core]\n\t# a comment to keep\n\thooksPath = first\n\thooksPath = second\n"
+            + f'[includeIf "hasconfig:remote.*.url:https://fixture.invalid/**"]\n\tpath = {included}\n',
+            encoding="utf-8",
+        )
+        env = {"GIT_CONFIG_GLOBAL": str(global_config)}
+        self.assertEqual(self._value(**env), "included", "this git does not evaluate hasconfig includes")
+        self._plain_hooks()
+        before = self._snapshot(included, global_config)
+
+        result = self._install("--force", **env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self._snapshot(included, global_config), before)
+        self.assertEqual(self._leftovers(), [])
+        self.assertIn("effective value in this worktree is 'included'", result.stderr)
+        self.assertIn("a file the repository config includes", result.stderr)
+        self.assertIn("included.gitconfig", result.stderr)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertNotIn("undone", result.stderr)
+        self.assertNotIn("replacing core.hooksPath", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_force_replaces_a_direct_value_that_follows_an_include(self) -> None:
+        # The winner is written in the repository config, after the include.
+        # git puts the replacement where that value was, so it still wins.
+        included = self.base / "included.gitconfig"
+        included.write_text("[core]\n\thooksPath = included\n", encoding="utf-8")
+        config = self.repo / ".git" / "config"
+        config.write_text(
+            f"[include]\n\tpath = {included}\n"
+            + config.read_text(encoding="utf-8")
+            + "[core]\n\thooksPath = local-direct\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self._value(), "local-direct")
+        kept = included.read_bytes()
+
+        refused = self._install()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("core.hooksPath is already 'local-direct'", refused.stderr)
+
+        result = self._install("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._value(), ".githooks")
+        self.assertEqual(self._git("rev-parse", "--git-path", "hooks"), ".githooks")
+        self.assertEqual(included.read_bytes(), kept)
+        self.assertIn("replacing core.hooksPath 'local-direct'", result.stderr)
+        self.assertIn(ACTIVE, result.stdout)
+        self.assertEqual(self._leftovers(), [])
+
+    def test_a_value_ending_in_a_newline_is_not_ours(self) -> None:
+        # ".githooks" plus a newline names another directory. A command
+        # substitution drops the newline, which made the two look the same.
+        (self.repo / ".githooks\n").mkdir()
+        self._git("config", "core.hooksPath", ".githooks\n")
+        self._gitleaks_stub('[ "$1" = "version" ] && echo 9.9.9\n')
+        before = self._snapshot()
+
+        result = self._install()
+
+        said = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, said)
+        self.assertEqual(self._snapshot(), before)
+        self.assertIn("core.hooksPath is already $'.githooks\\n'", result.stderr)
+        self.assertNotIn(ACTIVE, said)
+        self.assertNotIn(LIVE, said)
+
+        result = self._install("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._git("rev-parse", "--git-path", "hooks"), ".githooks")
+        self.assertIn(ACTIVE, result.stdout)
+
+    def test_a_directory_git_cannot_run_hooks_from_is_not_ours(self) -> None:
+        # "-alt" is a link to .githooks, so it is the right directory, and git
+        # still cannot run "-alt/pre-commit": a shell reads it as options.
+        os.symlink(".githooks", self.repo / "-alt")
+        self._git("config", "core.hooksPath", "-alt")
+        result = self._install()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("core.hooksPath is already '-alt'", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_a_signal_before_the_write_changes_nothing_and_claims_nothing(self) -> None:
+        # git is held while it prepares the new config, the installer is told
+        # to stop, and git then fails. Nothing was written, so nothing may be
+        # reported as undone or left behind.
+        ready, release = self.base / "ready", self.base / "release"
+        self._git_wrapper(
+            'case " $* " in *" --replace-all "*)\n'
+            f'  : > "{ready}"\n'
+            f'  while [ ! -e "{release}" ]; do :; done\n'
+            "  exit 1 ;;\n"
+            "esac"
+        )
+        self._git("config", "core.hooksPath", ".husky")
+        self._plain_hooks()
+        before = self._snapshot()
+        for name, number in (("TERM", 143), ("INT", 130), ("HUP", 129)):
+            with self.subTest(signal=name):
+                for flag in (ready, release):
+                    if flag.exists():
+                        flag.unlink()
+                process = subprocess.Popen(
+                    [self.bash, "scripts/install-hooks.sh", "--force"],
+                    cwd=self.repo,
+                    env=self.env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                deadline = time.monotonic() + 10
+                while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "the installer never reached the write")
+                process.send_signal(getattr(signal, "SIG" + name))
+                time.sleep(0.05)
+                release.touch()
+                out, err = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, number, err)
+                self.assertEqual(self._snapshot(), before, "a stopped run left changes behind")
+                self.assertEqual(self._leftovers(), [])
+                for claim in ("undone", "LEAVES", "LEFT", ACTIVE):
+                    self.assertNotIn(claim, out + err)
+
+    def test_a_config_changed_during_the_checks_is_not_overwritten(self) -> None:
+        # Another git process sets its own value after this script read the
+        # config and before it writes. The swap sees a file that is no longer
+        # the one it checked, and does not happen.
+        self._git_wrapper(
+            'case " $* " in *" --replace-all "*)\n'
+            '  "$REAL" "$@" || exit $?\n'
+            '  "$REAL" config --file .git/config core.hooksPath theirs\n'
+            "  exit 0 ;;\n"
+            "esac"
+        )
+        self._plain_hooks()
+        modes = self._modes()
+        result = self._install()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self._value("--local"), "theirs", "another writer's value was discarded")
+        self.assertEqual(self._modes(), modes)
+        self.assertEqual(self._leftovers(), [])
+        self.assertIn("changed while this script was checking it", result.stderr)
+        self.assertIn("This run changed nothing", result.stderr)
+        self.assertNotIn("undone", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_an_undo_leaves_another_writers_change_alone(self) -> None:
+        # The write happens, git then looks elsewhere (so the run fails), and
+        # meanwhile another process has changed the config. Putting the old
+        # bytes back would discard that change.
+        self._git_wrapper(
+            f"if {self.READ_BACK} && {self.WRITTEN}; then\n"
+            '  "$REAL" config --file .git/config theirs.key kept\n'
+            "  echo elsewhere; exit 0\n"
+            "fi"
+        )
+        self._plain_hooks()
+        modes = self._modes()
+        result = self._install()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self._git("config", "--local", "--get", "theirs.key"), "kept")
+        self.assertEqual(self._value("--local"), ".githooks")
+        self.assertEqual(self._modes(), modes)
+        self.assertIn("something else changed the repository config", result.stderr)
+        self.assertIn("LEFT the file alone", result.stderr)
+        self.assertNotIn("was undone", result.stderr)
+        self.assertNotIn("Nothing was changed", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+        self.assertEqual(self._leftovers(), [])
+
+    def test_an_undo_that_cannot_run_says_what_it_left(self) -> None:
+        # The config lock is taken after the write. The undo cannot replace
+        # the file, so it must say what is there and how to remove it, and
+        # must not say it undid anything.
+        lock = self.repo / ".git" / "config.lock"
+        self._git_wrapper(
+            f"if {self.READ_BACK} && {self.WRITTEN}; then\n"
+            "  : > .git/config.lock\n"
+            "  echo elsewhere; exit 0\n"
+            "fi"
+        )
+        with self.subTest(case="nothing was set before"):
+            self._plain_hooks()
+            modes = self._modes()
+            result = self._install()
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(lock.exists(), "the installer removed a lock it does not hold")
+            lock.unlink()
+            self.assertEqual(self._value("--local"), ".githooks")
+            self.assertEqual(self._modes(), modes)
+            self.assertIn("could not be undone", result.stderr)
+            self.assertIn("LEAVES core.hooksPath=.githooks in the repository config", result.stderr)
+            self.assertIn("git config --file '.git/config' --unset-all core.hooksPath", result.stderr)
+            self.assertNotIn("was undone", result.stderr)
+            self.assertNotIn("Nothing was changed", result.stderr)
+            self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+            self.assertEqual(self._leftovers(), [])
+            self._git("config", "--file", ".git/config", "--unset-all", "core.hooksPath")
+
+        with self.subTest(case="values were replaced"):
+            for value in (".husky", "other hooks"):
+                self._git("config", "--add", "core.hooksPath", value)
+            original = (self.repo / ".git" / "config").read_bytes()
+            result = self._install("--force")
+            self.assertEqual(result.returncode, 1)
+            lock.unlink()
+            self.assertEqual(self._value("--local"), ".githooks")
+            self.assertIn("could not be undone", result.stderr)
+            self.assertIn("in place of the value(s) that were there", result.stderr)
+            self.assertNotIn("was undone", result.stderr)
+            kept = [name for name in self._leftovers() if name.endswith(".before")]
+            self.assertEqual(len(kept), 1, self._leftovers())
+            self.assertEqual(self._leftovers(), kept)
+            saved = self.repo / ".git" / kept[0]
+            self.assertEqual(saved.read_bytes(), original)
+            self.assertIn(f"cp -p '.git/{kept[0]}' '.git/config'", result.stderr)
+
+    def test_a_listing_git_cannot_give_is_never_a_success(self) -> None:
+        # Whatever goes wrong while reading what is in effect, the exit status
+        # must not be the one that means "active".
+        for label, answer in (
+            ("two fields where three belong", "printf 'local\\0.githooks\\0'; exit 0"),
+            ("an error", "exit 3"),
+        ):
+            with self.subTest(listing=label):
+                self._git_wrapper(f'case " $* " in *" --get-all core.hooksPath "*) {answer} ;; esac')
+                result = self._install()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIsNone(self._value("--local"))
+                self.assertIn("Not active", result.stderr)
+                self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_the_write_keeps_the_config_files_mode_and_leaves_no_files(self) -> None:
+        config = self.repo / ".git" / "config"
+        for mode in (0o600, 0o444, 0o644):
+            with self.subTest(mode=oct(mode)):
+                if self._value("--local") is not None:
+                    self._git("config", "--unset-all", "core.hooksPath")
+                config.chmod(mode)
+                result = self._install()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(config.stat().st_mode), mode)
+                self.assertEqual(self._value("--local"), ".githooks")
+                self.assertEqual(self._leftovers(), [])
+                self.assertFalse((self.repo / ".git" / "config.lock").exists())
+                config.chmod(0o644)
+
+    def test_a_symlinked_config_is_refused_not_replaced(self) -> None:
+        config = self.repo / ".git" / "config"
+        real = self.base / "real-config"
+        shutil.move(str(config), str(real))
+        os.symlink(real, config)
+        before = real.read_bytes()
+        result = self._install()
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(real.read_bytes(), before)
+        self.assertIn("is a symlink or not a regular file", result.stderr)
+        self.assertIn("git config core.hooksPath .githooks", result.stderr)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_a_bare_repository_is_refused(self) -> None:
+        # There is no work tree for .githooks to be in, whatever the bare
+        # directory happens to hold.
+        bare = self.base / "bare.git"
+        self._git("clone", "-q", "--bare", str(self.repo), str(bare))
+        shutil.copytree(HOOKS, bare / ".githooks")
+        before = (bare / "config").read_bytes()
+        result = subprocess.run(
+            [self.bash, str(self.repo / "scripts" / "install-hooks.sh")],
+            cwd=bare,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual((bare / "config").read_bytes(), before)
+        self.assertIn("not inside a git work tree", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
     # -- what `git config` says is checked against what git does -------------
 
     def test_git_config_variable_cannot_fake_an_active_report(self) -> None:
@@ -682,6 +1003,17 @@ class TestInstallHooks(unittest.TestCase):
                 self.assertIn("BLOCK", result.stderr)
                 self.assertNotIn(LIVE, result.stdout + result.stderr)
 
+    def test_a_failing_version_probe_does_not_claim_commits_are_blocked(self) -> None:
+        # Only the probe failed. The hooks run their own scan, which may work.
+        self._gitleaks_stub('[ "$1" != "version" ] || exit 1\nexit 0\n')
+        result = self._install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`gitleaks version` failed", result.stderr)
+        self.assertIn("cannot confirm that the scanner works", result.stderr)
+        self.assertIn("BLOCK a commit only when that scan cannot complete", result.stderr)
+        self.assertNotIn("BLOCK every", result.stderr)
+        self.assertNotIn(LIVE, result.stdout + result.stderr)
+
     def test_says_what_no_hook_covers(self) -> None:
         result = self._install()
         # Which of these commits git runs pre-commit for depends on how they
@@ -694,6 +1026,12 @@ class TestInstallHooks(unittest.TestCase):
         self.assertNotIn("rebase, cherry-pick and revert run no commit hook", result.stdout)
         self.assertNotIn("rebase runs no commit hook", result.stdout)
         self.assertIn("CI", result.stdout)
+        # CI is a tree scan. It is not described as catching those commits.
+        self.assertIn("CI scans the files in the tree at the head of a pull request and on main", result.stdout)
+        self.assertIn("not history", result.stdout)
+        self.assertIn("a value that one commit added and a later one removed", result.stdout)
+        self.assertNotIn("covers", result.stdout)
+        self.assertNotIn("backstop", result.stdout)
         self.assertNotIn("every commit", result.stdout + result.stderr)
 
 

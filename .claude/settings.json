@@ -94,7 +94,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDE_PROJECT_DIR:-}\" ]; then d=$CLAUDE_PROJECT_DIR; elif [ -f .claude/hooks/install-plugins.sh ]; then d=.; else d=$(git rev-parse --show-cdup 2>/dev/null) || d=.; fi; bash \"${d:-.}/.claude/hooks/install-plugins.sh\" || true"
+            "command": "if [ -n \"${CLAUDE_PROJECT_DIR:-}\" ]; then d=$CLAUDE_PROJECT_DIR; elif [ -f .claude/hooks/install-plugins.sh ]; then d=.; else d=$(git rev-parse --show-cdup 2>/dev/null) || d=.; fi; bash -- \"${d:-.}/.claude/hooks/install-plugins.sh\" || true"
           }
         ]
       }

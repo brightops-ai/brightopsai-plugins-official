@@ -461,9 +461,33 @@ class TestSessionStartCommand(unittest.TestCase):
             result = self._start(self._shells()[0], self.base, CLAUDE_PROJECT_DIR=str(odd))
             self.assertEqual(self._ran(), ["newline"], result.stderr)
 
+    def test_a_relative_project_dir_that_starts_with_a_dash(self) -> None:
+        # The path is handed to bash after "--", so a directory named like an
+        # option is a directory.
+        self._project(self.base / "-withdash", "dash")
+        for shell in self._shells():
+            with self.subTest(shell=shell):
+                result = self._start(shell, self.base, CLAUDE_PROJECT_DIR="-withdash")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self._ran(), ["dash"], result.stderr)
+                self.assertEqual(result.stderr, "")
+
     def test_a_hook_in_the_starting_directory_is_the_one_that_runs(self) -> None:
-        # As it was before the fallback existed: a directory inside the
-        # checkout that carries the hook itself is launched as its own root.
+        # Deliberate, and pinned: with CLAUDE_PROJECT_DIR unset, a directory
+        # inside the checkout that carries .claude/hooks/install-plugins.sh
+        # itself runs its own hook, not the checkout root's.
+        #
+        # Why the starting directory wins. The command is registered by a
+        # .claude/settings.json, and Claude Code reads that file "from the
+        # session's primary working directory, so to use a file committed at
+        # the repository root, start Claude Code there"
+        # (https://code.claude.com/docs/en/settings, read 2026-11-22). So when
+        # this command runs in a directory that has its own .claude/, the
+        # settings that registered it are the ones beside that hook. Walking
+        # up to the root first would run a different project's hook than the
+        # settings in force name. It is also what the command did before the
+        # walk-up fallback existed. The fallback only applies when the
+        # starting directory has no hook of its own.
         nested = self.repo / "snapshot"
         self._project(nested, "snapshot", repository=False)
         for shell in self._shells():

@@ -279,6 +279,67 @@ class TestCommitHookCoverage(unittest.TestCase):
         self._git("rebase", "-i", "main~1", GIT_SEQUENCE_EDITOR=editor)
         self.assertEqual(self._ran(), ["pre-commit"])
 
+    # -- what the CI scan can and cannot see ------------------------------------
+
+    @unittest.skipUnless(shutil.which("gitleaks"), "gitleaks is not installed")
+    def test_a_tree_scan_does_not_see_a_value_added_and_removed(self) -> None:
+        # CI runs `gitleaks detect --no-git`. The guidance says that is a scan
+        # of files, not of commits; this is the difference, with a rule and a
+        # marker made up here so nothing credential-shaped is written down.
+        marker = "FIXTURE" + "_MARKER_" + "0042"
+        rules = self.base / "rules.toml"
+        rules.write_text(
+            '[[rules]]\nid = "fixture-marker"\ndescription = "fixture"\nregex = \'\'\'FIXTURE_MARKER_[0-9]+\'\'\'\n',
+            encoding="utf-8",
+        )
+        self._history()
+        quiet = ("-c", "core.hooksPath=/dev/null")
+        self._write("notes", marker)
+        self._git("add", "notes")
+        self._git(*quiet, "commit", "-q", "-m", "add a marker")
+
+        def scan(*mode: str) -> int:
+            return subprocess.run(
+                [str(shutil.which("gitleaks")), "detect", *mode, "--config", str(rules), "--redact", "--no-banner"],
+                cwd=self.repo,
+                env=self.env,
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+
+        self.assertEqual(scan("--no-git"), 1, "the tree scan missed a marker that is in the tree")
+        self._write("notes", "nothing here")
+        self._git("add", "notes")
+        self._git(*quiet, "commit", "-q", "-m", "remove the marker")
+        self.assertEqual(scan("--no-git"), 0, "the tree scan found a marker that is no longer in the tree")
+        self.assertEqual(scan(), 1, "a history scan did not find the marker in an earlier commit")
+
+    def test_guidance_does_not_say_ci_covers_what_the_hook_missed(self) -> None:
+        overclaims = (
+            re.compile(r"scan\s+that\s+covers", re.IGNORECASE),
+            re.compile(r"\bbackstop\b", re.IGNORECASE),
+            re.compile(r"CI\s+is\s+the\s+only\s+scan", re.IGNORECASE),
+            re.compile(r"so\s+a\s+skipped\s+hook\s+is\s+caught\s+before\s+merge", re.IGNORECASE),
+        )
+        for name in GUIDANCE:
+            flat = self._flat(name)
+            for pattern in overclaims:
+                with self.subTest(file=name, pattern=pattern.pattern):
+                    found = pattern.search(flat)
+                    self.assertIsNone(found, f"{name} says: ...{flat[found.start() - 60 : found.end() + 40] if found else ''}...")
+        for name in ("CLAUDE.md", "CONTRIBUTING.md", "SECURITY.md"):
+            flat = self._flat(name)
+            for phrase in (
+                "`gitleaks detect --no-git`",
+                "the files in the tree it checks out, not history",
+                "a commit added and a later commit removed",
+            ):
+                with self.subTest(file=name, phrase=phrase):
+                    self.assertTrue(phrase in flat, f"{name} does not say: {phrase}")
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("gitleaks detect --no-git", workflow, "the docs describe a scan the workflow no longer runs")
+
     # -- the guidance ----------------------------------------------------------
 
     @staticmethod

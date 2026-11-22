@@ -157,23 +157,36 @@ Two consequences for anything written here, including docs:
 Git never clones hooks. A new Claude Code session runs
 `./scripts/install-hooks.sh` from the SessionStart hook
 `.claude/hooks/install-plugins.sh`. In any other fresh clone assume the local
-pre-commit gate is inactive until that script has run. CI still
-scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
+pre-commit gate is inactive until that script has run.
+
+CI (`.github/workflows/ci.yml`) is not a second run of the hook. It runs
+`gitleaks detect --no-git`, which scans the files in the tree it checks out,
+not history: the tree of each pull request and of `main` after a push. It
+catches a value that is still in those files. It does not catch a value that
+a commit added and a later commit removed, which stays in the branch's
+history.
 
 The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
 complete, they block the commit. Install gitleaks (the hook prints how).
 `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
 case only; an agent never sets it.
 
-`install-hooks.sh` never replaces an existing `core.hooksPath` unless run with
-`--force`, and an empty value counts as existing. `--force` replaces only what
-is written in `.git/config` itself: it refuses a value that comes from a
+`install-hooks.sh` asks git for every `core.hooksPath` value in effect, in
+order, with where each comes from; the last one wins. It never replaces an
+existing value unless run with `--force`, and an empty value counts as
+existing. `--force` writes only when the winner is written in `.git/config`
+itself or comes from the global or system config; it refuses a winner from a
 worktree's own config, the command line, the environment or an included file.
-A run that does not end with the hooks active leaves file modes and config as
-they were, so exit 0 means active and any other exit means unchanged.
+The write replaces `.git/config` under git's lock only if the file is still
+what the script read, and a run that then fails puts the old bytes back the
+same way. So exit 0 means active and any other exit means unchanged, with one
+exception it always reports: if another process changed `.git/config` or took
+its lock after the write, the file is left alone and the message says what
+was left and how to remove it.
 
 Assume a commit made by `git rebase`, `git cherry-pick` or `git revert` was not
-scanned locally; CI is the scan that covers it. Git runs `pre-commit` for only
+scanned locally, and do not count on CI to catch it afterwards (see above:
+CI sees only what is still in the tree). Git runs `pre-commit` for only
 some of those commits. Observed with git 2.56.1
 (`scripts/tests/test_commit_hook_coverage.py` holds the fixture):
 
@@ -197,7 +210,7 @@ names the control that holds each rule when the tripwire is stepped around.
 |---|---|---|---|
 | No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word, first or after a remote; `git push` with `<src>:main`; `git push` with `refs/heads/main` as its own word, first or after a remote, or straight after a `:`; `git push` with `+refs/heads/main` as its own word; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
 | No force push | Branch protection refuses a force push to `main`. Nothing holds other branches | `git push` with `--force` or `-f` as its own word | `git push --force-with-lease origin <branch>`, on your own branch only |
-| No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the tree on every pull request and on `main`, so a skipped hook is caught before merge | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
+| No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the files in the tree of every pull request and of `main`, not history: what a skipped hook let through is caught before merge only if it is still in the tree | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
 | No agent started with a permission-bypass flag | Nothing else | `claude` with `dangerously-skip-permissions` or `bypassPermissions` in its arguments; `codex` with `--yolo` or `--dangerously-bypass-approvals-and-sandbox`; `gemini` with `yolo` anywhere (`--yolo`, `--approval-mode=yolo`) or `-y` as its own word | Start it in its default permission mode |
 | No printing the environment or a token | Nothing else | `env` alone, `env -0`, `env --null`; `printenv` with or without a name; `gh auth token`; `gh auth status` with `--show-token` anywhere, or `-t` as its own word | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
 | No reading files that hold real environment values | Nothing else | Read, Edit, Write and `cat`-style commands, at any depth, on `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test`, `.env.dev`, `.env.prod` | Keep key names with fake values in `.env.example`, `.env.sample` or `.env.template`, which stay readable and writable |
@@ -233,16 +246,19 @@ false positives. Each was also put to the real matcher (Claude Code 2.1.330).
 The SessionStart hook runs for a new session only (the `startup` matcher), not
 on resume, `/clear` or compaction. The registered command finds it through
 `CLAUDE_PROJECT_DIR`; when that is unset, in the directory the session
-started in; failing that, at the root of the checkout around that directory,
-so a session started in a subdirectory still runs it.
+started in; failing that, at the root of the checkout around that directory.
+The starting directory comes before the checkout root on purpose: Claude Code
+reads `.claude/settings.json` from the directory a session starts in, so the
+settings that registered the command are the ones beside that hook.
 
 It installs `mattpocock-skills` only when `claude plugin list --json` succeeds,
 is a well-formed listing, and shows no install that applies to this project.
 The listing is untrusted input, read by a Python program inside the hook
-file: strict JSON (no `NaN`, no duplicate keys), and in every row a plugin id, a
-scope and, where present, a version and a clean absolute `projectPath`. If
-the listing fails or any row is malformed, the hook warns and installs
-nothing. It never updates an installed copy and prints the installed version
+file: strict JSON (no `NaN`, no duplicate keys, bounded size and nesting), and
+in every row each field the CLI is known to emit must have its shape when it
+is there; fields the hook does not know are left alone. If the listing fails,
+does not answer within 20 seconds, or any row is malformed, the hook warns
+and installs nothing. It never updates an installed copy and prints the installed version
 to stderr. A plugin it installs loads in the next session, or after
 `/reload-plugins`.
 

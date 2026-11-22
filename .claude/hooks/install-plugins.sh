@@ -21,11 +21,12 @@
 #   - Installs a plugin only when `claude plugin list --json` exits 0, is a
 #     well-formed listing, and has no row for the plugin that applies to this
 #     project. The Python program further down reads the listing as
-#     untrusted input: strict JSON (no NaN, no duplicate keys), and every row
-#     with a plugin id, a scope, and where given a version and an absolute
-#     projectPath of the expected shape. If the listing fails, is malformed in
-#     any row, or python3 is missing, the answer is unknown and the hook warns
-#     and skips the install.
+#     untrusted input: strict JSON (no NaN, no duplicate keys, bounded size
+#     and nesting), and in every row each field the CLI is known to emit has
+#     to have that field's shape when it is there. Fields it does not know
+#     are left alone. If the listing fails, does not answer in time, is
+#     malformed in any row, or python3 is missing, the answer is unknown and
+#     the hook warns and skips the install.
 #   - Never updates an installed plugin, and prints the installed version to
 #     stderr so a change of version is visible.
 #
@@ -51,7 +52,15 @@ PLUGINS=(
 # Paths are built from where this file is and used as they are. They are never
 # printed and read back, because a command substitution drops a trailing
 # newline and a checkout directory may be named with one.
-hook_dir="$(dirname "${BASH_SOURCE[0]}")"
+hook_dir="${BASH_SOURCE[0]%/*}"
+if [ "$hook_dir" = "${BASH_SOURCE[0]}" ]; then
+  hook_dir="."
+fi
+# A relative path that begins with a dash would be read as an option by cd.
+case "$hook_dir" in
+  /* | ./* | ../* | .) ;;
+  *) hook_dir="./$hook_dir" ;;
+esac
 repo_root="$hook_dir/../.."
 
 if ! (cd "$repo_root" && bash scripts/install-hooks.sh) >&2; then
@@ -80,14 +89,21 @@ Exit status and output:
         not installed here.
     2   `claude plugin list --json` could not be run, or exited non-zero.
     3   the listing is not well-formed, so the answer is unknown.
+    4   `claude plugin list --json` did not answer in time and was stopped.
 
 A row applies to this project when its scope is user or managed, or project or
-local with a projectPath that is this project. Standard library only.
+local with a projectPath that is this project.
+
+Nothing here depends on how one Python version parses: size, nesting depth and
+the length of a number are bounded before the parser sees the text, so the
+answer is the same on 3.9 and on a version with a deeper or no recursion
+limit. Standard library only.
 """
 
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import unicodedata
@@ -95,16 +111,25 @@ import unicodedata
 EXIT_OK = 0
 EXIT_LISTING_FAILED = 2
 EXIT_MALFORMED = 3
+EXIT_LISTING_TIMED_OUT = 4
 
-# Far above any real listing; a bound on what is parsed at all.
+# Far above any real listing; bounds on what is parsed at all. A real listing
+# is a list of flat objects: depth 2.
 MAX_LISTING_BYTES = 4 * 1024 * 1024
+MAX_DEPTH = 16
+MAX_NUMBER_CHARS = 32
 MAX_PATH_CHARS = 4096
+
+# How long the listing may take. The real one answers in well under a second.
+LIST_TIMEOUT_SECONDS = 20.0
+LIST_TIMEOUT_VARIABLE = "INSTALL_PLUGINS_LIST_TIMEOUT"
 
 # "<name>@<marketplace>", each part a letter or digit first and last.
 _PART = r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?"
 PLUGIN_ID = re.compile(_PART + "@" + _PART)
 SCOPE = re.compile(r"[a-z][a-z-]{0,31}")
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")
+TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")
 
 # Scopes whose rows apply everywhere, and scopes whose rows name one project.
 EVERYWHERE = ("user", "managed")
@@ -121,10 +146,49 @@ def _reject_constant(name):
 
 
 def _finite_float(text):
+    if len(text) > MAX_NUMBER_CHARS:
+        raise Malformed("number too long")
     value = float(text)
     if value != value or value in (float("inf"), float("-inf")):
         raise Malformed("number out of range")
     return value
+
+
+def _bounded_int(text):
+    # Bounded here, not by the interpreter: some versions refuse to convert a
+    # very long run of digits and some do not.
+    if len(text) > MAX_NUMBER_CHARS:
+        raise Malformed("number too long")
+    return int(text)
+
+
+def _check_depth(text):
+    """Raise Malformed if arrays and objects nest deeper than MAX_DEPTH.
+
+    A plain scan, so that the bound does not depend on a recursion limit. For
+    text the parser would accept, the count is exact. For text it would
+    reject, the count is never lower than what the parser sees before it
+    stops, because both read strings the same way up to that point.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_DEPTH:
+                raise Malformed("nested too deeply")
+        elif char in "]}":
+            depth -= 1
 
 
 def _unique_keys(pairs):
@@ -148,11 +212,13 @@ def parse(raw):
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise Malformed("not UTF-8")
+    _check_depth(text)
     try:
         listing = json.loads(
             text,
             parse_constant=_reject_constant,
             parse_float=_finite_float,
+            parse_int=_bounded_int,
             object_pairs_hook=_unique_keys,
         )
     except Malformed:
@@ -175,29 +241,57 @@ def _clean_path(value):
     return os.path.isabs(value)
 
 
+def _is_bool(value):
+    return value is True or value is False
+
+
+def _is_timestamp(value):
+    return isinstance(value, str) and TIMESTAMP.fullmatch(value) is not None
+
+
+# Every field `claude plugin list --json` is known to emit (Claude Code
+# 2.1.330), and the shape each has there. A row need not carry all of them,
+# but one that is present has to look like the CLI wrote it: null is not a
+# shape any of them has. A field that is not in this table is left alone, so
+# a new CLI field does not switch the hook off.
+KNOWN_FIELDS = {
+    "id": lambda v: isinstance(v, str) and PLUGIN_ID.fullmatch(v) is not None,
+    "scope": lambda v: isinstance(v, str) and SCOPE.fullmatch(v) is not None,
+    "version": lambda v: isinstance(v, str) and VERSION.fullmatch(v) is not None,
+    "enabled": _is_bool,
+    "projectEnabled": _is_bool,
+    "installPath": _clean_path,
+    "projectPath": _clean_path,
+    "installedAt": _is_timestamp,
+    "lastUpdated": _is_timestamp,
+}
+REQUIRED_FIELDS = ("id", "scope")
+
+
 def check_row(row):
-    """Raise Malformed unless every field this hook reads has its shape."""
+    """Raise Malformed unless the row is shaped like one the CLI writes."""
     if not isinstance(row, dict):
         raise Malformed("row is not an object")
+    for name in REQUIRED_FIELDS:
+        if name not in row:
+            raise Malformed("row without %s" % name)
+    for name, has_shape in KNOWN_FIELDS.items():
+        if name in row and not has_shape(row[name]):
+            raise Malformed("%s does not have its shape" % name)
+    # Absolute or unknown: an empty or relative path would resolve against the
+    # directory this runs in, which is this project.
+    if row["scope"] in ONE_PROJECT and "projectPath" not in row:
+        raise Malformed("a project row without a projectPath")
 
-    row_id = row.get("id")
-    if not isinstance(row_id, str) or not PLUGIN_ID.fullmatch(row_id):
-        raise Malformed("row without a plugin id")
 
-    scope = row.get("scope")
-    if not isinstance(scope, str) or not SCOPE.fullmatch(scope):
-        raise Malformed("row without a scope")
-
-    version = row.get("version")
-    if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
-        raise Malformed("version is not a version")
-
-    path = row.get("projectPath")
-    if scope in ONE_PROJECT or path is not None:
-        # Absolute or unknown: an empty or relative path would resolve
-        # against the directory this runs in, which is this project.
-        if not _clean_path(path):
-            raise Malformed("projectPath is not a clean absolute path")
+def _same_directory(path, root):
+    # The directories themselves, not their spellings: on a filesystem that
+    # ignores capitalization two spellings name one project. A path that does
+    # not exist is not this project, which does.
+    try:
+        return os.path.samefile(path, root)
+    except (OSError, ValueError):
+        return False
 
 
 def decide(raw, plugin, root):
@@ -213,18 +307,13 @@ def decide(raw, plugin, root):
     for row in rows:
         check_row(row)
 
-    root = os.path.realpath(root)
     found = []
     for row in rows:
         if row["id"] != plugin:
             continue
         scope = row["scope"]
         if scope in ONE_PROJECT:
-            try:
-                same = os.path.realpath(row["projectPath"]) == root
-            except (OSError, ValueError):
-                raise Malformed("projectPath cannot be resolved")
-            if not same:
+            if not _same_directory(row["projectPath"], root):
                 continue
         elif scope not in EVERYWHERE:
             raise Malformed("a scope this hook does not know")
@@ -232,23 +321,66 @@ def decide(raw, plugin, root):
     return ", ".join(found)
 
 
-def read_listing():
-    """The bytes `claude plugin list --json` prints, or None if it failed."""
+def _timeout():
     try:
-        done = subprocess.run(
-            ["claude", "plugin", "list", "--json"], stdout=subprocess.PIPE, check=False
+        seconds = float(os.environ.get(LIST_TIMEOUT_VARIABLE, ""))
+    except ValueError:
+        return LIST_TIMEOUT_SECONDS
+    return seconds if 0 < seconds <= 600 else LIST_TIMEOUT_SECONDS
+
+
+class ListingTimedOut(Exception):
+    pass
+
+
+def read_listing():
+    """The bytes `claude plugin list --json` prints, or None if it failed.
+
+    The CLI runs in a process group of its own so that, when it does not
+    answer in time, everything it started can be stopped with it; a process it
+    left behind would keep the hook's output open and whoever waits for that.
+    A signal that stops this program stops that group first, so stopping the
+    hook does not leave the listing running either.
+    """
+    try:
+        child = subprocess.Popen(
+            ["claude", "plugin", "list", "--json"], stdout=subprocess.PIPE, start_new_session=True
         )
     except OSError:
         return None
-    if done.returncode != 0:
+
+    def stop_listing(signum=None, _frame=None):
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        if signum is not None:
+            sys.exit(128 + signum)
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        signal.signal(getattr(signal, name), stop_listing)
+    try:
+        out, _ = child.communicate(timeout=_timeout())
+    except subprocess.TimeoutExpired:
+        stop_listing()
+        child.stdout.close()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise ListingTimedOut()
+    if child.returncode != 0:
         return None
-    return done.stdout
+    return out
 
 
 def main(argv):
     if len(argv) != 3 or not PLUGIN_ID.fullmatch(argv[1]):
         return EXIT_MALFORMED
-    raw = read_listing()
+    try:
+        raw = read_listing()
+    except ListingTimedOut:
+        return EXIT_LISTING_TIMED_OUT
     if raw is None:
         return EXIT_LISTING_FAILED
     try:
@@ -289,6 +421,7 @@ plugin_status() {
       fi
       ;;
     2) plugin_detail="claude plugin list --json failed" ;;
+    4) plugin_detail="claude plugin list --json did not answer in time and was stopped" ;;
     *) plugin_detail="the plugin listing is not the JSON this hook expects" ;;
   esac
 }
