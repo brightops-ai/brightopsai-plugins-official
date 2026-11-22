@@ -263,6 +263,32 @@ teardown() {
   ! ts has-session -t "=zz-spawn-dry" 2>/dev/null
 }
 
+# bats test_tags=live
+@test "a session starts in a directory whose name reads as a multiplexer format" {
+  live_setup
+  # The multiplexer expands format syntax in the directory it is given. Named
+  # for the session, this one would expand to its neighbour, which exists; and
+  # a name that expands to nothing usable starts the session in the home
+  # directory instead.
+  local dir="$BATS_TEST_TMPDIR/named-#{session_name}"
+  mkdir -p "$dir" "$BATS_TEST_TMPDIR/named-zz-spawn-fmt"
+  pretrust "$dir"
+
+  run spawn "zz-spawn-fmt" --dir "$dir" --no-verify
+  [ "$status" -eq 0 ]
+
+  # The pane's own answer, compared with links resolved: the multiplexer
+  # reports the physical path.
+  local want got="" i
+  want="$(cd "$dir" && pwd -P)"
+  for i in $(seq 1 20); do
+    got="$(ts display-message -p -t "=zz-spawn-fmt:" '#{pane_current_path}')"
+    [[ "$got" == "$want" ]] && break
+    sleep 0.2
+  done
+  [ "$got" = "$want" ]
+}
+
 # ── the driver: verifying ───────────────────────────────────────────────────
 
 # bats test_tags=live
@@ -951,11 +977,17 @@ count() {
 #   MUX_PANE=<file>        capture-pane prints this file (nothing if unset)
 #   MUX_PANE_LATER=<file>  capture-pane prints this one instead, from capture
 #   MUX_PANE_LATER_AT=<n>  number <n> of the run onwards (default 2)
-#   MUX_PANE_ON_PASTE=<file>      ...or this one, once paste number
-#   MUX_PANE_ON_PASTE_AT=<n>      <n> has been made (default 1)
+#   MUX_PANE_ON_PASTE=<file>      ...or this one, while paste number <n>
+#   MUX_PANE_ON_PASTE_AT=<n>      or a later one (default 1) is in the box and
+#   MUX_PANE_ON_PASTE_FOR=<n>     not yet submitted; with FOR, only for that
+#                                 many captures after the paste
 #   MUX_PANE_ON_SUBMIT=<file>     ...or this one, once a paste has been
 #                                 submitted with Enter
 #   MUX_CAPTURE_RC=<n>     capture-pane prints the pane, then exits with this
+#   MUX_FAIL_PASTE_AT=<n>  paste number <n> fails, pasting nothing
+#   MUX_FAIL_ENTER_AT=<n>  the <n>th Enter after a paste fails, submitting nothing
+#   MUX_PROCESS_GONE_AFTER=<n>    list-panes reports the pane's process for
+#                                 its first <n> calls and nothing after
 #   MUX_ANSWER_TO=<file>   a submitted paste carrying a handshake is answered
 #   MUX_ANSWER_CWD=<dir>   by appending the acknowledgement to this transcript,
 #   MUX_ANSWER_POSTURE=<p> reporting this directory and posture (acceptEdits)
@@ -986,6 +1018,11 @@ case " $args " in
   *" send-keys "*)
     # A paste followed by Enter is a submission: the session now has the text.
     if [[ -r "$TRACE.pasted" && "${!#}" == "Enter" ]]; then
+      enters="$(grep -c '^mux: .* send-keys -t =[^ ]*: Enter$' "$TRACE")"
+      if [[ "${MUX_FAIL_ENTER_AT:-}" == "$enters" ]]; then
+        echo "stand-in: send-keys failed" >&2
+        exit 1
+      fi
       text="$(<"$TRACE.pasted")"
       rm -f "$TRACE.pasted"
       : > "$TRACE.submitted"
@@ -1001,6 +1038,10 @@ case " $args " in
     fi
     exit "${MUX_SEND_KEYS:-0}" ;;
   *" list-panes "*)
+    asked="$(grep -c '^mux: .* list-panes ' "$TRACE")"
+    if [[ -n "${MUX_PROCESS_GONE_AFTER:-}" ]] && (( asked > MUX_PROCESS_GONE_AFTER )); then
+      exit 0
+    fi
     if [[ -n "${MUX_PANE_PID:-}" ]]; then
       printf '%s\n' "$MUX_PANE_PID"
     fi ;;
@@ -1012,14 +1053,21 @@ case " $args " in
     if [[ -n "${MUX_PANE_LATER:-}" ]] && (( n >= ${MUX_PANE_LATER_AT:-2} )); then
       pane="$MUX_PANE_LATER"
     fi
-    if [[ -n "${MUX_PANE_ON_PASTE:-}" ]] && (( pastes >= ${MUX_PANE_ON_PASTE_AT:-1} )); then
-      pane="$MUX_PANE_ON_PASTE"
+    if [[ -n "${MUX_PANE_ON_PASTE:-}" && -r "$TRACE.pasted" ]] && (( pastes >= ${MUX_PANE_ON_PASTE_AT:-1} )); then
+      since=$(( n - $(<"$TRACE.pasted_at") ))
+      if [[ -z "${MUX_PANE_ON_PASTE_FOR:-}" ]] || (( since <= MUX_PANE_ON_PASTE_FOR )); then
+        pane="$MUX_PANE_ON_PASTE"
+      fi
     fi
     if [[ -n "${MUX_PANE_ON_SUBMIT:-}" && -e "$TRACE.submitted" ]]; then
       pane="$MUX_PANE_ON_SUBMIT"
     fi
+    # Every row as it is in the file, blank ones at the foot included: where
+    # the last row is matters to the launcher.
     if [[ -n "$pane" && -r "$pane" ]]; then
-      printf '%s\n' "$(<"$pane")"
+      while IFS= read -r row || [[ -n "$row" ]]; do
+        printf '%s\n' "$row"
+      done < "$pane"
     fi
     exit "${MUX_CAPTURE_RC:-0}" ;;
   *" load-buffer "*)
@@ -1028,6 +1076,12 @@ case " $args " in
       printf '%s' "$(<"${!#}")" > "$TRACE.buffer"
     fi ;;
   *" paste-buffer "*)
+    pastes="$(grep -c '^mux: .* paste-buffer ' "$TRACE")"
+    if [[ "${MUX_FAIL_PASTE_AT:-}" == "$pastes" ]]; then
+      echo "stand-in: paste-buffer failed" >&2
+      exit 1
+    fi
+    grep -c '^mux: .* capture-pane ' "$TRACE" > "$TRACE.pasted_at"
     if [[ -r "$TRACE.buffer" ]]; then
       mv "$TRACE.buffer" "$TRACE.pasted"
     fi ;;
@@ -1070,7 +1124,7 @@ STUB
 spawn_stub() {
   local rc=0
   : > "$TRACE"
-  rm -f "$TRACE.buffer" "$TRACE.pasted" "$TRACE.submitted"
+  rm -f "$TRACE.buffer" "$TRACE.pasted" "$TRACE.submitted" "$TRACE.pasted_at"
   PATH="$STUB_PATH" TRACE="$TRACE" \
   SPAWN_CONFIG_FILE="$CONFIG_FILE" \
   SPAWN_SESSIONS_DIR="$BATS_TEST_TMPDIR/sessions" \
@@ -1678,13 +1732,15 @@ ready_table() {
 # tables.
 verdict() {
   local out
-  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$1")"
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$1" "${2:-}")"
   printf '%s\n' "${out%%$'\t'*}"
 }
 
-BOX="────────────────
+BOX_OPEN="────────────────"
+BOX_CLOSE="────────────────"
+BOX="$BOX_OPEN
 ❯ 
-────────────────"
+$BOX_CLOSE"
 STATUS="  ⏵⏵ accept edits on (shift+tab to cycle)"
 TRUST_DIALOG="Accessing workspace:
   /some/path
@@ -1798,60 +1854,93 @@ $STATUS")" = "waiting" ]
   [ "$(verdict "$BOX
   some line that is not a status line")" = "waiting" ]
 
-  # The box has to be the last thing on the pane. A box that was never
-  # cleared, with something else drawn after it, is not where input goes.
+  # The box is closed by the last rule on the pane. The CLI opens a dialog
+  # with a rule of its own, so a box that was never cleared, with a dialog
+  # nobody has listed drawn after it, is not where input goes.
   [ "$(verdict "$BOX
 $STATUS
-A dialog nobody has listed yet
-with several lines of explanation
-and more of it
-and more
-and more still
-  1. Yes, proceed")" = "waiting" ]
+────────────────
+ A dialog nobody has listed yet
+ ❯ 1. Yes, proceed
+   2. No, exit
+ Enter to confirm · Esc to cancel")" = "waiting" ]
 
   # With no ready table there is nothing to find, so nothing is ever ready.
   run pane_verdict "$(blocker_table)" "" "$BOX
 $STATUS"
-  [ "$output" = "waiting" ]
+  [ "$output" = "waiting	no-mode-line" ]
 }
 
 @test "dialog wording counts by where it is, not by being on the pane" {
-  # Earlier output that quotes a dialog is above the box, or is prose on a
-  # line of its own under it. The box is what is showing: ready.
+  # Earlier output that quotes a dialog is above the box. The box is what is
+  # showing: ready.
   [ "$(verdict "Earlier output: the menu option is Yes, I trust this folder
 $BOX
 $STATUS")" = "ready" ]
-  [ "$(verdict "$BOX
-$STATUS
-Earlier output: the menu option is Yes, I trust this folder")" = "ready" ]
+  [ "$(verdict "❯ what does Yes, I trust this folder do?
+  It records trust for the workspace.
+$BOX
+$STATUS")" = "ready" ]
 
-  # A dialog drawn under a box that was never cleared is the dialog's screen.
-  # Its options are options: focused, numbered, or bare.
-  local out
-  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+  # From the box's top rule down, the same wording is a dialog, whatever the
+  # line it is on looks like: under the mode line, focused, numbered, bare,
+  # or in a sentence.
+  local out under
+  for under in "Dialog
+❯ Yes, I trust this folder" "  2. Yes, I trust this folder" "  Yes, I accept" \
+               "Earlier output: the menu option is Yes, I trust this folder"; do
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
 $STATUS
-Dialog
-❯ Yes, I trust this folder")"
-  [[ "$out" == "blocked	trust	"* ]]
-  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
-$STATUS
-  2. Yes, I trust this folder")"
-  [[ "$out" == "blocked	trust	"* ]]
-  [ "$(verdict "$BOX
-$STATUS
-  Yes, I accept")" = "blocked" ]
+$under")"
+    [[ "$out" == "blocked	"* ]] || { echo "under the box: $under: $out"; return 1; }
+  done
 
-  # A focused option of a dialog nobody has listed is still not a status
-  # line: not ready, and not a diagnosis either.
+  # And inside the box: a dialog drawn between two rules, and one drawn into
+  # a box that is otherwise intact.
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "Safety check
+$BOX_OPEN
+❯ 1. Yes, I trust this folder
+  2. No, exit
+$BOX_CLOSE
+$STATUS")"
+  [[ "$out" == "blocked	trust	"* ]] || { echo "between rules: $out"; return 1; }
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX_OPEN
+❯ 
+Quick safety check
+  1. Yes, I trust this folder
+  2. No, exit
+$BOX_CLOSE
+$STATUS")"
+  [[ "$out" == "blocked	trust	"* ]] || { echo "inside the box: $out"; return 1; }
+
+  # Unless the launcher put it there. At the look before an Enter, wording
+  # that is in the text just pasted is the paste, not a dialog.
+  local brief="If you are asked, do not choose Yes, I trust this folder."
+  [ "$(verdict "$BOX_OPEN
+❯ $brief
+$BOX_CLOSE
+$STATUS")" = "blocked" ]
+  [ "$(verdict "$BOX_OPEN
+❯ $brief
+$BOX_CLOSE
+$STATUS" "$brief")" = "ready" ]
+
+  # The prompt glyph has no meaning under the box: a status line of the
+  # user's own may open with it.
   [ "$(verdict "$BOX
-$STATUS
-❯ 1. Yes, proceed")" = "waiting" ]
+  ❯ branch: main
+$STATUS")" = "ready" ]
 
   # Above a box, dialog wording is earlier output whichever way the verdict
-  # goes: a box with a status line nobody has listed is unknown, not blocked.
+  # goes: a box with no mode line under it is unknown, not blocked.
   [ "$(verdict "Earlier output: Yes, I trust this folder
 $BOX
-  some line that is not a status line")" = "waiting" ]
+  some line that is not a mode line")" = "waiting" ]
+
+  # The real trust dialog, as CLI 2.1.330 draws it: a rule, the question, the
+  # refusing option focused first.
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-trust-dialog-80.txt")")"
+  [[ "$out" == "blocked	trust	"* ]] || { echo "real dialog: $out"; return 1; }
 
   # Every row of the dialog table blocks when it is what the pane shows, and
   # when it is drawn as an option under a stale box.
@@ -1915,6 +2004,10 @@ stub_cli_running() {
   # different answer sets SPAWN_CLI_VERSION on its own run.
   SPAWN_CLI_VERSION="$(cli_version_in_driver PINNED_CLI_VERSION)"
   export SPAWN_CLI_VERSION
+  # How long the look before an Enter waits for the box. A second here, so a
+  # spec about a box that never comes back is not twelve seconds long; a spec
+  # about the wait sets its own.
+  export SPAWN_SETTLE_SECONDS=1
 }
 
 # cli_version_in_driver <variable>
@@ -2340,23 +2433,16 @@ looked_before_every() {
   pretrust "$WORK"
   stub_cli_running
 
-  # A working session whose screen still shows a line that quotes a dialog,
-  # under the status line and then above the box.
-  local shape
-  for shape in under above; do
-    if [[ "$shape" == "under" ]]; then
-      printf '%s\n' "$BOX" "$STATUS" "Earlier output: the menu option is Yes, I trust this folder" > "$PANE"
-    else
-      printf '%s\n' "Earlier output: the menu option is Yes, I trust this folder" "$BOX" "$STATUS" > "$PANE"
-    fi
-    : > "$TRANSCRIPT"
-    : > "$RECEIVED"
-    MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
-      run spawn_stub "zz-spawn-quoted" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
-    [ "$status" -eq 0 ] || { echo "quotation $shape the box:"; cat "$TRACE"; cat "$OUT"; return 1; }
-    has "$(cat "$OUT")" $'verdict\thealthy'
-    has "$(cat "$RECEIVED")" "BRIEF-TEXT"
-  done
+  # A working session whose screen still shows, above the box, lines that
+  # quote a dialog.
+  printf '%s\n' "❯ what does Yes, I trust this folder do?" "Earlier output: the menu option is Yes, I trust this folder" "$BOX" "$STATUS" > "$PANE"
+  : > "$TRANSCRIPT"
+  : > "$RECEIVED"
+  MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-quoted" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 0 ] || { echo "quotation above the box:"; cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\thealthy'
+  has "$(cat "$RECEIVED")" "BRIEF-TEXT"
 
   # The other way round: a dialog drawn under a box that was never cleared
   # is a dialog, and gets nothing.
@@ -2409,6 +2495,391 @@ looked_before_every() {
   run spawn_stub "zz-spawn-none" --dir "$WORK" --no-verify --porcelain
   [ "$status" -eq 0 ]
   lacks "$(cat "$OUT")" "handshake"
+}
+
+@test "the look before an Enter knows the box by the paste it holds" {
+  # What the real CLI shows straight after a paste. A paste of five lines or
+  # more, or one very long line, is folded into a marker, and for about eight
+  # seconds the mode line is replaced by a hint. Before a paste that pane is
+  # not ready, and it stays so: nothing here loosens that look.
+  local pasted="Before doing anything else, reply with a single line and then stop.
+second line of the paste"
+  local name out
+  for name in pasted-80 pasted-40 pasted-20 pasted-status-line-80 pasted-status-lines-80 \
+              pasted-one-long-line-80 pasted-after-draft-80; do
+    [ -r "$FIXTURES/pane-$name.txt" ]
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-$name.txt")")"
+    [ "$out" = "waiting	no-mode-line" ] || { echo "$name, before a paste: $out"; return 1; }
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-$name.txt")" "$pasted")"
+    [ "$out" = "ready	holding-paste" ] || { echo "$name, before an Enter: $out"; return 1; }
+  done
+
+  # Once the hint has gone the mode line is back, and a short paste never
+  # loses it: ready either way, by the mode line.
+  for name in pasted-hint-gone-80 pasted-inline-80; do
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-$name.txt")" "three line brief
+second line
+third line")"
+    [ "$out" = "ready	accept-edits" ] || { echo "$name: $out"; return 1; }
+  done
+
+  # A short paste is shown as it is, and the box holding the start of it is
+  # the box, whatever is drawn under it and however the pane wrapped it.
+  [ "$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX_OPEN
+❯ three line brief
+  second line
+$BOX_CLOSE
+  something drawn where the mode line was" "three line brief
+second line")" = "ready	holding-paste" ]
+  [ "$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX_OPEN
+❯ A brief whose first
+  line is long enough
+  to wrap
+$BOX_CLOSE
+  something drawn where the mode line was" "A brief whose first line is long enough to wrap")" = "ready	holding-paste" ]
+
+  # It still refuses. The box is there but does not hold the paste:
+  [ "$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+  paste again to expand" "$pasted")" = "waiting	no-mode-line" ]
+  # The box is gone:
+  [ "$(verdict "Something else entirely
+❯ 1. Continue" "$pasted")" = "waiting" ]
+  # A dialog is showing, as the real CLI draws it:
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-trust-dialog-80.txt")" "$pasted")"
+  [[ "$out" == "blocked	trust	"* ]] || { echo "dialog: $out"; return 1; }
+  # A dialog's wording is in the box beside the paste:
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX_OPEN
+❯ [Pasted text #1 +10 lines]
+  Yes, I trust this folder
+$BOX_CLOSE
+  paste again to expand" "$pasted")"
+  [[ "$out" == "blocked	trust	"* ]] || { echo "wording beside the paste: $out"; return 1; }
+
+  # The marker is a row of the table, not a string in the code.
+  run pane_verdict "$(blocker_table)" "id	⏵⏵ accept edits on	seen	under" "$(cat "$FIXTURES/pane-pasted-80.txt")" "$pasted"
+  [ "$output" = "waiting	no-mode-line" ]
+}
+
+@test "the mode line is found under a status line of any length or wording" {
+  # The user's own status line is drawn between the box and the mode line.
+  # However many lines it has, and whatever they begin with, the mode line
+  # under it is what counts.
+  local name out
+  for name in status-line-80 status-lines-80 status-six-lines-80 status-glyph-line-80 manual-mode-100; do
+    [ -r "$FIXTURES/pane-$name.txt" ]
+    out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-$name.txt")")"
+    [[ "$out" == "ready	"* ]] || { echo "$name: $out"; return 1; }
+  done
+
+  local twelve="  one
+  two
+  three
+  four
+  five
+  six
+  seven
+  eight
+  nine
+  ten
+  eleven
+  twelve"
+  [ "$(verdict "$BOX
+$twelve
+$STATUS")" = "ready" ]
+  [ "$(verdict "$BOX
+  ❯ branch: main
+$STATUS")" = "ready" ]
+
+  # A pane too short for anything under the box is told apart from a box with
+  # room under it and no mode line there.
+  out="$(pane_verdict "$(blocker_table)" "$(ready_table)" "$(cat "$FIXTURES/pane-short-80x9.txt")")"
+  [ "$out" = "waiting	clipped" ] || { echo "short pane: $out"; return 1; }
+  [ "$(pane_verdict "$(blocker_table)" "$(ready_table)" "$BOX
+")" = "waiting	no-mode-line" ]
+}
+
+@test "the handshake and the brief are submitted through the hint the CLI draws after a paste" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_prompt
+
+  # After each paste the pane is what the real CLI shows: the paste folded
+  # into a marker in the box, and a hint where the mode line was.
+  local shape
+  for shape in pasted-80 pasted-20 pasted-status-lines-80; do
+    : > "$TRANSCRIPT"
+    : > "$RECEIVED"
+    MUX_PANE_ON_PASTE="$FIXTURES/pane-$shape.txt" MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+      run spawn_stub "zz-spawn-hint" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+    [ "$status" -eq 0 ] || { echo "after a paste shown as $shape:"; cat "$TRACE"; cat "$OUT"; return 1; }
+    has "$(cat "$OUT")" $'handshake\tsent'
+    has "$(cat "$OUT")" $'brief\tdelivered'
+    [ "$(submitted)" = "2" ]
+    has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  done
+
+  # When the box does not show the paste in a way the launcher knows, it
+  # waits for the mode line to come back, as it does when the hint times out,
+  # and submits then.
+  local hint="$BATS_TEST_TMPDIR/pane.hint"
+  printf '%s\n' "$BOX_OPEN" "❯ {folded some other way}" "$BOX_CLOSE" "  paste again to expand" > "$hint"
+  : > "$TRANSCRIPT"
+  MUX_PANE_ON_PASTE="$hint" MUX_PANE_ON_PASTE_FOR=3 SPAWN_SETTLE_SECONDS=4 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-hint" --dir "$WORK" --timeout 3 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'verdict\tunconfirmed'
+  [ "$(submitted)" = "1" ]
+
+  # And when it never comes back, the Enter is held, as before.
+  MUX_PANE_ON_PASTE="$hint" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-hint" --dir "$WORK" --timeout 3 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'handshake\tnot_submitted'
+  [ "$(submitted)" = "0" ]
+}
+
+@test "a session with a long status line of its own, or one opening with the prompt glyph, is delivered to" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  local shape
+  for shape in status-six-lines-80 status-glyph-line-80; do
+    cp "$FIXTURES/pane-$shape.txt" "$PANE"
+    : > "$TRANSCRIPT"
+    : > "$RECEIVED"
+    MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+      run spawn_stub "zz-spawn-status" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+    [ "$status" -eq 0 ] || { echo "$shape:"; cat "$TRACE"; cat "$OUT"; return 1; }
+    has "$(cat "$OUT")" $'verdict\thealthy'
+    has "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  done
+}
+
+@test "a send the multiplexer refuses stops the run, and the report says what went" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_prompt
+
+  # The handshake's paste fails. No Enter follows it, nothing is retried,
+  # and the run is an error, not a verdict on the session.
+  : > "$TRANSCRIPT"
+  MUX_FAIL_PASTE_AT=1 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-mux" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 1 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ]
+  [ "$(submitted)" = "0" ] || { echo "Enter followed a paste that failed:"; cat "$TRACE"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tmux_error'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  has "$(cat "$OUT")" $'brief\tnone'
+  has "$(cat "$ERR")" "the multiplexer failed to paste the handshake in 'zz-spawn-mux' (status 1)"
+
+  # The handshake's Enter fails. The paste went, and is reported as a paste;
+  # it is not pasted a second time.
+  : > "$TRANSCRIPT"
+  MUX_FAIL_ENTER_AT=1 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-mux" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 1 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ] || { echo "pasted again after a failed Enter:"; cat "$TRACE"; return 1; }
+  [ "$(submitted)" = "1" ]
+  has "$(cat "$OUT")" $'handshake\tnot_submitted'
+  has "$(cat "$ERR")" "the multiplexer failed to submit the handshake"
+
+  # The brief's paste fails, after the session has identified itself. No
+  # Enter, and the brief is not reported as delivered.
+  : > "$TRANSCRIPT"
+  MUX_FAIL_PASTE_AT=2 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-mux" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 1 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(submitted)" = "1" ] || { echo "Enter followed the brief's failed paste:"; cat "$TRACE"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tmux_error'
+  has "$(cat "$OUT")" $'identity\tok'
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'brief\tnone'
+  lacks "$(cat "$OUT")" "delivered"
+  has "$(cat "$ERR")" "the multiplexer failed to paste the brief"
+
+  # The brief's Enter fails: pasted, not submitted.
+  : > "$TRANSCRIPT"
+  MUX_FAIL_ENTER_AT=2 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-mux" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 1 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "2" ]
+  has "$(cat "$OUT")" $'brief\tnot_submitted'
+  lacks "$(cat "$OUT")" "delivered"
+  has "$(cat "$ERR")" "the multiplexer failed to submit the brief"
+
+  # In prose, the same facts.
+  : > "$TRANSCRIPT"
+  MUX_FAIL_ENTER_AT=1 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-mux" --dir "$WORK" --timeout 5 --resume
+  [ "$status" -eq 1 ]
+  has "$(cat "$OUT")" "the multiplexer failed part-way through a delivery"
+  has "$(cat "$OUT")" "the handshake was pasted, and Enter was not sent"
+}
+
+@test "a CLI that starts and exits is reported as never started, not as running" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  # A process is there for the first look at the process table and gone
+  # after it; the pane shows the shell it left behind.
+  pane_starting
+
+  MUX_PROCESS_GONE_AFTER=1 run spawn_stub "zz-spawn-exited" --dir "$WORK" --timeout 2 --porcelain
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  lacks "$(cat "$OUT")" "not_ready"
+  has "$(cat "$ERR")" "the CLI process in 'zz-spawn-exited' is gone"
+
+  # The same after a handshake that went out and was never answered.
+  pane_prompt
+  MUX_PROCESS_GONE_AFTER=1 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-exited" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'handshake\tsent'
+}
+
+@test "the outcome at the deadline is chosen from a look taken then" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  # Nothing recognisable for the first two looks; a trust dialog is up by the
+  # third, which is the one at the deadline.
+  pane_starting
+  local dialog="$BATS_TEST_TMPDIR/pane.dialog"
+  pane_dialog "$dialog"
+
+  MUX_PANE_LATER="$dialog" MUX_PANE_LATER_AT=3 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-late" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tblocked'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  [ "$(sent capture-pane)" = "3" ]
+  [ "$(sent send-keys)" = "0" ]
+}
+
+@test "a dialog's wording in or under the box is a dialog, and gets nothing" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  # A trust dialog drawn between two rules with a mode line under it, and a
+  # dialog drawn inside a box that is otherwise intact.
+  local shape
+  for shape in between-rules inside-the-box; do
+    if [[ "$shape" == "between-rules" ]]; then
+      printf '%s\n' "Safety check" "$BOX_OPEN" "❯ 1. Yes, I trust this folder" "  2. No, exit" "$BOX_CLOSE" "$STATUS" > "$PANE"
+    else
+      printf '%s\n' "$BOX_OPEN" "❯ " "Quick safety check" "  1. Yes, I trust this folder" "  2. No, exit" "$BOX_CLOSE" "$STATUS" > "$PANE"
+    fi
+    : > "$RECEIVED"
+    MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-inbox" --dir "$WORK" --timeout 2 --resume --porcelain --prompt "BRIEF-TEXT"
+    [ "$status" -eq 4 ] || { echo "$shape: exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+    [ "$(sent paste-buffer)" = "0" ] || { echo "$shape: pasted at a dialog:"; cat "$TRACE"; return 1; }
+    [ "$(sent send-keys)" = "0" ]
+    [ ! -s "$RECEIVED" ]
+    has "$(cat "$OUT")" $'verdict\tblocked'
+    has "$(cat "$OUT")" $'handshake\tnot_sent'
+  done
+
+  # A brief that itself mentions a dialog's wording is still submitted: what
+  # the launcher has just pasted into the box is not a dialog. The real CLI
+  # shows a short paste as it is, with the mode line under it.
+  pane_prompt
+  local pasted="$BATS_TEST_TMPDIR/pane.pasted"
+  printf '%s\n' "$BOX_OPEN" "❯ If you are asked, do not choose Yes, I trust this folder." "$BOX_CLOSE" "$STATUS" > "$pasted"
+  : > "$TRANSCRIPT"
+  : > "$RECEIVED"
+  MUX_PANE_ON_PASTE="$pasted" MUX_PANE_ON_PASTE_AT=2 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-inbox" --dir "$WORK" --timeout 10 --resume --porcelain \
+      --prompt "If you are asked, do not choose Yes, I trust this folder."
+  [ "$status" -eq 0 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'brief\tdelivered'
+  has "$(cat "$RECEIVED")" "do not choose Yes, I trust this folder."
+}
+
+@test "an acknowledgement from the wrong session is reported in pairs too" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_prompt
+
+  MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="/somewhere/else" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-other" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 2 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tmismatch'
+  has "$(cat "$OUT")" $'identity\tmismatch_cwd'
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'brief\tnone'
+  has "$(cat "$ERR")" "different directory"
+  lacks "$(cat "$RECEIVED")" "BRIEF-TEXT"
+
+  # Every value a pair can carry is listed in the protocol reference.
+  local doc="$SKILL_DIR/references/protocol.md" value
+  for value in healthy bridge_dead launched no_process blocked not_ready unconfirmed mismatch mux_error \
+               not_sent not_submitted sent delivered none \
+               ok posture_unverified mismatch_cwd mismatch_posture; do
+    grep -q -- "\`$value\`" "$doc" || { echo "protocol.md does not list the value: $value"; return 1; }
+  done
+}
+
+@test "a pane too short to show the mode line is said to be too short" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+
+  # A session this launcher creates is given a size, so its pane is never
+  # the server's default or too short for the line under the box.
+  pane_starting
+  run spawn_stub "zz-spawn-size" --dir "$WORK" --no-verify
+  [ "$status" -eq 0 ]
+  [ "$(count "^mux: .*new-session -d -s zz-spawn-size -c $WORK -x 120 -y 40\$" "$TRACE")" = "1" ] || { cat "$TRACE"; return 1; }
+
+  # A session it did not size, picked up with --resume: the real CLI at nine
+  # rows draws the box on the last row and nothing under it. Not ready, and
+  # the reason given is the size, not that the prompt never appeared.
+  cp "$FIXTURES/pane-short-80x9.txt" "$PANE"
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-size" --dir "$WORK" --timeout 1 --resume --porcelain
+  [ "$status" -eq 5 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tnot_ready'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  [ "$(sent paste-buffer)" = "0" ]
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "'zz-spawn-size' shows its input box on the last row of its pane, with no room for the mode line under it; make the pane taller, then re-run with --resume"
+
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-size" --dir "$WORK" --timeout 1 --resume
+  [ "$status" -eq 5 ]
+  has "$(cat "$OUT")" "the pane is too small to show the mode line under the input box"
+  lacks "$(cat "$OUT")" "never appeared"
+
+  # A box with room under it and no mode line there is not that case.
+  printf '%s\n' "$BOX" "" "" > "$PANE"
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-size" --dir "$WORK" --timeout 1 --resume
+  [ "$status" -eq 5 ]
+  has "$(cat "$OUT")" "the input prompt never appeared"
+  lacks "$(cat "$OUT")" "too small"
+}
+
+@test "a session is still reported when no transcript directory exists yet" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  pane_prompt
+  # The CLI creates this directory with its first transcript on a machine.
+  # Until then there is nowhere to look, which is "no answer yet", not a
+  # reason to stop without a word.
+  rm -rf "$BATS_TEST_TMPDIR/projects"
+
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-first" --dir "$WORK" --timeout 2 --resume --porcelain
+  [ "$status" -eq 5 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$OUT")" $'verdict\tunconfirmed'
+  has "$(cat "$OUT")" $'handshake\tsent'
 }
 
 # ── the directory ───────────────────────────────────────────────────────────
@@ -2526,7 +2997,7 @@ utf8_only() {
   rc=0
   ( cd "$plain/from" && spawn_stub "zz-spawn-dots" --dir link/.. --trust-folder --no-verify ) || rc=$?
   [ "$rc" -eq 0 ] || { cat "$TRACE"; return 1; }
-  [ "$(count "^mux: .*new-session -d -s zz-spawn-dots -c $plain/from\$" "$TRACE")" = "1" ] || { cat "$TRACE"; return 1; }
+  [ "$(count "^mux: .*new-session -d -s zz-spawn-dots -c $plain/from -x " "$TRACE")" = "1" ] || { cat "$TRACE"; return 1; }
 }
 
 @test "a directory with any control character in its path is refused as usage" {
@@ -2619,4 +3090,42 @@ utf8_only() {
   [ "$(count '' "$ERR")" = "1" ]
   utf8_only "$ERR"
   has "$(cat "$ERR")" "'zz\\x9b31mred' is not a usable session name"
+}
+
+@test "a directory whose name the multiplexer would expand is passed so that it is not" {
+  stub_setup
+  stub_readers
+  # The multiplexer reads the directory it is given as a format. A directory
+  # really named with format syntax would be expanded into another path, the
+  # session would start somewhere else, and trust would have been recorded
+  # for the directory that was named.
+  local ws="$BATS_TEST_TMPDIR/ws" dir
+  mkdir -p "$ws"
+  for dir in "$ws/named-#{session_name}" "$ws/has#hash" "$ws/#S and ##"; do
+    mkdir -p "$dir"
+    run spawn_stub "zz-spawn-fmt" --dir "$dir" --trust-folder --no-verify
+    [ "$status" -eq 0 ] || { cat "$TRACE"; return 1; }
+    # Every `#` doubled, which the multiplexer reads back as one.
+    [ "$(count "^mux: .*new-session -d -s zz-spawn-fmt -c ${dir//#/##} -x " "$TRACE")" = "1" ] || { cat "$TRACE"; return 1; }
+    # Trust is recorded for the directory as it is named, not as passed.
+    python3 "$SKILL_DIR/scripts/lib/trust-config.py" check "$CONFIG_FILE" "$dir"
+  done
+
+  # A name with none is passed as it is.
+  run spawn_stub "zz-spawn-fmt" --dir "$WORK" --trust-folder --no-verify
+  [ "$(count "^mux: .*new-session -d -s zz-spawn-fmt -c $WORK -x " "$TRACE")" = "1" ]
+
+  # The other path the multiplexer is handed is the file a paste is loaded
+  # from, and it expands that one too. With a temporary directory named in
+  # format syntax, the file is made where the path has none.
+  stub_cli_running
+  pane_prompt
+  local odd="$BATS_TEST_TMPDIR/tmp-#{session_name}"
+  mkdir -p "$odd"
+  TMPDIR="$odd" MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-fmt" --dir "$WORK" --timeout 10 --resume --porcelain
+  [ "$status" -eq 0 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent load-buffer)" = "1" ]
+  [ "$(count '^mux: .* load-buffer .*#' "$TRACE")" = "0" ] || { cat "$TRACE"; return 1; }
+  has "$(cat "$RECEIVED")" "the word SPAWN-ACK"
 }

@@ -19,6 +19,8 @@
 #   basis    seen      drawn by the real CLI in a pane, and read from it
 #            inferred  built by the same rule as the rows that were seen, or
 #                      taken from another release, and not seen
+#   where    under     a status line, under the box
+#            inside    how the CLI marks a folded paste, inside the box
 #
 # A line matches a row when it starts with the pattern. A narrow pane cuts
 # the line short ("⏵⏵ accept edits" at 20 columns, "⏵⏵" at 12), and a cut
@@ -36,14 +38,28 @@
 # If a session launched with --bypass is at its prompt and the launcher says
 # the prompt never appeared, this is the row to correct.
 #
-# The shortcuts row is inferred too: 2.1.330 draws that hint after the mode
-# ("⏸ manual mode on · ? for shortcuts"), and releases that drew no mode for
-# the default one began the line with it.
+# The shortcuts row is inferred too. 2.1.330 was seen to draw that hint only
+# after the mode ("⏸ manual mode on · ? for shortcuts"), at 100 and 40
+# columns, never at the start of the line; releases that drew no mode for the
+# default one began the line with it.
+#
+# A user's own status line is drawn between the box and the mode line, one
+# line or several, so the mode line is the last of up to five lines there.
+#
+# The row marked inside is not a status line. Once the launcher has pasted,
+# the CLI folds a paste of five lines or more, or one very long line, into
+# "[Pasted text #1 +10 lines]" (or "[Pasted text #1]"), and for about eight
+# seconds draws "paste again to expand" where the mode line was. The look
+# before an Enter therefore also accepts a box that shows the paste: this
+# marker, or the start of the text itself when the CLI shows a short paste
+# as it is. Seen in 2.1.330 at 80, 40 and 20 columns, with and without a
+# status line of the user's own. It plays no part before a paste.
 
-accept-edits	⏵⏵ accept edits on	seen
-bypass	⏵⏵ bypass permissions on	inferred
-plan	⏸ plan mode on	seen
-auto	⏵⏵ auto mode on	seen
-dont-ask	⏵⏵ don't ask on	seen
-manual	⏸ manual mode on	seen
-shortcuts	? for shortcuts	inferred
+accept-edits	⏵⏵ accept edits on	seen	under
+bypass	⏵⏵ bypass permissions on	inferred	under
+plan	⏸ plan mode on	seen	under
+auto	⏵⏵ auto mode on	seen	under
+dont-ask	⏵⏵ don't ask on	seen	under
+manual	⏸ manual mode on	seen	under
+shortcuts	? for shortcuts	inferred	under
+pasted-text	[Pasted text #	seen	inside

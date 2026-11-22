@@ -439,10 +439,15 @@ trust_first_steps() {
 
 # ── naming what is holding a session ────────────────────────────────────────
 
-# blocker_for <table_text> <pane_text>
+# blocker_for <table_text> <pane_text> [own_text]
 #
 # Echoes "id<TAB>what<TAB>remedy" for the first table entry whose pattern
 # appears in the pane, or nothing.
+#
+# An entry whose pattern appears in the own text is passed over. That is the
+# text the launcher has just pasted into the input box itself: a brief that
+# mentions a dialog's wording is then on the pane because the launcher put it
+# there, and reading it as the dialog would hold back its own Enter.
 #
 # Matching is literal. Patterns come from a data file, and dialog text is full
 # of characters that are meaningful in an expression — a dot, a bracket, a
@@ -450,7 +455,7 @@ trust_first_steps() {
 # never written for, and the failure would be a confidently wrong diagnosis
 # rather than a missing one.
 blocker_for() {
-  local table="$1" pane="$2"
+  local table="$1" pane="$2" own="${3:-}"
   local line id pattern what remedy
 
   while IFS= read -r line; do
@@ -460,6 +465,7 @@ blocker_for() {
 
     IFS=$'\t' read -r id pattern what remedy <<< "$line"
     [[ -n "$pattern" ]] || continue
+    [[ -n "$own" && "$own" == *"$pattern"* ]] && continue
 
     # Quoting the pattern inside the bracket expression is what makes the
     # match literal: unquoted, it would be read as a glob.
@@ -475,20 +481,27 @@ blocker_for() {
 # ── deciding whether a session can be sent input ────────────────────────────
 #
 # Input is sent only to the CLI's input box, and the evidence that the box is
-# on screen is where things are, not that some text appears somewhere. The
-# pane has to end in this, and nothing else:
+# on screen is where things are, not that some text appears somewhere:
 #
 #     ────────────────────────       a rule
 #     ❯ whatever is typed            the input, one line or several
-#     ────────────────────────       a rule
-#       ⏵⏵ accept edits on …         the status line
+#     ────────────────────────       a rule, the last one on the pane
+#       a status line of the user's  any number of lines
+#       ⏵⏵ accept edits on …         the mode line
 #
-# Text anywhere else proves nothing. A dialog can quote a status line, a shell
+# Three rules, applied to one capture of the pane:
+#
+#   1. The box is the last rule on the pane, the nearest rule above it, and
+#      the prompt glyph on the line right under that one.
+#   2. A known dialog's wording from the box's top rule down to the foot of
+#      the pane is a dialog, whatever else is there. Above the box it is
+#      earlier output and counts for nothing. With no box, it counts anywhere.
+#   3. With a box and no dialog, the pane is ready when a line under the box
+#      is a mode line; or, at the look before an Enter, when the box shows the
+#      paste the launcher has just made.
+#
+# Text anywhere else proves nothing. A dialog can quote a mode line, a shell
 # can echo one, and earlier output above the box can quote a dialog.
-
-# How many lines may sit under the box. The status line is one; a configured
-# status line of the user's own adds a few.
-STATUS_LINES_MAX=5
 
 # squash <line>
 #
@@ -539,14 +552,16 @@ status_matches() {
 # status_row_for <ready_table> <squashed-line>
 #
 # Echoes the id of the first table entry the line is the status line of, or
-# nothing. One entry per line, "id<TAB>pattern<TAB>basis".
+# nothing. One entry per line, "id<TAB>pattern<TAB>basis<TAB>where"; only
+# entries for under the box are status lines.
 status_row_for() {
   local table="$1" status="$2"
-  local line id pattern basis
+  local line id pattern basis where
 
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == '#'* ]] && continue
-    IFS=$'\t' read -r id pattern basis <<< "$line"
+    IFS=$'\t' read -r id pattern basis where <<< "$line"
+    [[ "${where:-under}" == "under" ]] || continue
     if status_matches "$pattern" "$status"; then
       printf '%s\n' "$id"
       return 0
@@ -565,7 +580,7 @@ ready_row_basis() {
 
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == '#'* ]] && continue
-    IFS=$'\t' read -r id pattern basis <<< "$line"
+    IFS=$'\t' read -r id pattern basis _ <<< "$line"
     if [[ "$id" == "$want" ]]; then
       printf '%s\n' "$basis"
       return 0
@@ -575,56 +590,74 @@ ready_row_basis() {
   return 1
 }
 
-# is_dialog_option <blocker_table> <squashed-line>
+# box_holds <ready_table> <input-text> <pasted-text>
 #
-# Returns 0 if the line reads as an option of a dialog: it carries the focus
-# glyph, or it opens with a known dialog's wording, numbered or not. A line
-# that only mentions that wording further along is prose, not an option.
-is_dialog_option() {
-  local table="$1" text="$2"
-  local line id pattern rest
-  local numbered='^[0-9]+[.)] +(.*)$'
-
-  [[ "$text" == "❯"* ]] && return 0
-
-  # "2. Yes, I trust this folder": drop the number an option list puts first.
-  if [[ "$text" =~ $numbered ]]; then
-    text="${BASH_REMATCH[1]}"
-  fi
+# Returns 0 if the input box shows the paste the launcher has just made. The
+# input text is everything between the box's two rules, with all white space
+# removed, so that a line the CLI wrapped reads the same as one it did not.
+#
+# The CLI shows a paste in one of two ways. A long one is folded into a
+# marker, "[Pasted text #1 +10 lines]"; the table lists how that marker
+# begins, as its entries for inside the box. A short one is shown as it is,
+# so the box holds the start of the text itself.
+#
+# This is what the look before an Enter goes by when the line under the box
+# is not a status line. Right after a folded paste the CLI replaces the
+# status line with a hint for several seconds, and the paste sitting in the
+# box is then the evidence that the box is still the box.
+box_holds() {
+  local table="$1" region="$2" pasted="$3"
+  local line id pattern basis where probe=""
 
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == '#'* ]] && continue
-    IFS=$'\t' read -r id pattern rest <<< "$line"
-    [[ -n "$pattern" ]] || continue
-    [[ "$text" == "$pattern"* ]] && return 0
+    IFS=$'\t' read -r id pattern basis where <<< "$line"
+    [[ "${where:-under}" == "inside" && -n "$pattern" ]] || continue
+    [[ "$region" == *"${pattern// /}"* ]] && return 0
   done <<< "$table"
 
-  return 1
+  # The first line of the paste that has anything on it, up to a length a
+  # narrow pane still shows before it wraps or cuts.
+  while IFS= read -r line; do
+    squash "$line"
+    if [[ -n "$SQUASHED" ]]; then
+      probe="${SQUASHED// /}"
+      break
+    fi
+  done <<< "$pasted"
+  probe="${probe:0:24}"
+  [[ -n "$probe" && "$region" == *"$probe"* ]]
 }
 
-# pane_verdict <blocker_table> <ready_table> <pane_text>
+# pane_verdict <blocker_table> <ready_table> <pane_text> [pasted_text]
 #
 # Decides, from one look at the pane, whether anything may be sent to it.
 # Echoes one of:
 #
-#   ready<TAB>row     the input box is at the foot of the pane, with a known
-#                     status line under it
+#   ready<TAB>row     the input box is there, no known dialog is, and a mode
+#                     line is under the box
+#   ready<TAB>holding-paste
+#                     only when the pasted text is given, which is the look
+#                     before an Enter: no mode line, and the box shows that
+#                     paste
 #   blocked<TAB>id<TAB>what<TAB>remedy
-#                     no input box there, and a known startup dialog showing
-#   waiting           neither: empty, still starting, or not recognised
+#                     a known startup dialog is showing
+#   waiting           no box: empty, still starting, or not recognised
+#   waiting<TAB>no-mode-line
+#                     the box, and nothing under it that is a mode line
+#   waiting<TAB>clipped
+#                     the box, with its closing rule on the last row of the
+#                     pane: there is no room under it for a mode line
 #
 # Only `ready` permits input, and it is a positive finding. The absence of a
 # known dialog is not enough: a pane that is still starting, or showing a
 # dialog the table has no row for, looks exactly like "nothing in the way".
 #
-# What is above the box is earlier output, so dialog wording there counts for
-# nothing, whichever way the verdict goes. Under the box nothing may read as a
-# dialog option: a dialog drawn below a box that was never cleared is the
-# dialog's screen, not the box's. With no box at the foot, dialog wording
-# anywhere on the pane names the dialog.
+# The pane text is every row of the pane, blank ones at the foot included;
+# that is how the last row is known.
 pane_verdict() {
-  local blockers="$1" ready="$2" pane="$3"
-  local line n=0 i
+  local blockers="$1" ready="$2" pane="$3" pasted="${4:-}"
+  local line n=0 rows i
   local -a lines
 
   while IFS= read -r line; do
@@ -632,23 +665,21 @@ pane_verdict() {
     lines[n]="$SQUASHED"
     n=$(( n + 1 ))
   done <<< "$pane"
+  rows=$n
   while (( n > 0 )) && [[ -z "${lines[n-1]}" ]]; do
     n=$(( n - 1 ))
   done
 
-  # The rule that closes the box: the last line, or under at most a few
-  # status lines.
-  local bottom=-1
-  for (( i = n - 1; i >= 0 && i >= n - 1 - STATUS_LINES_MAX; i-- )); do
+  # Rule 1. The last rule on the pane closes the box. A dialog the CLI draws
+  # opens with a rule of its own, so a box left on screen above a dialog is
+  # not the last rule's box and is not found.
+  local bottom=-1 top=-1
+  for (( i = n - 1; i >= 0; i-- )); do
     if is_rule "${lines[i]}"; then
       bottom=$i
       break
     fi
   done
-
-  # The rule that opens it: the nearest one above, with the prompt glyph on
-  # the line right under it. Anything else between two rules is not the box.
-  local top=-1
   for (( i = bottom - 1; i >= 0; i-- )); do
     if is_rule "${lines[i]}"; then
       if (( i + 1 < bottom )) && [[ "${lines[i+1]}" == "❯"* ]]; then
@@ -658,28 +689,47 @@ pane_verdict() {
     fi
   done
 
-  local live="$pane"
+  # Rule 2.
+  local live="$pane" blocker
   if (( top >= 0 )); then
-    local row="" option=0
     live=""
-    for (( i = bottom + 1; i < n; i++ )); do
+    for (( i = top; i < n; i++ )); do
       live+="${lines[i]}"$'\n'
-      if is_dialog_option "$blockers" "${lines[i]}"; then
-        option=1
-      fi
-      [[ -n "$row" ]] || row="$(status_row_for "$ready" "${lines[i]}" || true)"
     done
-    if [[ -n "$row" ]] && (( ! option )); then
+  fi
+  if blocker="$(blocker_for "$blockers" "$live" "$pasted")"; then
+    printf 'blocked\t%s\n' "$blocker"
+    return 0
+  fi
+  if (( top < 0 )); then
+    echo "waiting"
+    return 0
+  fi
+
+  # Rule 3.
+  local row=""
+  for (( i = bottom + 1; i < n; i++ )); do
+    if row="$(status_row_for "$ready" "${lines[i]}")"; then
       printf 'ready\t%s\n' "$row"
+      return 0
+    fi
+  done
+
+  if [[ -n "$pasted" ]]; then
+    local region=""
+    for (( i = top + 1; i < bottom; i++ )); do
+      region+="${lines[i]}"
+    done
+    if box_holds "$ready" "${region// /}" "$pasted"; then
+      printf 'ready\tholding-paste\n'
       return 0
     fi
   fi
 
-  local blocker
-  if blocker="$(blocker_for "$blockers" "$live")"; then
-    printf 'blocked\t%s\n' "$blocker"
+  if (( bottom == rows - 1 )); then
+    printf 'waiting\tclipped\n'
   else
-    echo "waiting"
+    printf 'waiting\tno-mode-line\n'
   fi
 }
 

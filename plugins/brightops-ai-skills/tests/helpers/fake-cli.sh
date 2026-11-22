@@ -84,6 +84,29 @@ if [[ -t 0 ]]; then
   stty -echo 2>/dev/null || true
 fi
 
+rule="────────────────────────"
+status_line=""
+
+# draw_ready
+#
+# The input box, empty, with the mode line under it.
+draw_ready() {
+  printf '\033[2J\033[H'
+  printf '%s\n' "$rule" "❯ " "$rule" "$status_line"
+}
+
+# draw_pasted
+#
+# What the real interface shows once a paste of several lines is in the box
+# and until it is submitted: the paste folded into a marker, and a hint drawn
+# where the mode line was. The launcher's look before its Enter has to know
+# the box in this state; a fixture that kept the mode line would let a
+# launcher that cannot do that pass.
+draw_pasted() {
+  printf '\033[2J\033[H'
+  printf '%s\n' "$rule" "❯ [Pasted text #1 +10 lines] " "$rule" "  paste again to expand"
+}
+
 if [[ -n "${FAKE_PANE_TEXT:-}" ]]; then
   printf '%s\n' "$FAKE_PANE_TEXT"
 elif [[ "${FAKE_NO_PROMPT:-0}" != "1" ]]; then
@@ -91,7 +114,7 @@ elif [[ "${FAKE_NO_PROMPT:-0}" != "1" ]]; then
   if [[ "${FAKE_POSTURE:-acceptEdits}" == "bypass" ]]; then
     status_line="  ⏵⏵ bypass permissions on (shift+tab to cycle)"
   fi
-  printf '%s\n' "────────────────────────" "❯ " "────────────────────────" "$status_line"
+  draw_ready
 fi
 
 report_cwd="${FAKE_REPORT_CWD:-$PWD}"
@@ -100,6 +123,16 @@ posture="${FAKE_POSTURE:-acceptEdits}"
 while IFS= read -r line; do
   if [[ -n "$record" ]]; then
     printf '%s\n' "$line" >> "$record"
+  fi
+
+  # A paste of several lines reaches here a line at a time: its first line as
+  # soon as it is pasted, its last only with the Enter that submits it. So the
+  # start marker without the end marker means "pasted, not yet submitted".
+  if [[ -n "$status_line" ]]; then
+    case "$line" in
+      *$'\033[201~'*) draw_ready ;;
+      *$'\033[200~'*) draw_pasted ;;
+    esac
   fi
 
   [[ "${FAKE_SILENT:-0}" == "1" ]] && continue

@@ -1,0 +1,32 @@
+
+ ▐▛███▛█   Claude Code v2.1.330
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /…/work
+
+
+❯ line 1 of a long paste                                                        
+  line 2 of a long paste                                                        
+  line 3 of a long paste                                                        
+  line 4 of a long paste                                                        
+  line 5 of a long paste                                                        
+  line 6 of a long paste                                                        
+  line 7 of a long paste                                                        
+  line 8 of a long paste                                                        
+  line 9 of a long paste                                                        
+  line 10 of a long paste                                                       
+  last line                                                                     
+  ⎿  Not logged in · Please run /login
+
+❯ a short brief on one line                                                     
+  ⎿  Not logged in · Please run /login
+
+
+
+
+                                                    Not logged in · run /login
+────────────────────────────────────────────────────────────────────────────────
+❯ three line brief                                                            
+  second line                                                                   
+  third line                     
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)                   
