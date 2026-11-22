@@ -65,7 +65,12 @@ invocations:
 Step 1 with `--trust-folder` launches an `acceptEdits` session that keeps its
 name, so give the `--bypass` launch a different one.
 
-The exact warning lines and when each is printed: `references/protocol.md`.
+`--bypass` is also refused when workspace trust cannot be checked, which
+happens when `python3` is missing. Launch without `--bypass`, or have
+`python3` installed.
+
+The exact warning lines, when each is printed, and what the refusal does and
+does not guarantee: `references/protocol.md`.
 
 ## How it works, and why it is worth knowing
 
@@ -115,8 +120,9 @@ At 30 seconds the launcher reports what it can see rather than waiting in
 silence, and at the ceiling it distinguishes two different situations:
 
 - **Blocked (exit 4).** A known startup dialog is holding the session. The
-  report names it and the configuration entry that settles it. Resolve that,
-  then re-run with `--resume` to deliver the brief into the same session.
+  report names it and what settles it. Resolve that, then re-run with
+  `--resume` to deliver the brief into the same session. Re-running without
+  `--resume` is refused: the name is taken.
 - **Unconfirmed (exit 5).** No answer, nothing recognisable in the way. The
   session is left running and untouched — it may simply be slow. Look at it
   before doing anything: `tmux attach -t "=<name>"`.
@@ -134,5 +140,5 @@ away.
 
 ## Requirements
 
-`tmux`, and the Claude Code CLI on the path. `--trust-folder` additionally
-needs `python3`; nothing else does.
+`tmux`, and the Claude Code CLI on the path. `--trust-folder` and `--bypass`
+additionally need `python3`; nothing else does.

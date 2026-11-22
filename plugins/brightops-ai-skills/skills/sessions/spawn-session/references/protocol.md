@@ -91,41 +91,88 @@ invocation is the one it was about.
 
 | Printed | Line |
 |---|---|
-| On every launch with `--bypass`, immediately before the session is created | `WARNING: --bypass turns ALL permission prompts off for '<name>' in <dir>; this LAUNCHES a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.` |
-| When `--trust-folder` is about to record trust and `<dir>` is inside a repository without being its root | `WARNING: <dir> is inside the repository <root>; this RECORDS trust for the whole repository, not only that directory.` |
+| On every launch with `--bypass`, once, immediately before the session is created | `WARNING: --bypass turns ALL permission prompts off for '<name>' in <dir>; this LAUNCHES a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.` |
+| When `--trust-folder` is about to record trust and `<dir>` is inside a repository without being its root, before the write | `WARNING: <dir> is inside the repository <root>; this RECORDS trust for the whole repository, not only that directory.` |
+
+A warning announces something that is about to happen, so it is printed only
+when the run gets that far:
+
+- A run that is refused prints neither.
+- `--resume` creates nothing, so it prints no bypass warning. There `--bypass`
+  only names the posture the existing session is expected to report.
+- If tmux then fails to create the session, a second line says that nothing
+  was launched, and the exit status is tmux's own.
 
 `--dry-run` prints the same lines with `without --dry-run this` in front of the
-verb, because nothing is launched or recorded.
+verb, and only when the real run would reach that point. Where the real run
+would refuse, or would resume, it says that on stderr instead.
 
-A run that is refused prints neither: a warning announces something that is
-about to happen. `--resume` launches nothing either, so it prints no bypass
-warning; there `--bypass` only names the posture the existing session is
-expected to report.
+**One message is one line.** A session name, a directory and a repository root
+come from outside, and a file name may hold a newline or a terminal escape
+sequence. Every warning and every refusal renders control characters as text —
+`\n`, `\t`, `\r`, `\x1b`, `\u009b` — and doubles a backslash, so a name cannot
+put a second, forged line on stderr or repaint the real one.
 
-Warnings never go to stdout. `--porcelain` output is the same keys and values
-with or without them, so a caller that parses stdout keeps working and reads
-stderr for the warning.
+**Nothing here changes stdout.** Warnings, and every correction a dry run
+makes, go to stderr. stdout — `--porcelain` pairs, the prose report and the
+dry-run plan — is byte for byte what it was before the warnings existed, so a
+caller that parses it keeps working. One consequence: the dry-run plan still
+says `would spawn` under `--resume`, and still ends an untrusted preview with
+`would refuse without --trust-folder` under `--bypass`. In both cases stderr
+carries the accurate statement.
 
-### `--bypass` with `--trust-folder`
+## Refusals around `--bypass`
 
-The two flags are refused together, as a usage error (exit 2), before anything
-is read, written or launched. One invocation taking both would let a single
-command authorise a directory and start an unsupervised session in it. Split
-in two, each is a decision someone took on its own. The refusal message names
-the two invocations that replace the one.
+A bypass launch is refused (exit 2), before anything is created, in three
+cases.
 
-The refusal does not depend on whether the workspace is already trusted, so
-the same command line never works on one machine and fails on another. A
-`--bypass` launch in a workspace that is not trusted yet gets the same two
-steps, because the usual advice there — add `--trust-folder` — is the refused
+**Together with `--trust-folder`.** Refused as a usage error, before the brief
+is read, the trust configuration is opened, or tmux is asked anything. The
+refusal names the two invocations that replace the one: record trust first
+(run once with `--trust-folder` and without `--bypass`, or start the CLI in the
+directory by hand and accept the prompt), then run again with `--bypass` and
+without `--trust-folder`. It does not depend on whether the workspace is
+already trusted, so the same command line never works on one machine and fails
+on another.
+
+**In a workspace that is not trusted yet.** The same two steps are named,
+because the usual advice there — add `--trust-folder` — is the refused
 combination.
+
+**When trust cannot be checked.** The check needs `python3`. Without it the
+launcher cannot tell a trusted workspace from an untrusted one, and a bypass
+launch fails closed: the refusal names `python3`. Every other posture launches
+as before, stops at the trust prompt if there is one, and is diagnosed there.
+
+`--help` is the exception to all of it: it is acted on where it is read, prints
+the usage text and exits 0 whatever else is on the line, including the refused
+combination. Nothing is launched.
+
+### What the refusal does and does not guarantee
+
+The refusal governs the parsed flags of **one invocation**: no single command
+line both records trust for a workspace and starts an unsupervised session in
+it. That is all it guarantees.
+
+- The two supported invocations can be chained on one line
+  (`… --trust-folder && … --bypass`) with no person in between. Nothing here
+  detects or prevents that.
+- `--pre-launch` runs an arbitrary shell command in the pane before the CLI
+  starts. It is as powerful as the caller's shell and is not constrained by
+  this refusal.
+- Trust recorded by any other means — by hand, by an earlier run, by editing
+  the CLI's configuration — satisfies the check.
+
+The point of the separation is that each step is visible and separately
+refusable — by a permission prompt, a reviewer, or a person reading the
+command — not that the two cannot be automated together.
 
 ## Exit codes
 
 | Code | Name | Meaning |
 |---|---|---|
 | 0 | confirmed | Identity confirmed, bridge live, brief delivered if given |
-| 2 | refused | Usage error, unusable name, name already taken, `--bypass` with `--trust-folder`, untrusted workspace, identity mismatch |
+| 2 | refused | Usage error, unusable name, name already taken, `--bypass` with `--trust-folder`, untrusted workspace, `--bypass` when trust cannot be checked, identity mismatch |
 | 3 | unreachable | Confirmed and briefed, but no remote-control bridge |
 | 4 | never usable | No process appeared, or a startup dialog is holding it |
 | 5 | unconfirmed | Running, no answer within the ceiling, nothing recognisable |

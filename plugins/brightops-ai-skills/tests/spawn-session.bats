@@ -173,11 +173,17 @@ live_setup() {
 # The key is derived the way the launcher derives it, so the entry written is
 # the entry it looks up.
 pretrust() {
-  local dir key
-  dir="$(cd "$1" && pwd)"
-  key="$(trust_key "$dir" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)")"
-  python3 "$SKILL_DIR/scripts/lib/trust-config.py" grant "$CONFIG_FILE" "$key"
+  python3 "$SKILL_DIR/scripts/lib/trust-config.py" grant "$CONFIG_FILE" "$(fixture_key "$1")"
   TRUST_FLAG=""
+}
+
+# fixture_key <dir>
+#
+# Echoes the key the launcher records trust under for this directory.
+fixture_key() {
+  local dir
+  dir="$(cd "$1" && pwd)"
+  trust_key "$dir" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
 }
 
 spawn() {
@@ -788,6 +794,65 @@ lacks() {
   [[ "$1" != *"$2"* ]] || { echo "expected not to find: $2"; echo "in: $1"; return 1; }
 }
 
+# clean <file>
+#
+# Fails if the file holds any control byte other than the newline ending each
+# line, or the two-byte form of a control character from U+0080 to U+009F.
+clean() {
+  local hits
+  hits="$(LC_ALL=C grep -c '[[:cntrl:]]' "$1" || true)"
+  [ "$hits" = "0" ] || { echo "control bytes in $1:"; LC_ALL=C od -c "$1"; return 1; }
+  hits="$(LC_ALL=C grep -c "$(printf '\302[\200-\237]')" "$1" || true)"
+  [ "$hits" = "0" ] || { echo "second-block control characters in $1:"; LC_ALL=C od -c "$1"; return 1; }
+}
+
+# count <pattern> <file>
+#
+# Echoes how many lines of the file match. Never fails, so a count of zero is
+# an answer rather than an error.
+count() {
+  grep -c -- "$1" "$2" || true
+}
+
+@test "visible renders every control character as text, on one line" {
+  run visible "a"$'\n'"b"$'\t'"c"$'\r'"d"$'\033'"[31me"$'\177'"f"$'\001'"g"
+  [ "${#lines[@]}" -eq 1 ]
+  [ "$output" = 'a\nb\tc\rd\x1b[31me\x7ff\x01g' ]
+
+  # A backslash is doubled, so a rendered newline and the two characters
+  # backslash-n cannot be told to mean the same thing.
+  run visible 'a\nb'
+  [ "$output" = 'a\\nb' ]
+
+  # The second control block arrives as two bytes in UTF-8; some terminals
+  # act on it exactly as they act on an escape.
+  run visible "x"$'\302\233'"31my"
+  [ "$output" = 'x\u009b31my' ]
+
+  # Ordinary text, including multi-byte characters, passes through untouched.
+  run visible "/some/where with spaces/é—ü & * ? [x]"
+  [ "$output" = "/some/where with spaces/é—ü & * ? [x]" ]
+
+  visible "a"$'\n'"WARNING: forged"$'\033'"[2K"$'\302\233'"1A" > "$BATS_TEST_TMPDIR/v"
+  [ "$(count '' "$BATS_TEST_TMPDIR/v")" = "1" ]
+  clean "$BATS_TEST_TMPDIR/v"
+}
+
+@test "a warning stays one line whatever its fields contain" {
+  local evil="/tmp/x"$'\n'"WARNING: fixture line; this LAUNCHES nothing"$'\033'"[1A"
+
+  bypass_warning "de"$'\033'"mo" "$evil" > "$BATS_TEST_TMPDIR/w"
+  [ "$(count '' "$BATS_TEST_TMPDIR/w")" = "1" ]
+  [ "$(count '^WARNING' "$BATS_TEST_TMPDIR/w")" = "1" ]
+  clean "$BATS_TEST_TMPDIR/w"
+  has "$(cat "$BATS_TEST_TMPDIR/w")" 'in /tmp/x\nWARNING: fixture line; this LAUNCHES nothing\x1b[1A; this LAUNCHES a session'
+
+  trust_scope_warning "$evil" "/repo"$'\r'"x" > "$BATS_TEST_TMPDIR/w"
+  [ "$(count '' "$BATS_TEST_TMPDIR/w")" = "1" ]
+  [ "$(count '^WARNING' "$BATS_TEST_TMPDIR/w")" = "1" ]
+  clean "$BATS_TEST_TMPDIR/w"
+}
+
 @test "bypass_warning names the session and directory, then the consequence" {
   run bypass_warning "demo" "/some/where"
   [ "$status" -eq 0 ]
@@ -825,61 +890,132 @@ lacks() {
 # stub_setup
 #
 # A fixture configuration and a stand-in multiplexer that records each call
-# and reports that no session exists. With --no-verify the launcher's only
-# effects are multiplexer calls, so everything up to and including the launch
-# is assertable with no tmux installed and no server — private or otherwise —
-# ever contacted.
+# and, unless told otherwise, reports that no session exists. With --no-verify
+# the launcher's only effects are multiplexer calls, so everything up to and
+# including the launch is assertable with no tmux installed and no server —
+# private or otherwise — ever contacted.
+#
+# The stand-in appends to the same file the launcher's stderr is appended to.
+# That file is the trace: one ordered record of what was said and what was
+# done, which is the only way to assert that a warning came before the act it
+# warns about rather than merely that both happened.
+#
+#   MUX_HAS_SESSION=0   has-session succeeds (a session of that name exists)
+#   MUX_NEW_SESSION=<n> new-session exits with this status
 stub_setup() {
   CONFIG_FILE="$BATS_TEST_TMPDIR/claude.json"
   echo '{"projects":{}}' > "$CONFIG_FILE"
   TRUST_FLAG=""
   WORK="$BATS_TEST_TMPDIR/work"
   mkdir -p "$WORK"
+  OUT="$BATS_TEST_TMPDIR/stdout"
   ERR="$BATS_TEST_TMPDIR/stderr"
-  MUX_LOG="$BATS_TEST_TMPDIR/mux.log"
+  TRACE="$BATS_TEST_TMPDIR/trace"
+  WANT="$BATS_TEST_TMPDIR/want"
   MUX_DIR="$BATS_TEST_TMPDIR/mux"
+  STUB_PATH="$MUX_DIR:$PATH"
   mkdir -p "$MUX_DIR"
   cat > "$MUX_DIR/tmux" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$MUX_LOG"
-case " $* " in
-  *" has-session "*) exit 1 ;;
+# One call, one line: an argument may contain a newline, and a trace is only
+# an order if every entry stays on a line of its own.
+args="$*"
+nl=$'\n'
+printf 'mux: %s\n' "${args//$nl/<NL>}" >> "$TRACE"
+case " $args " in
+  *" has-session "*) exit "${MUX_HAS_SESSION:-1}" ;;
+  *" new-session "*) exit "${MUX_NEW_SESSION:-0}" ;;
 esac
 exit 0
 STUB
   chmod +x "$MUX_DIR/tmux"
 }
 
+# stub_readers
+#
+# Put recording stand-ins for the two programs the launcher reads through —
+# `cat` for a brief file, `python3` for the trust configuration — ahead of the
+# real ones. Each notes the call in the trace and then runs the real program,
+# so behaviour is unchanged and "was never opened" becomes something a spec
+# can observe instead of infer.
+stub_readers() {
+  local tool real
+  for tool in cat python3; do
+    real="$(command -v "$tool")"
+    cat > "$MUX_DIR/$tool" <<STUB
+#!/usr/bin/env bash
+printf 'read: $tool %s\n' "\$*" >> "\$TRACE"
+exec "$real" "\$@"
+STUB
+    chmod +x "$MUX_DIR/$tool"
+  done
+}
+
 # spawn_stub <args...>
 #
-# Runs the launcher against the stand-in. stdout is left for `run` to capture
-# and stderr goes to $ERR, so a spec can say which stream a line arrived on.
+# Runs the launcher against the stand-in. Afterwards:
+#
+#   $OUT    stdout, exactly as written — compared with cmp, never through a
+#           variable, because a command substitution drops trailing newlines
+#   $ERR    stderr alone
+#   $TRACE  stderr and the stand-ins' calls, in the order they happened
 spawn_stub() {
-  PATH="$MUX_DIR:$PATH" MUX_LOG="$MUX_LOG" \
+  local rc=0
+  : > "$TRACE"
+  PATH="$STUB_PATH" TRACE="$TRACE" \
   SPAWN_CONFIG_FILE="$CONFIG_FILE" \
   SPAWN_SESSIONS_DIR="$BATS_TEST_TMPDIR/sessions" \
   SPAWN_PROJECTS_DIR="$BATS_TEST_TMPDIR/projects" \
-    "$SPAWN" --socket "zzspawn-stub" "$@" 2>"$ERR"
+    "$SPAWN" --socket "zzspawn-stub" "$@" > "$OUT" 2>> "$TRACE" || rc=$?
+  grep -v -e '^mux: ' -e '^read: ' "$TRACE" > "$ERR" || true
+  return "$rc"
 }
 
-@test "a bypass launch warns on stderr, naming the session and directory" {
+# want <printf-format> [args...]
+#
+# Records the stdout a run is expected to produce, for cmp against $OUT.
+want() {
+  # shellcheck disable=SC2059 # the format is the recorded text
+  printf "$@" > "$WANT"
+}
+
+# at <pattern>
+#
+# Echoes the line number of the first trace entry matching the pattern.
+at() {
+  grep -n -- "$1" "$TRACE" | head -1 | cut -d: -f1
+}
+
+# The launch line for a session called NAME, less the name. Written out rather
+# than produced by spawn_launch_command: an expectation computed by the code
+# under test agrees with it by construction.
+LAUNCH_PREFIX='unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_EFFORT; claude'
+
+@test "a bypass launch warns once on stderr, before the session is created" {
   stub_setup
   pretrust "$WORK"
 
   run spawn_stub "zz-spawn-warn" --dir "$WORK" --bypass --no-verify
   [ "$status" -eq 0 ]
 
-  local err
-  err="$(cat "$ERR")"
-  has "$err" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-warn' in $WORK; this LAUNCHES "
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-warn' in $WORK; this LAUNCHES "
 
-  # On stderr only: the report on stdout carries no trace of it.
-  lacks "$output" "WARNING"
-  has "$output" "(bypass)"
+  # Said first, done second. A warning printed after the session exists is a
+  # report, and reaches a caller too late to change anything.
+  local warned created typed
+  warned="$(at '^WARNING: --bypass ')"
+  created="$(at '^mux: .*new-session -d -s zz-spawn-warn')"
+  typed="$(at '^mux: .*send-keys .*--dangerously-skip-permissions')"
+  [ -n "$warned" ]
+  [ -n "$created" ]
+  [ -n "$typed" ]
+  [ "$warned" -lt "$created" ]
+  [ "$created" -lt "$typed" ]
 
-  # And the launch did happen, with the flag the warning is about.
-  grep -q -- 'new-session -d -s zz-spawn-warn' "$MUX_LOG"
-  grep -q -- '--dangerously-skip-permissions' "$MUX_LOG"
+  # On stderr only: the report on stdout is what it always was.
+  want "session 'zz-spawn-warn' in %s (bypass)\n  launched (not verified)\n" "$WORK"
+  cmp "$WANT" "$OUT"
 }
 
 @test "a launch without --bypass prints no warning" {
@@ -889,7 +1025,7 @@ spawn_stub() {
   run spawn_stub "zz-spawn-plain" --dir "$WORK" --no-verify
   [ "$status" -eq 0 ]
   [ ! -s "$ERR" ]
-  grep -q -- '--permission-mode acceptEdits' "$MUX_LOG"
+  [ "$(count '^mux: .*send-keys .*--permission-mode acceptEdits' "$TRACE")" = "1" ]
 }
 
 @test "a dry run with --bypass prints the warning and launches nothing" {
@@ -899,31 +1035,77 @@ spawn_stub() {
   run spawn_stub "zz-spawn-drywarn" --dir "$WORK" --bypass --dry-run
   [ "$status" -eq 0 ]
 
-  local err
-  err="$(cat "$ERR")"
-  has "$err" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-drywarn' in $WORK; without --dry-run this LAUNCHES "
-
-  # The plan is still on stdout, and still free of the warning.
-  has "$output" "would spawn 'zz-spawn-drywarn'"
-  has "$output" "--dangerously-skip-permissions"
-  lacks "$output" "WARNING"
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-drywarn' in $WORK; without --dry-run this LAUNCHES "
 
   # Nothing was asked of the multiplexer at all.
-  [ ! -e "$MUX_LOG" ]
+  [ "$(count '^mux: ' "$TRACE")" = "0" ]
+}
+
+@test "stdout is byte for byte what it was before the warnings existed" {
+  stub_setup
+  local key
+  key="$(fixture_key "$WORK")"
+
+  # An untrusted preview. The line about --trust-folder is the old one, kept
+  # to the byte; what actually works under --bypass is said on stderr, and the
+  # launch warning is held back because the real run would refuse.
+  run spawn_stub "zz-spawn-tsv" --dir "$WORK" --bypass --dry-run --porcelain
+  [ "$status" -eq 0 ]
+  want "would spawn 'zz-spawn-tsv' in %s\n  %s --dangerously-skip-permissions --remote-control zz-spawn-tsv\n  workspace NOT trusted (%s) — would refuse without --trust-folder\n" \
+    "$WORK" "$LAUNCH_PREFIX" "$key"
+  cmp "$WANT" "$OUT"
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "the real run would refuse: --trust-folder cannot be combined with --bypass. First record trust"
+  lacks "$(cat "$ERR")" "this LAUNCHES"
+
+  # A trusted preview.
+  pretrust "$WORK"
+  run spawn_stub "zz-spawn-tsv" --dir "$WORK" --bypass --dry-run --porcelain
+  [ "$status" -eq 0 ]
+  want "would spawn 'zz-spawn-tsv' in %s\n  %s --dangerously-skip-permissions --remote-control zz-spawn-tsv\n  workspace already trusted (%s)\n" \
+    "$WORK" "$LAUNCH_PREFIX" "$key"
+  cmp "$WANT" "$OUT"
+  [ "$(count '^WARNING' "$ERR")" = "1" ]
+
+  # An ordinary launch, as a caller parses it: key, tab, value.
+  run spawn_stub "zz-spawn-tsv" --dir "$WORK" --bypass --no-verify --porcelain
+  [ "$status" -eq 0 ]
+  want 'name\tzz-spawn-tsv\ndirectory\t%s\nposture\tbypass\nverdict\tlaunched\npid\t\nbrief\tnone\n' "$WORK"
+  cmp "$WANT" "$OUT"
+  [ "$(count '^WARNING' "$ERR")" = "1" ]
+
+  # And the same launch without --bypass, which says nothing on stderr.
+  run spawn_stub "zz-spawn-tsv" --dir "$WORK" --no-verify --porcelain
+  [ "$status" -eq 0 ]
+  want 'name\tzz-spawn-tsv\ndirectory\t%s\nposture\tacceptEdits\nverdict\tlaunched\npid\t\nbrief\tnone\n' "$WORK"
+  cmp "$WANT" "$OUT"
+  [ ! -s "$ERR" ]
 }
 
 @test "--bypass with --trust-folder is refused as usage, naming the two steps" {
   stub_setup
-  local before
-  before="$(cat "$CONFIG_FILE")"
+  stub_readers
+  cp "$CONFIG_FILE" "$BATS_TEST_TMPDIR/config.before"
+  local brief="$BATS_TEST_TMPDIR/brief.txt"
+  echo "BRIEF-TEXT" > "$brief"
+
+  # The stand-ins do record when the launcher gets as far as reading: this
+  # run, without the refused combination, opens the brief and the config.
+  run spawn_stub "zz-spawn-both" --dir "$WORK" --bypass --dry-run --prompt-file "$brief"
+  [ "$status" -eq 0 ]
+  [ "$(count '^read: cat ' "$TRACE")" = "1" ]
+  [ "$(count '^read: python3 ' "$TRACE")" = "1" ]
 
   local args
-  for args in "--bypass --trust-folder" "--trust-folder --bypass" "-b --trust-folder --dry-run"; do
+  for args in "--bypass --trust-folder" "--trust-folder --bypass" "-b --trust-folder --dry-run" \
+              "--resume --bypass --trust-folder" "--trust-folder -b --resume --no-verify"; do
     # shellcheck disable=SC2086 # word splitting is the point: one flag per word
-    run spawn_stub "zz-spawn-both" --dir "$WORK" --no-verify $args
+    run spawn_stub "zz-spawn-both" --dir "$WORK" --prompt-file "$brief" $args
     [ "$status" -eq 2 ] || { echo "'$args' exited $status"; return 1; }
-    [ -z "$output" ]
+    [ ! -s "$OUT" ]
 
+    [ "$(count '' "$ERR")" = "1" ]
     local err
     err="$(cat "$ERR")"
     has "$err" "--bypass and --trust-folder cannot be combined"
@@ -932,11 +1114,33 @@ spawn_stub() {
     has "$err" "Then run again with --bypass and without --trust-folder."
     # A refusal launches nothing, so it must not announce a launch.
     lacks "$err" "this LAUNCHES"
+
+    # Refused before anything was looked at: the brief was not read, the
+    # trust configuration was not opened, the multiplexer was not asked
+    # whether the session exists.
+    [ "$(count '^read: ' "$TRACE")" = "0" ] || { cat "$TRACE"; return 1; }
+    [ "$(count '^mux: ' "$TRACE")" = "0" ] || { cat "$TRACE"; return 1; }
   done
 
-  # Refused before anything was done: no trust recorded, no multiplexer call.
-  [ "$(cat "$CONFIG_FILE")" = "$before" ]
-  [ ! -e "$MUX_LOG" ]
+  cmp "$BATS_TEST_TMPDIR/config.before" "$CONFIG_FILE"
+  [ ! -e "$CONFIG_FILE.lock" ]
+}
+
+@test "--help wins over the refused combination and exits 0" {
+  stub_setup
+
+  # Asking how to use the command is never an attempt to use it. --help is
+  # acted on where it is read, so it answers whatever else is on the line.
+  run spawn_stub "zz-spawn-help" --bypass --trust-folder --help
+  [ "$status" -eq 0 ]
+  has "$(cat "$OUT")" "usage: spawn-session.sh <name> [options]"
+  # Every exit code a caller can receive is in the summary.
+  local code
+  for code in "0 reachable" "2 usage or refusal" "3 alive but unreachable" "4 never started" "5 running but unconfirmed"; do
+    has "$(cat "$OUT")" "$code"
+  done
+  [ ! -s "$ERR" ]
+  [ "$(count '^mux: ' "$TRACE")" = "0" ]
 }
 
 @test "an untrusted workspace under --bypass is refused with the two steps" {
@@ -944,7 +1148,9 @@ spawn_stub() {
 
   run spawn_stub "zz-spawn-untrusted" --dir "$WORK" --bypass --no-verify
   [ "$status" -eq 2 ]
+  [ ! -s "$OUT" ]
 
+  [ "$(count '' "$ERR")" = "1" ]
   local err
   err="$(cat "$ERR")"
   has "$err" "not a trusted workspace"
@@ -953,28 +1159,171 @@ spawn_stub() {
   has "$err" "First record trust: run once with --trust-folder and without --bypass"
   has "$err" "Then run again with --bypass and without --trust-folder."
   lacks "$err" "this LAUNCHES"
-  run grep -c -- 'new-session' "$MUX_LOG"
-  [ "$output" = "0" ]
-
-  # The dry run reports the same decision without making it.
-  run spawn_stub "zz-spawn-untrusted" --dir "$WORK" --bypass --dry-run
-  [ "$status" -eq 0 ]
-  has "$output" "would refuse; record trust first, without --bypass"
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
 }
 
-@test "porcelain stdout is unchanged by a bypass launch; the warning is on stderr" {
+# without_python
+#
+# Narrow PATH to the stand-in multiplexer and the few programs the launcher
+# needs before it launches, leaving python3 out. What is under test is the
+# launcher's behaviour when the trust check cannot run, and the only honest
+# way to produce that is for the interpreter not to be found.
+without_python() {
+  local bin="$BATS_TEST_TMPDIR/nopython" tool
+  mkdir -p "$bin"
+  for tool in bash dirname readlink; do
+    ln -s "$(command -v "$tool")" "$bin/$tool"
+  done
+  STUB_PATH="$MUX_DIR:$bin"
+}
+
+@test "a bypass launch is refused when workspace trust cannot be checked" {
+  stub_setup
+  without_python
+
+  # Fail closed: unchecked is not trusted, and this is the launch that must
+  # not go ahead on the strength of nobody having looked.
+  run spawn_stub "zz-spawn-nopy" --dir "$WORK" --bypass --no-verify
+  [ "$status" -eq 2 ] || { cat "$TRACE"; return 1; }
+  [ ! -s "$OUT" ]
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "workspace trust for $WORK cannot be checked: the check needs python3, which was not found."
+  has "$(cat "$ERR")" "launch without --bypass"
+  lacks "$(cat "$ERR")" "this LAUNCHES"
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
+
+  # The preview says the same, and announces no launch.
+  run spawn_stub "zz-spawn-nopy" --dir "$WORK" --bypass --dry-run
+  [ "$status" -eq 0 ]
+  want "would spawn 'zz-spawn-nopy' in %s\n  %s --dangerously-skip-permissions --remote-control zz-spawn-nopy\n" "$WORK" "$LAUNCH_PREFIX"
+  cmp "$WANT" "$OUT"
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "the real run would refuse: workspace trust cannot be checked without python3"
+  lacks "$(cat "$ERR")" "this LAUNCHES"
+
+  # Any other posture launches as it always has: it stops at the trust
+  # prompt if there is one, and is diagnosed there.
+  run spawn_stub "zz-spawn-nopy" --dir "$WORK" --no-verify
+  [ "$status" -eq 0 ] || { cat "$TRACE"; return 1; }
+  [ ! -s "$ERR" ]
+  [ "$(count '^mux: .*new-session -d -s zz-spawn-nopy' "$TRACE")" = "1" ]
+}
+
+@test "a launch the multiplexer refuses says nothing was launched" {
   stub_setup
   pretrust "$WORK"
 
-  run spawn_stub "zz-spawn-tsv2" --dir "$WORK" --bypass --no-verify --porcelain
+  MUX_NEW_SESSION=1 run spawn_stub "zz-spawn-fail" --dir "$WORK" --bypass --no-verify
+  # The multiplexer's own status, as before.
+  [ "$status" -eq 1 ]
+  [ ! -s "$OUT" ]
+
+  # The warning is true when it is printed; when the launch then fails, the
+  # last line on stderr takes it back rather than leaving it standing.
+  local warned tried retracted
+  warned="$(at '^WARNING: --bypass ')"
+  tried="$(at '^mux: .*new-session')"
+  retracted="$(at "could not create session 'zz-spawn-fail'; nothing was launched")"
+  [ -n "$warned" ]
+  [ -n "$tried" ]
+  [ -n "$retracted" ]
+  [ "$warned" -lt "$tried" ]
+  [ "$tried" -lt "$retracted" ]
+  [ "$(count '^mux: .*send-keys' "$TRACE")" = "0" ]
+}
+
+@test "--resume with --bypass announces no launch, in a preview or for real" {
+  stub_setup
+  pretrust "$WORK"
+
+  # The preview keeps its old stdout, which says "would spawn" whatever was
+  # asked; stderr says what the real run does.
+  run spawn_stub "zz-spawn-res" --dir "$WORK" --resume --bypass --dry-run
   [ "$status" -eq 0 ]
+  want "would spawn 'zz-spawn-res' in %s\n  %s --dangerously-skip-permissions --remote-control zz-spawn-res\n  workspace already trusted (%s)\n" \
+    "$WORK" "$LAUNCH_PREFIX" "$(fixture_key "$WORK")"
+  cmp "$WANT" "$OUT"
+  [ "$(count '' "$ERR")" = "1" ]
+  has "$(cat "$ERR")" "with --resume nothing is launched"
+  lacks "$(cat "$ERR")" "WARNING"
 
-  # Byte for byte what a caller parses: key, tab, value, and nothing else.
-  local want
-  want="$(printf 'name\tzz-spawn-tsv2\ndirectory\t%s\nposture\tbypass\nverdict\tlaunched\npid\t\nbrief\tnone' "$WORK")"
-  [ "$output" = "$want" ]
+  # For real, against a session that exists: nothing is created, so nothing
+  # is warned about.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-res" --dir "$WORK" --resume --bypass --no-verify
+  [ "$status" -eq 0 ]
+  [ ! -s "$ERR" ]
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
+  [ "$(count '^mux: .*send-keys' "$TRACE")" = "0" ]
+}
 
-  has "$(cat "$ERR")" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-tsv2'"
+@test "control bytes in a directory or session name never reach stderr raw" {
+  stub_setup
+  # A directory whose name carries a line that looks like a warning of its
+  # own, and one carrying an escape sequence that erases the line it is on.
+  local forged="$BATS_TEST_TMPDIR/evil"$'\n'"WARNING: fixture line; this LAUNCHES nothing"
+  local erasing="$BATS_TEST_TMPDIR/esc"$'\033'"[2K"$'\r'"x"
+  mkdir -p "$forged" "$erasing"
+
+  local dir
+  for dir in "$forged" "$erasing"; do
+    # Refused, untrusted: the directory is quoted in the refusal.
+    run spawn_stub "zz-spawn-ctl" --dir "$dir" --bypass --no-verify
+    [ "$status" -eq 2 ]
+    [ "$(count '' "$ERR")" = "1" ]
+    [ "$(count '^WARNING' "$ERR")" = "0" ]
+    clean "$ERR"
+
+    # Launched, trusted: the directory is quoted in the warning.
+    pretrust "$dir"
+    run spawn_stub "zz-spawn-ctl" --dir "$dir" --bypass --no-verify
+    [ "$status" -eq 0 ]
+    [ "$(count '' "$ERR")" = "1" ]
+    [ "$(count '^WARNING' "$ERR")" = "1" ]
+    clean "$ERR"
+
+    run spawn_stub "zz-spawn-ctl" --dir "$dir" --bypass --dry-run
+    [ "$status" -eq 0 ]
+    [ "$(count '' "$ERR")" = "1" ]
+    [ "$(count '^WARNING' "$ERR")" = "1" ]
+    clean "$ERR"
+  done
+
+  # The rendering is visible, not a deletion: the reader can see what was there.
+  run spawn_stub "zz-spawn-ctl" --dir "$forged" --bypass --dry-run
+  has "$(cat "$ERR")" 'evil\nWARNING: fixture line; this LAUNCHES nothing; without --dry-run this LAUNCHES a session'
+  run spawn_stub "zz-spawn-ctl" --dir "$erasing" --bypass --dry-run
+  has "$(cat "$ERR")" 'esc\x1b[2K\rx; without --dry-run this LAUNCHES a session'
+
+  # A session name is refused before it is used, and the refusal quotes it.
+  local name
+  for name in "zz"$'\033'"[31mred" "zz"$'\n'"WARNING: fixture line"; do
+    run spawn_stub "$name" --dir "$WORK" --bypass --no-verify
+    [ "$status" -eq 2 ]
+    [ "$(count '' "$ERR")" = "1" ]
+    [ "$(count '^WARNING' "$ERR")" = "0" ]
+    has "$(cat "$ERR")" "is not a usable session name"
+    clean "$ERR"
+  done
+}
+
+@test "the scope warning stays one line for a directory named with control bytes" {
+  stub_setup
+  local repo="$BATS_TEST_TMPDIR/repo"
+  git init -q "$repo"
+  local sub="$repo/sub"$'\n'"WARNING: fixture line"$'\033'"[1A"
+  mkdir -p "$sub"
+
+  run spawn_stub "zz-spawn-scopectl" --dir "$sub" --trust-folder --dry-run
+  [ "$status" -eq 0 ]
+  [ "$(count '' "$ERR")" = "1" ]
+  [ "$(count '^WARNING' "$ERR")" = "1" ]
+  clean "$ERR"
+
+  run spawn_stub "zz-spawn-scopectl" --dir "$sub" --trust-folder --no-verify
+  [ "$status" -eq 0 ]
+  [ "$(count '' "$ERR")" = "1" ]
+  [ "$(count '^WARNING' "$ERR")" = "1" ]
+  clean "$ERR"
 }
 
 @test "--trust-folder inside a repository warns that the whole repository is trusted" {
@@ -986,19 +1335,28 @@ spawn_stub() {
   root="$(cd "$repo" && pwd -P)"
 
   # The dry run says it and writes nothing.
-  local before
-  before="$(cat "$CONFIG_FILE")"
+  cp "$CONFIG_FILE" "$BATS_TEST_TMPDIR/config.before"
   run spawn_stub "zz-spawn-scope" --dir "$repo/sub/dir" --trust-folder --dry-run
   [ "$status" -eq 0 ]
+  [ "$(count '' "$ERR")" = "1" ]
   has "$(cat "$ERR")" "WARNING: $repo/sub/dir is inside the repository $root; without --dry-run this RECORDS trust for the whole repository"
-  lacks "$output" "WARNING"
-  [ "$(cat "$CONFIG_FILE")" = "$before" ]
+  lacks "$(cat "$OUT")" "WARNING"
+  cmp "$BATS_TEST_TMPDIR/config.before" "$CONFIG_FILE"
 
-  # The real run says it, then records exactly the key it named.
+  # The real run says it before it writes, then records exactly the key it
+  # named.
+  stub_readers
   run spawn_stub "zz-spawn-scope" --dir "$repo/sub/dir" --trust-folder --no-verify
   [ "$status" -eq 0 ]
+  [ "$(count '' "$ERR")" = "1" ]
   has "$(cat "$ERR")" "WARNING: $repo/sub/dir is inside the repository $root; this RECORDS trust for the whole repository"
-  lacks "$output" "WARNING"
+  lacks "$(cat "$OUT")" "WARNING"
+  local warned granted
+  warned="$(at '^WARNING: ')"
+  granted="$(at '^read: python3 .* grant ')"
+  [ -n "$warned" ]
+  [ -n "$granted" ]
+  [ "$warned" -lt "$granted" ]
   python3 "$SKILL_DIR/scripts/lib/trust-config.py" check "$CONFIG_FILE" "$root"
 }
 
@@ -1017,4 +1375,15 @@ spawn_stub() {
   run spawn_stub "zz-spawn-root" --dir "$BATS_TEST_TMPDIR/link" --trust-folder --dry-run
   [ "$status" -eq 0 ]
   [ ! -s "$ERR" ]
+}
+
+@test "the trust dialog's remedy is one that works for a session that exists" {
+  # Re-running under the same name is refused as already running, so advice
+  # to "re-run with --trust-folder" sends the reader into a second refusal.
+  run blocker_for "$(blocker_table)" "  Yes, I trust this folder"
+  [ "$status" -eq 0 ]
+  has "$output" "accept the prompt"
+  has "$output" "--resume"
+  # And it must not suggest the combination that is refused.
+  has "$output" "never together with --bypass"
 }

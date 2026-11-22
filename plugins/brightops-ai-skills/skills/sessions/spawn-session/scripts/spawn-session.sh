@@ -77,7 +77,8 @@ usage: spawn-session.sh <name> [options]
   -p, --prompt <text>    starter brief, delivered once the session is confirmed
   -f, --prompt-file <p>  starter brief read from a file ('-' for standard input)
   -b, --bypass           launch with permissions bypassed (default: acceptEdits);
-                         prints a warning on stderr, refused with --trust-folder
+                         prints a warning on stderr; refused with --trust-folder,
+                         and when workspace trust cannot be checked (no python3)
       --pre-launch <cmd> shell command run in the pane before the CLI starts
       --socket <name>    address a named multiplexer server instead of the default
       --resume           pick up a session that already exists instead of creating one
@@ -87,14 +88,21 @@ usage: spawn-session.sh <name> [options]
       --no-verify        report as soon as the session is launched
   -n, --dry-run          report the plan and launch nothing
       --porcelain        emit tab-separated key/value pairs instead of prose
-  -h, --help             this text
+  -h, --help             this text; wins over every other argument, exit 0
 
 exit: 0 reachable · 2 usage or refusal · 3 alive but unreachable · 4 never started
+      5 running but unconfirmed
 USAGE
 }
 
+# die <message> [exit-code]
+#
+# The message is rendered through `visible` as a whole. It usually quotes
+# something the caller supplied — a name, a path, an option — and a refusal
+# that can be split across lines or repainted by its own argument is a refusal
+# that can be made to say something else.
 die() {
-  echo "spawn-session: $1" >&2
+  echo "spawn-session: $(visible "$1")" >&2
   exit "${2:-$EXIT_USAGE}"
 }
 
@@ -304,7 +312,7 @@ grant_trust() {
   until mkdir "$lock" 2>/dev/null; do
     attempt=$(( attempt + 1 ))
     if (( attempt >= tries )); then
-      echo "spawn-session: the configuration lock ($lock) is held by another session; nothing was written. Try again in a moment." >&2
+      echo "spawn-session: the configuration lock ($(visible "$lock")) is held by another session; nothing was written. Try again in a moment." >&2
       return 1
     fi
     sleep 0.3
@@ -452,14 +460,20 @@ main() {
   launch_line="$(spawn_launch_command "$NAME" "$POSTURE" "$PRE_LAUNCH")"
 
   if (( DRY_RUN )); then
-    # A dry run is where a launch is previewed, so the warning the real run
-    # prints belongs here too. On stderr, like every warning, so the plan on
-    # stdout reads the same with or without it.
-    if [[ "$POSTURE" == "bypass" ]]; then
-      bypass_warning "$NAME" "$DIR" dry-run >&2
-    fi
+    # Everything a dry run adds beyond the plan goes to stderr. The plan on
+    # stdout is something callers already parse, and it stays byte for byte
+    # what it was, including where its wording is looser than the facts.
     echo "would spawn '$NAME' in $DIR"
     echo "  $launch_line"
+
+    # Whether the real run would get as far as a bypass launch. The warning
+    # announces a launch, so it is held back until every refusal the real run
+    # would make has been ruled out here too.
+    local dry_bypass=0
+    if [[ "$POSTURE" == "bypass" ]] && (( ! RESUME )); then
+      dry_bypass=1
+    fi
+
     # Report the trust decision without acting on it. A dry run that wrote to
     # the CLI's configuration would not be a dry run.
     if have_trust_tool; then
@@ -476,11 +490,29 @@ main() {
       elif (( TRUST_FOLDER )); then
         echo "  workspace trust CANNOT be recorded for the home directory — the CLI"
         echo "  keeps that decision per-session and never writes it down"
-      elif [[ "$POSTURE" == "bypass" ]]; then
-        echo "  workspace NOT trusted ($dry_key) — would refuse; record trust first, without --bypass"
       else
         echo "  workspace NOT trusted ($dry_key) — would refuse without --trust-folder"
+        # That line predates the refusal of --trust-folder alongside --bypass
+        # and reads as advice to add it. Under --bypass the advice that works
+        # is the two steps, said on stderr so the line above keeps its bytes.
+        if [[ "$POSTURE" == "bypass" ]]; then
+          dry_bypass=0
+          echo "spawn-session: the real run would refuse: --trust-folder cannot be combined with --bypass. $(trust_first_steps)" >&2
+        fi
       fi
+    elif [[ "$POSTURE" == "bypass" ]]; then
+      dry_bypass=0
+      echo "spawn-session: the real run would refuse: workspace trust cannot be checked without python3, and a --bypass launch needs the workspace known to be trusted" >&2
+    fi
+
+    if (( RESUME )); then
+      # The plan above says "would spawn" whatever was asked. With --resume
+      # the real run creates nothing, so there is no launch to warn about;
+      # the correction is made here rather than by rewording stdout.
+      echo "spawn-session: with --resume nothing is launched; the real run picks up the existing session '$NAME', or refuses if there is none" >&2
+    fi
+    if (( dry_bypass )); then
+      bypass_warning "$NAME" "$DIR" dry-run >&2
     fi
     exit "$EXIT_OK"
   fi
@@ -533,6 +565,12 @@ main() {
     fi
   elif (( TRUST_FOLDER )); then
     die "--trust-folder needs python3, which was not found"
+  elif [[ "$POSTURE" == "bypass" ]]; then
+    # Fail closed. Without the check an untrusted workspace is not refused,
+    # only unexamined, and an unattended session is the launch that must not
+    # ride on "nobody looked". Other postures keep the older behaviour: they
+    # stop at the trust prompt and are diagnosed there.
+    die "workspace trust for $DIR cannot be checked: the check needs python3, which was not found. A --bypass launch is refused unless the workspace is known to be trusted. Install python3, or launch without --bypass."
   fi
 
 
@@ -543,7 +581,14 @@ main() {
     if [[ "$POSTURE" == "bypass" ]]; then
       bypass_warning "$NAME" "$DIR" >&2
     fi
-    tm new-session -d -s "$NAME" -c "$DIR"
+    # The warning above says what this is about to do. If the multiplexer
+    # then refuses, say that too: left alone, the last word on stderr would be
+    # a launch that never happened. The exit status stays the multiplexer's.
+    local launch_rc=0
+    tm new-session -d -s "$NAME" -c "$DIR" || launch_rc=$?
+    if (( launch_rc )); then
+      die "the multiplexer could not create session '$NAME'; nothing was launched" "$launch_rc"
+    fi
     tm send-keys -t "=$NAME:" "$launch_line" Enter
   fi
 
