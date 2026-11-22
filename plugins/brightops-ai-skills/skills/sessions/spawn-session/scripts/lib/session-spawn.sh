@@ -231,6 +231,113 @@ trust_key() {
   fi
 }
 
+# ── saying what is about to happen ──────────────────────────────────────────
+#
+# A hazard is named by the command itself, on stderr, at the moment it is run.
+# A caution in a document was read at some earlier point and gives no signal
+# that this invocation is the one it was about; a line in the command's own
+# output arrives exactly when the caller is deciding what to do next. Each
+# message states the run-time fact first and the consequence as one verb in
+# capitals after "this".
+
+# visible <text>
+#
+# Echoes the text with every control character rendered as printable text: a
+# newline as \n, a tab as \t, a carriage return as \r, any other as \xHH (or
+# \u00HH for the second control block, U+0080 to U+009F), and a backslash
+# doubled so the rendering cannot be confused with the real thing.
+#
+# A session name, a directory and a repository root are data from outside, and
+# a file name may contain any byte but a slash and a NUL. Printed raw, a
+# directory named with a newline followed by "WARNING: ..." puts a second,
+# forged warning on a line of its own, and one carrying an escape sequence
+# repaints or hides the line that mattered. One message is one line, so every
+# dynamic field goes through here before it reaches stderr.
+#
+# Done by substitution rather than a walk over bytes, which keeps it
+# independent of the locale: each control character is a complete character in
+# UTF-8, so replacing it cannot split a multi-byte one.
+visible() {
+  local text="$1" code oct ch esc
+  text="${text//\\/\\\\}"
+
+  for code in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 \
+              25 26 27 28 29 30 31 127; do
+    printf -v oct '%03o' "$code"
+    printf -v ch '%b' "\\0$oct"
+    case "$code" in
+      9)  esc='\t' ;;
+      10) esc='\n' ;;
+      13) esc='\r' ;;
+      *)  printf -v esc '\\x%02x' "$code" ;;
+    esac
+    text="${text//"$ch"/$esc}"
+  done
+
+  for code in 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 \
+              144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159; do
+    printf -v oct '%03o' "$code"
+    printf -v ch '%b' "\\0302\\0$oct"
+    printf -v esc '\\u00%02x' "$code"
+    text="${text//"$ch"/$esc}"
+  done
+
+  printf '%s\n' "$text"
+}
+
+# bypass_warning <session_name> <dir> [dry-run]
+#
+# Echoes the warning for a launch with permissions bypassed. In a dry run the
+# consequence is worded as what the real run does, since nothing launches.
+bypass_warning() {
+  local name dir mode="${3:-}"
+  name="$(visible "$1")"
+  dir="$(visible "$2")"
+  local act="this LAUNCHES"
+  [[ "$mode" == "dry-run" ]] && act="without --dry-run this LAUNCHES"
+
+  printf "WARNING: --bypass turns ALL permission prompts off for '%s' in %s; %s a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.\n" \
+    "$name" "$dir" "$act"
+}
+
+# trust_is_wider <physical_dir> <git_root>
+#
+# Returns 0 if recording trust covers more than the directory that was named:
+# the directory is inside a repository and is not that repository's root.
+#
+# Both arguments must be physical paths. The repository root is always reported
+# with symbolic links resolved, so comparing it against a path that still
+# contains one would call a repository root "wider" than itself.
+trust_is_wider() {
+  local dir="$1" git_root="$2"
+  [[ -n "$git_root" && "$git_root" != "$dir" ]]
+}
+
+# trust_scope_warning <dir> <git_root> [dry-run]
+#
+# Echoes the warning for a trust grant that covers a whole repository when a
+# directory inside it was named.
+trust_scope_warning() {
+  local dir git_root mode="${3:-}"
+  dir="$(visible "$1")"
+  git_root="$(visible "$2")"
+  local act="this RECORDS"
+  [[ "$mode" == "dry-run" ]] && act="without --dry-run this RECORDS"
+
+  printf 'WARNING: %s is inside the repository %s; %s trust for the whole repository, not only that directory.\n' \
+    "$dir" "$git_root" "$act"
+}
+
+# trust_first_steps
+#
+# Echoes the two-step alternative to --bypass with --trust-folder. Trusting a
+# workspace and removing supervision are separate decisions, so they are taken
+# in separate invocations; every refusal that turns on that names the same two
+# steps, from here.
+trust_first_steps() {
+  printf '%s\n' "First record trust: run once with --trust-folder and without --bypass, or start the CLI in that directory by hand and accept the prompt. Then run again with --bypass and without --trust-folder."
+}
+
 # ── naming what is holding a session ────────────────────────────────────────
 
 # blocker_for <table_text> <pane_text>

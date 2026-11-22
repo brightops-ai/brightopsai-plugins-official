@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-22
+
+### Changed
+
+- `spawn-session`: `--bypass` together with `--trust-folder` is now refused as
+  a usage error (exit 2). Trusting a workspace and launching a session with no
+  supervision are separate invocations: record trust first (run once with
+  `--trust-folder` and without `--bypass`, or start the CLI in the directory
+  by hand and accept the prompt), then launch with `--bypass` alone. A command
+  line that passed both flags must be split into those two steps. The refusal
+  governs one invocation; it does not stop the two being chained.
+- `spawn-session`: a `--bypass` launch in a workspace that is not trusted yet
+  is refused with the same two steps, instead of advice to add
+  `--trust-folder`.
+- `spawn-session`: a `--bypass` launch is refused (exit 2) when workspace
+  trust cannot be checked because `python3` is missing. It previously
+  launched unchecked. Other postures are unchanged, and so is `--resume`,
+  which launches nothing.
+- `spawn-session`: refusals render control characters in the names and paths
+  they quote as text (`\n`, `\x1b`), so a message is always one line.
+- `spawn-session`: the remedy reported for a session held at the trust dialog
+  now works for that session (a person accepts the prompt, then `--resume`),
+  where it used to send the reader into an "already running" refusal.
+- `spawn-session`: when tmux fails to create the session, a line says that
+  nothing was launched; when the session is created but the command that
+  starts the CLI cannot be sent, a line says the session is empty. The exit
+  status is still tmux's.
+- `spawn-session`: the `--help` exit summary lists code 5.
+
+### Added
+
+- `spawn-session`: every `--bypass` launch prints a `WARNING:` line on stderr
+  naming the session, the directory and the consequence, before the session
+  is created. `--dry-run` prints it too, unless the real run would refuse or
+  would resume.
+- `spawn-session`: `--trust-folder` prints a `WARNING:` line on stderr when
+  the trust it records covers a whole repository rather than only the
+  directory given.
+- Warnings and every dry-run correction go to stderr only. stdout — the
+  `--porcelain` pairs, the prose report and the dry-run plan — is unchanged.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

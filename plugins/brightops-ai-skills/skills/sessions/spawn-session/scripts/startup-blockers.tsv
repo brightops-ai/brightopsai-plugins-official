@@ -26,7 +26,7 @@
 #
 # Verified against CLI 2.1.259.
 
-trust	Yes, I trust this folder	The workspace has not been trusted yet, so the session is asking before it will read or run anything here.	Re-run with --trust-folder, which records trust for this workspace before launching. Or start the CLI in this directory once by hand and accept the prompt.
+trust	Yes, I trust this folder	The workspace has not been trusted yet, so the session is asking before it will read or run anything here.	This session is already at the prompt, and re-running under its name is refused. Have a person attach to it and accept the prompt, then re-run with --resume to deliver the brief. To settle trust ahead of a later launch under a new name, pass --trust-folder (never together with --bypass: the two are refused in one invocation).
 bypass-disclaimer	Yes, I accept	Permissions were bypassed for this session, and the disclaimer covering that has not been accepted on this machine yet.	Run the CLI once interactively with permissions bypassed and accept the disclaimer. It is recorded per machine, not per session, so this is needed once.
 settings-trust	Yes, I trust these settings	The directory carries project settings the session has not been authorised to load.	Start the CLI here once by hand and accept, after reading what the settings do.
 mcp-server-trust	Yes, trust and add server	The directory declares external servers that have not been approved.	Start the CLI here once by hand and approve the servers you intend to use.

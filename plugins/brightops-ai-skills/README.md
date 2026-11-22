@@ -40,7 +40,7 @@ inside Claude Code:
 - `python3` (standard library only) for `dream`, `improve-memory`,
   `session-analysis`, and `send-result`
 - `tmux` and the Claude Code CLI on `PATH` for `spawn-session`. `--trust-folder`
-  on that skill also needs `python3`
+  and `--bypass` on that skill also need `python3`
 - `python3` 3.9+ (standard library only) and `git` for `blast-radius-audit`.
   The `gh` CLI is optional; with it the audit makes read-only GitHub queries
   for token scopes and branch protection. To let agents other than Claude
