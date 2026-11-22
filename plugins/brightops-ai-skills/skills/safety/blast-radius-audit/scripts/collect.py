@@ -140,7 +140,7 @@ SHAPE_LABELS = (
 URL_USERINFO = re.compile(r"(?<=://)[^/\s@'\"]+@")
 SECRET_WORD = (
     r"(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key"
-    r"|private[_-]?key|credential|authorization|bearer|auth[_-]?(?:token|key)|dsn)"
+    r"|private[_-]?key|credential|authorization|bearer|auth[_-]?(?:token|key)|basic[_-]?auth|dsn)"
 )
 ASSIGN = re.compile(
     r"(?i)([A-Za-z0-9_.\-\"']*" + SECRET_WORD + r"[A-Za-z0-9_.\-\"']*\s*[:=]\s*)"
@@ -394,6 +394,7 @@ def env_assignments(text: str) -> list[tuple[int, str, str]]:
             continue
         match = ENV_LINE.match(line)
         if not match or line.lstrip().startswith("#"):
+            in_pem = "-----BEGIN" in line and "-----END" not in line  # a header pasted on a line of its own
             continue
         key, value = match.group(1)[:80], match.group(2).strip()
         if value == "=" or not plausible_key(key):
@@ -640,7 +641,7 @@ def safe_url_host(url: str) -> str:
 
 def host_from_value(raw: str) -> str:
     """The host in a bare `[user:pass@]host[:port]` value, or an empty string."""
-    host = raw.strip().strip("\"'").rsplit("@", 1)[-1]
+    host = raw.strip().strip("\"'").rstrip(",;").rsplit("@", 1)[-1]
     host = host[1:].split("]")[0] if host.startswith("[") else host.split(":")[0]
     return host if HOST_SAFE.match(host) and not looks_random(host) else ""
 
@@ -758,9 +759,10 @@ LINE_PATTERNS = [
 ]
 
 DB_HOST_KEY = re.compile(
-    r"(?i)\b((?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host)[\"']?\s*[:=]\s*[\"']?"
-    r"([^\s\"',;]+)"
+    r"(?i)\b((?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host)[\"']?\s*[:=]\s*"
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s\"']+))"
 )
+HOST_KEY_NAME = re.compile(r"(?i)^(?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host$")
 
 RULE_FILE_NAMES = {
     "AGENTS.md", "AGENTS.override.md", "AGENT.md", "CLAUDE.md", "CLAUDE.local.md",
@@ -949,83 +951,145 @@ def hidden_columns(line: str) -> list[tuple[int, int]]:
     return found
 
 
-TOML_STRING = re.compile(r"\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'")
-TOML_KEY = r"(?:[A-Za-z0-9_-]+|\"[^\"]*\"|'[^']*')"
-TOML_PAIR = re.compile(r"^(" + TOML_KEY + r"(?:\s*\.\s*" + TOML_KEY + r")*)\s*=\s*(.*)$")
+def _toml_mask(text: str) -> str:
+    """`text` with the contents of quoted strings replaced by NUL characters; same length.
+
+    Structure (brackets, braces, commas, `=`, `#`) is read from the mask and
+    values are sliced from the original at the same positions. Nothing inside
+    a string is then ever mistaken for structure, whatever it contains: an
+    escaped quote, a bracket, a `name =`, a `#`.
+    """
+    out, index, size = [], 0, len(text)
+    while index < size:
+        char = text[index]
+        if char not in "\"'":
+            out.append(char)
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+        while index < size and text[index] != char:
+            # In a basic (double-quoted) string a backslash escapes the next character.
+            step = 2 if char == '"' and text[index] == "\\" and index + 1 < size else 1
+            out.append("\0" * step)
+            index += step
+        if index < size:
+            out.append(char)
+            index += 1
+    return "".join(out)
 
 
-def _toml_blank_strings(text: str) -> str:
-    """The text with every quoted string emptied, so brackets and `=` inside values do not count."""
-    return TOML_STRING.sub('""', text)
+def _toml_uncomment(line: str) -> str:
+    cut = _toml_mask(line).find("#")
+    return line if cut < 0 else line[:cut]
+
+
+def _toml_unquote(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def _toml_inner(value: str) -> tuple[str, str] | None:
+    """What lies between a leading bracket or brace and its match, with its mask."""
+    mask, depth = _toml_mask(value), 0
+    for index, char in enumerate(mask):
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+            if depth == 0:
+                return value[1:index], mask[1:index]
+    return None
+
+
+def _toml_split(text: str, mask: str) -> list[tuple[str, str]]:
+    """The top-level, comma-separated pieces of `text`, each with its mask."""
+    pieces, depth, start = [], 0, 0
+    for index, char in enumerate(mask):
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            pieces.append((text[start:index], mask[start:index]))
+            start = index + 1
+    pieces.append((text[start:], mask[start:]))
+    return [(piece, piece_mask) for piece, piece_mask in pieces if piece.strip()]
+
+
+def _toml_value(value: str) -> object:
+    """A scalar as a string, an array as a list of strings, an inline table as a dict.
+
+    Inline-table values are kept (never shown) so a literal secret can be
+    recognised; only the keys are ever printed.
+    """
+    value = _toml_uncomment(value).strip()
+    if value[:1] in ("{", "["):
+        inner = _toml_inner(value)
+        pieces = _toml_split(*inner) if inner else []
+        if value.startswith("["):
+            return [_toml_unquote(piece) for piece, _ in pieces]
+        table = {}
+        for piece, mask in pieces:
+            equals = mask.find("=")
+            if equals > 0:
+                table[_toml_unquote(piece[:equals])] = _toml_unquote(piece[equals + 1:])
+        return table
+    return _toml_unquote(value)
 
 
 def parse_toml_tables(text: str) -> dict[str, dict[str, object]]:
-    """Minimal TOML reader: table headers and single-line or bracketed values.
+    """Minimal TOML reader: table headers, and scalar, array or inline-table values.
 
     Python 3.9 has no tomllib, and one code path on every interpreter beats
-    two. Enough for Codex-style config; not a general TOML parser. Whatever
-    sits inside a quoted string is a value and is never read as structure.
+    two; the tests compare this reader with tomllib where it exists. Enough
+    for agent config files, not a general TOML parser. Whatever sits inside a
+    quoted string is a value and is never read as structure.
     """
     tables: dict[str, dict[str, object]] = {"": {}}
     current = ""
     pending_key, pending = None, ""
     closing = ""
     for raw in text.splitlines():
-        line = raw.strip()
         if closing:
             # Inside a multi-line string: this is a value, whatever it looks like.
-            if closing in line:
+            if closing in raw:
                 closing = ""
             continue
+        line = _toml_uncomment(raw).strip()
         if pending_key is not None:
             pending += " " + line
-            blank = _toml_blank_strings(pending)
-            if blank.count("[") <= blank.count("]"):
+            mask = _toml_mask(pending)
+            if mask.count("[") <= mask.count("]"):
                 tables[current][pending_key] = _toml_value(pending)
                 pending_key, pending = None, ""
             continue
-        if not line or line.startswith("#"):
+        if not line:
             continue
-        pair = TOML_PAIR.match(line)
-        if not pair:
-            header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]\s*(?:#.*)?$", line)
+        mask = _toml_mask(line)
+        if mask.startswith("["):
+            header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]$", line)
             if header:
                 current = header.group(1)
                 tables.setdefault(current, {})
             continue
-        key, value = pair.group(1).strip("\"'"), pair.group(2)
-        opener = value[:3] if value[:3] in ('"""', "\'\'\'") else ""
-        if opener:
-            tables[current][key] = ""
-            if opener not in value[3:]:
-                closing = opener
+        equals = mask.find("=")
+        if equals <= 0:
             continue
-        blank = _toml_blank_strings(value)
-        if value.startswith("[") and blank.count("[") > blank.count("]"):
+        key, value = _toml_unquote(line[:equals]), line[equals + 1:].strip()
+        if value[:3] in ('"""', "'''"):
+            tables[current][key] = ""
+            if value[:3] not in value[3:]:
+                closing = value[:3]
+            continue
+        value_mask = _toml_mask(value)
+        if value.startswith("[") and value_mask.count("[") > value_mask.count("]"):
             pending_key, pending = key, value
             continue
         tables[current][key] = _toml_value(value)
     return tables
-
-
-def _toml_value(value: str) -> object:
-    value = value.strip()
-    try:
-        return json.loads(value)
-    except ValueError:
-        pass
-    if value.startswith("{"):
-        # An inline table. Keys are taken only from outside quoted strings, and
-        # the values are kept so a literal secret can be recognised (never shown).
-        table = {}
-        for found in re.finditer(r"(" + TOML_KEY + r")\s*=\s*(" + TOML_STRING.pattern + r"|[^,}]*)",
-                                 value.strip()[1:].rsplit("}", 1)[0]):
-            table[found.group(1).strip("\"'")] = found.group(2).strip().strip("\"'")
-        return table
-    if value.startswith("["):
-        return [a[1:-1] for a in TOML_STRING.findall(value)]
-    scalar = re.match(r"\s*(" + TOML_STRING.pattern + r"|[^#]*)", value)  # drops a trailing comment
-    return scalar.group(1).strip().strip("\"'") if scalar else ""
 
 
 def unpinned_reasons(command: str, args: list[str]) -> list[str]:
@@ -1292,9 +1356,8 @@ class Collector:
                         self.add(1, "db-target", f"{name}:{lineno}", f"{key} {hint} (file role: {role}; {status})")
                     elif "live payment" in hint:
                         self.add(2, "live-payment-key", f"{name}:{lineno}", f"{key}: {hint} ({status})")
-                host = DB_HOST_KEY.match(f"{key}={value}")
-                if host and not DB_URL.search(value):
-                    named = host_from_value(host.group(2))
+                if HOST_KEY_NAME.match(key) and value and not DB_URL.search(value):
+                    named = host_from_value(value)  # the whole parsed value: credentials in front may hold ',' or ';'
                     self.add(1, "db-target", f"{name}:{lineno}",
                              f"{key} -> host {named or '<withheld>'} [{classify_host(named) if named else 'unknown'}] "
                              f"(file role: {role}; {status})")
@@ -1341,7 +1404,7 @@ class Collector:
                         self.add(1, "db-target", loc, f"{shown} [{klass}] {tag}".rstrip())
                     host = DB_HOST_KEY.search(line)
                     if host and not is_doc and not DB_URL.search(line):
-                        named = host_from_value(host.group(2))
+                        named = host_from_value(host.group(2) or host.group(3) or host.group(4) or "")
                         klass = classify_host(named) if named else "unknown"
                         if klass in ("non-local", "private-network"):
                             self.add(1, "db-target", loc, f"{host.group(1)} -> host {named} [{klass}]")
@@ -1854,7 +1917,7 @@ class Collector:
             self.add(6, "not-checked", f"{owner}/{repo}",
                      "GitHub was not queried (run again with --github for read-only API calls)")
             return
-        if not shutil.which("gh"):
+        if not shutil.which("gh", path=self.environ.get("PATH")):
             self.add(6, "not-checked", f"{owner}/{repo}", "gh CLI not installed")
             return
         # --no-refresh: looking must not rotate a stored token. --active: one account, the one gh would use.
@@ -2043,14 +2106,17 @@ class Collector:
         command, args = spec.get("command"), spec.get("args") or []
         if isinstance(command, list):
             command, args = (command[0] if command else ""), list(command[1:]) + list(args)
+        unparseable = False
         if isinstance(command, str) and " " in command and not args:
             try:
                 command, *args = shlex.split(command)
             except ValueError:
-                pass
+                unparseable = True
         args = [str(a) for a in args] if isinstance(args, list) else []
         traits = []
-        if command:
+        if unparseable:
+            traits.append("runs a command that could not be parsed (not shown)")
+        elif command:
             traits.append(launch_summary(str(command), args))
             reasons = unpinned_reasons(str(command), args)
             if reasons:

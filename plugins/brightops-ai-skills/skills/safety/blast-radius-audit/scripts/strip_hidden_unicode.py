@@ -24,6 +24,7 @@ Standard library only; runs on Python 3.9+.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -54,7 +55,8 @@ def checked_path(path: str) -> tuple[str, str]:
     """
     if os.path.isabs(path):
         return "", "is an absolute path; give a path relative to the repository root"
-    parts = [part for part in path.split(os.sep) if part not in ("", os.curdir)]
+    separators = "[" + re.escape(os.sep + (os.altsep or "")) + "]"  # both kinds, where a platform has two
+    parts = [part for part in re.split(separators, path) if part not in ("", os.curdir)]
     if not parts or os.pardir in parts:
         return "", "contains '..' or names no file; give a plain path under the repository root"
     current = os.path.realpath(os.getcwd())

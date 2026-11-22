@@ -447,6 +447,8 @@ class TargetedFixtureTests(unittest.TestCase):
         bare = ("PRIVATE_KEY=-----BEGIN FAKE-----\nMIIEvQIBADANBg\nYWJjZGVmZGhpanRrbGxx==\nabcdefgh=\n"
                 "-----END FAKE-----\nAQAB==\nabcdef123456==\nNEXT=1\nEMPTY=\n")
         self.assertEqual([key for _, key, _ in self.mod.env_assignments(bare)], ["PRIVATE_KEY", "NEXT", "EMPTY"])
+        own_line = "KEY=\n-----BEGIN FAKE-----\nabcdef=\n-----END FAKE-----\nAFTER=1\n"
+        self.assertEqual([key for _, key, _ in self.mod.env_assignments(own_line)], ["KEY", "AFTER"])
         for word, expected in (("DATABASE_URL", True), ("database_url", True), ("apiKey", True), ("PGHOST", True),
                                ("q1W2e3R4t5Y6u7I8o9P0aSdF", False), ("AbCd1234EfGh", False), ("x" * 65, False)):
             self.assertEqual(self.mod.plausible_key(word), expected, word)
@@ -652,6 +654,72 @@ class TargetedFixtureTests(unittest.TestCase):
         for fragment in (basic, keyish, "leaked_table", "LEAKED_ARR_KEY"):
             self.assertNotIn(fragment, text)
 
+    # Documents that broke an earlier version of the TOML reader. Values are
+    # assembled at runtime so nothing here reads as a credential to a scanner.
+    @staticmethod
+    def tricky_toml() -> dict:
+        b64a, b64b = "dXNlcjpw" + "YXNz", "c2VjcmV0" + "OnBhc3M"
+        bs = chr(92)
+        return {
+            "escaped-quotes": ('[mcp_servers.gcp]\ncommand = "npx"\nargs = ["@acme/gcp-mcp@1.0.0"]\n'
+                               'env = { SERVICE_ACCOUNT_JSON = "{' + bs + '"type' + bs + '":' + bs + '"sa' + bs + '",'
+                               + bs + '"token' + bs + '":' + bs + '"' + b64a + '==' + bs + '"}" }\n'),
+            "trailing-backslash": ('[mcp_servers.win]\ncommand = "npx"\n'
+                                   'env = { WORK_DIR = "C:' + bs + bs + 'work' + bs + bs + '", BASIC_AUTH = "' + b64b + '==" }\n'),
+            "array-with-bracket": ('[t]\nitems = [\n  "line1' + bs + 'n]line2",\n  "LEAKED_ARR_KEY = fake"\n]\nafter = "x"\n'),
+            "comment-with-brace": '[t]\nenv = { A = "1" } # { KEY_IN_COMMENT = 1 }\nplain = "v" # note = 1\n',
+            "quoted-keys": ('[mcp_servers."a.b"]\n"system prompt" = "x = y # not a comment"\n'
+                            "literal = 'C:" + bs + "path = [1]'\n"),
+            "multi-line-string": ('note = """\n[mcp_servers.inside]\ncommand = "x"\nFAKE_KEY=1\n"""\n[real]\nk = "v"\n'),
+        }
+
+    def test_toml_reader_takes_structure_only_from_outside_strings(self) -> None:
+        docs = self.tricky_toml()
+        parse = self.mod.parse_toml_tables
+        self.assertEqual(sorted(parse(docs["escaped-quotes"])["mcp_servers.gcp"]["env"]), ["SERVICE_ACCOUNT_JSON"])
+        self.assertEqual(sorted(parse(docs["trailing-backslash"])["mcp_servers.win"]["env"]), ["BASIC_AUTH", "WORK_DIR"])
+        array = parse(docs["array-with-bracket"])["t"]
+        self.assertEqual(sorted(array), ["after", "items"])
+        self.assertEqual(len(array["items"]), 2)
+        commented = parse(docs["comment-with-brace"])["t"]
+        self.assertEqual((sorted(commented["env"]), commented["plain"]), (["A"], "v"))
+        self.assertEqual(sorted(parse(docs["quoted-keys"])['mcp_servers."a.b"']), ["literal", "system prompt"])
+        self.assertEqual(sorted(parse(docs["multi-line-string"])), ["", "real"])
+        got = self.collect({".codex/config.toml": docs["escaped-quotes"] + docs["trailing-backslash"]}, only={8})
+        rows = self.rows(got, "mcp-server")
+        self.assertTrue(any("gcp:" in row and row.endswith("env: SERVICE_ACCOUNT_JSON") for row in rows), rows)
+        self.assertTrue(any("win:" in row and "env: BASIC_AUTH, WORK_DIR" in row for row in rows), rows)
+        text = json.dumps(got.items)
+        for fragment in ("dXNlcjpw", "c2VjcmV0", "service_account", "work"):
+            self.assertNotIn(fragment, text.replace("WORK_DIR", ""))
+
+    def test_toml_reader_agrees_with_the_standard_library(self) -> None:
+        try:
+            import tomllib
+        except ImportError:
+            self.skipTest("tomllib needs Python 3.11+")
+        for name, text in self.tricky_toml().items():
+            real = tomllib.loads(text)
+            mine = self.mod.parse_toml_tables(text)
+            for header, values in mine.items():
+                node = real
+                for part in ([p.strip('"') for p in __import__("re").findall(r'"[^"]*"|[^.]+', header)] if header else []):
+                    node = node[part]
+                scalar_keys = {k for k, v in node.items() if not isinstance(v, dict) or k in values}
+                self.assertEqual(set(values), scalar_keys, f"{name}: keys of [{header}]")
+                for key, value in values.items():
+                    if isinstance(value, dict):
+                        self.assertEqual(set(value), set(node[key]), f"{name}: inline table {key}")
+                    elif isinstance(value, list):
+                        self.assertEqual(len(value), len(node[key]), f"{name}: array {key}")
+
+    def test_an_mcp_command_string_with_unbalanced_quotes_is_not_guessed_at(self) -> None:
+        got = self.collect({".mcp.json": json.dumps({"mcpServers": {"broken": {
+            "command": 'TOKEN="abc" /bin/sh -c "echo /leakedmcpword'}}})}, only={8})
+        rows = self.rows(got, "mcp-server")
+        self.assertTrue(any("could not be parsed" in row for row in rows), rows)
+        self.assertNotIn("leakedmcpword", json.dumps(got.items))
+
     def test_a_url_whose_credentials_spill_past_the_authority_names_no_host(self) -> None:
         host = self.mod.safe_url_host
         self.assertEqual(host("https://u:pw@h.example.com/x"), "h.example.com")
@@ -666,8 +734,14 @@ class TargetedFixtureTests(unittest.TestCase):
 
     def test_a_host_variable_with_credentials_in_front_shows_only_the_host(self) -> None:
         self.assertEqual(self.mod.host_from_value("default:fakeredispw@redis.prod.example.com:6379"), "redis.prod.example.com")
-        got = self.collect({".env.test": "REDIS_HOST=default:fakeredispw@redis.prod.example.com:6379\n",
+        self.assertEqual(self.mod.host_from_value("default:pa,ss@redis.prod.example.com:6379"), "redis.prod.example.com")
+        got = self.collect({".env.test": "REDIS_HOST=default:fakeredispw@redis.prod.example.com:6379\n"
+                                         "MYSQL_HOST=faketok.one,two@mysql.prod.example.com\n",
+                            "cfg.py": 'PG_HOST = "faketok.three;four@pg.prod.example.com"\n',
                             "config/db.yml": "db_host: admin:fakeymlpw@db.prod.example.com\n"}, only={1})
+        self.assertTrue(any("mysql.prod.example.com [non-local]" in row for row in self.rows(got, "db-target")))
+        self.assertTrue(any("pg.prod.example.com [non-local]" in row for row in self.rows(got, "db-target")))
+        self.assertNotIn("faketok", json.dumps(got.items))
         rows = self.rows(got, "db-target")
         self.assertTrue(any("redis.prod.example.com [non-local]" in row for row in rows), rows)
         self.assertTrue(any("db.prod.example.com [non-local]" in row for row in rows), rows)
