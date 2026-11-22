@@ -57,7 +57,9 @@ each. Add the skill under a category subdirectory and list its path in the plugi
   the same change. A marketplace-level change (added or removed plugin, install
   command, shared tooling) gets an entry in the root `CHANGELOG.md`. The README
   plugin table is a checked mirror; marketplace entries omit `version`. Cache
-  eviction and the rest of the bump procedure: [CONTRIBUTING.md](CONTRIBUTING.md)
+  eviction (`scripts/evict-plugin-cache.sh <name> <old-version>`, never a
+  hand-written `rm -rf`) and the rest of the bump procedure:
+  [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Testing
 
@@ -122,8 +124,8 @@ and it falls back to asking.
 
 ### Secret scanning
 
-This repo is **public-bound**. A gitleaks pre-commit hook
-(`.githooks/pre-commit`, activated by `./scripts/install-hooks.sh`) enforces
+This repo is **public-bound**. Gitleaks hooks for `git commit` and merge
+commits (`.githooks/`, activated by `./scripts/install-hooks.sh`) enforce
 [`.gitleaks.toml`](.gitleaks.toml), which blocks infrastructure identifiers on
 top of the default secret rules — workspace name, tailnet hosts/IDs/IPs,
 home-directory paths, LAN IPs, AWS account IDs.
@@ -141,3 +143,11 @@ Two consequences for anything written here, including docs:
 Git never clones hooks, so in a fresh clone assume the local pre-commit
 gate is inactive until `./scripts/install-hooks.sh` has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
+
+The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
+complete, they block the commit. Install gitleaks (the hook prints how).
+`ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
+case only; an agent never sets it. `git rebase`, `git cherry-pick` and
+`git revert` run no commit hook, so CI is the only scan for commits made that
+way. `install-hooks.sh` never replaces an existing `core.hooksPath` unless run
+with `--force`.
