@@ -23,14 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--trust-folder`.
 - `spawn-session`: a `--bypass` launch is refused (exit 2) when workspace
   trust cannot be checked because `python3` is missing. It previously
-  launched unchecked. Other postures are unchanged.
+  launched unchecked. Other postures are unchanged, and so is `--resume`,
+  which launches nothing.
 - `spawn-session`: refusals render control characters in the names and paths
   they quote as text (`\n`, `\x1b`), so a message is always one line.
 - `spawn-session`: the remedy reported for a session held at the trust dialog
   now works for that session (a person accepts the prompt, then `--resume`),
   where it used to send the reader into an "already running" refusal.
 - `spawn-session`: when tmux fails to create the session, a line says that
-  nothing was launched. The exit status is still tmux's.
+  nothing was launched; when the session is created but the command that
+  starts the CLI cannot be sent, a line says the session is empty. The exit
+  status is still tmux's.
 - `spawn-session`: the `--help` exit summary lists code 5.
 
 ### Added

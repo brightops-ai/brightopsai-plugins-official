@@ -102,7 +102,9 @@ USAGE
 # that can be split across lines or repainted by its own argument is a refusal
 # that can be made to say something else.
 die() {
-  echo "spawn-session: $(visible "$1")" >&2
+  # printf, not echo: with xpg_echo set, echo would interpret the escapes that
+  # `visible` has just written out and turn them back into control bytes.
+  printf '%s\n' "spawn-session: $(visible "$1")" >&2
   exit "${2:-$EXIT_USAGE}"
 }
 
@@ -500,7 +502,7 @@ main() {
           echo "spawn-session: the real run would refuse: --trust-folder cannot be combined with --bypass. $(trust_first_steps)" >&2
         fi
       fi
-    elif [[ "$POSTURE" == "bypass" ]]; then
+    elif [[ "$POSTURE" == "bypass" ]] && (( ! RESUME )); then
       dry_bypass=0
       echo "spawn-session: the real run would refuse: workspace trust cannot be checked without python3, and a --bypass launch needs the workspace known to be trusted" >&2
     fi
@@ -565,11 +567,13 @@ main() {
     fi
   elif (( TRUST_FOLDER )); then
     die "--trust-folder needs python3, which was not found"
-  elif [[ "$POSTURE" == "bypass" ]]; then
+  elif [[ "$POSTURE" == "bypass" ]] && (( ! RESUME )); then
     # Fail closed. Without the check an untrusted workspace is not refused,
     # only unexamined, and an unattended session is the launch that must not
     # ride on "nobody looked". Other postures keep the older behaviour: they
-    # stop at the trust prompt and are diagnosed there.
+    # stop at the trust prompt and are diagnosed there. With --resume nothing
+    # is launched, so there is nothing to refuse: the existing session is
+    # picked up as it always was.
     die "workspace trust for $DIR cannot be checked: the check needs python3, which was not found. A --bypass launch is refused unless the workspace is known to be trusted. Install python3, or launch without --bypass."
   fi
 
@@ -589,7 +593,13 @@ main() {
     if (( launch_rc )); then
       die "the multiplexer could not create session '$NAME'; nothing was launched" "$launch_rc"
     fi
-    tm send-keys -t "=$NAME:" "$launch_line" Enter
+    # The session now exists. If the command that starts the CLI cannot be
+    # sent, say so: otherwise the launch warning above is the last word.
+    local send_rc=0
+    tm send-keys -t "=$NAME:" "$launch_line" Enter || send_rc=$?
+    if (( send_rc )); then
+      die "session '$NAME' was created, but the command that starts the CLI could not be sent to it; the session is empty" "$send_rc"
+    fi
   fi
 
   if (( ! VERIFY )); then

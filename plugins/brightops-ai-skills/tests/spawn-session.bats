@@ -902,6 +902,7 @@ count() {
 #
 #   MUX_HAS_SESSION=0   has-session succeeds (a session of that name exists)
 #   MUX_NEW_SESSION=<n> new-session exits with this status
+#   MUX_SEND_KEYS=<n>   send-keys exits with this status
 stub_setup() {
   CONFIG_FILE="$BATS_TEST_TMPDIR/claude.json"
   echo '{"projects":{}}' > "$CONFIG_FILE"
@@ -925,6 +926,7 @@ printf 'mux: %s\n' "${args//$nl/<NL>}" >> "$TRACE"
 case " $args " in
   *" has-session "*) exit "${MUX_HAS_SESSION:-1}" ;;
   *" new-session "*) exit "${MUX_NEW_SESSION:-0}" ;;
+  *" send-keys "*) exit "${MUX_SEND_KEYS:-0}" ;;
 esac
 exit 0
 STUB
@@ -1207,6 +1209,43 @@ without_python() {
   [ "$status" -eq 0 ] || { cat "$TRACE"; return 1; }
   [ ! -s "$ERR" ]
   [ "$(count '^mux: .*new-session -d -s zz-spawn-nopy' "$TRACE")" = "1" ]
+}
+
+@test "resuming an existing bypass session needs no trust check" {
+  stub_setup
+  without_python
+
+  # Nothing is launched on this path, so there is no launch to refuse: with
+  # the interpreter missing it must behave exactly as it did before the
+  # fail-closed check was added for new launches.
+  MUX_HAS_SESSION=0 run spawn_stub "zz-spawn-nopy" --dir "$WORK" --resume --bypass --no-verify --porcelain
+  [ "$status" -eq 0 ] || { cat "$TRACE"; return 1; }
+  [ -s "$OUT" ]
+  [ ! -s "$ERR" ]
+  [ "$(count '^mux: .*new-session' "$TRACE")" = "0" ]
+
+  # The preview does not claim the real run would refuse.
+  run spawn_stub "zz-spawn-nopy" --dir "$WORK" --resume --bypass --dry-run
+  [ "$status" -eq 0 ]
+  lacks "$(cat "$ERR")" "would refuse"
+  has "$(cat "$ERR")" "with --resume nothing is launched"
+}
+
+@test "a session whose launch command cannot be sent is reported as empty" {
+  stub_setup
+  pretrust "$WORK"
+
+  MUX_SEND_KEYS=19 run spawn_stub "zz-spawn-nosend" --dir "$WORK" --bypass --no-verify
+  # The multiplexer's own status, with the last word on stderr saying what
+  # actually happened rather than leaving the launch warning standing.
+  [ "$status" -eq 19 ]
+  [ ! -s "$OUT" ]
+  local warned explained
+  warned="$(at '^WARNING: --bypass ')"
+  explained="$(at "session 'zz-spawn-nosend' was created, but the command that starts the CLI could not be sent")"
+  [ -n "$warned" ]
+  [ -n "$explained" ]
+  [ "$warned" -lt "$explained" ]
 }
 
 @test "a launch the multiplexer refuses says nothing was launched" {
