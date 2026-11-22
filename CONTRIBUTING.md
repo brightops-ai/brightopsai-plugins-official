@@ -122,6 +122,19 @@ can set `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` for one commit; it applies only
 when the scanner is missing and never overrides a finding or a failed scan.
 Agents must not set it, and nobody should reach for `--no-verify`.
 
+A new Claude Code session opened in the clone runs the same script, from
+the SessionStart hook `.claude/hooks/install-plugins.sh` (registered for
+the `startup` source, so not on resume, `/clear` or compaction). That hook
+also installs the `mattpocock-skills` plugin, only when
+`claude plugin list --json` shows it is missing; if the listing fails, it
+warns and installs nothing. It never updates an installed copy and prints
+the installed version to stderr. A plugin it installs loads in the next
+session, or after `/reload-plugins`. The plugin cannot be pinned, so
+`.claude/settings.json` turns off auto-update for its marketplace; what
+that does and does not prevent is in [CLAUDE.md](CLAUDE.md) (Guardrails).
+Update on purpose with
+`claude plugin update mattpocock-skills@claude-plugins-official`.
+
 `git rebase`, `git cherry-pick` and `git revert` create commits without
 running either hook. CI (`.github/workflows/ci.yml`) scans the checked-out
 tree on pull requests and `main` and is the backstop for those. Identifier and credential rules are in

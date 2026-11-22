@@ -71,7 +71,8 @@ Two gitleaks hooks in `.githooks/`, activated by
 `./scripts/install-hooks.sh` (`core.hooksPath`), scan staged changes:
 `pre-commit` for `git commit`, and `pre-merge-commit` for the commit an
 automatic merge creates. Git does not clone hooks, so a fresh clone has no
-local scan until that script runs. The script leaves an existing
+local scan until that script runs; a new Claude Code session opened in the
+clone runs it when the session starts. The script leaves an existing
 `core.hooksPath` that points elsewhere alone and exits non-zero; in that
 clone the hooks are not active.
 
