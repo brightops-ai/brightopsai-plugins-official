@@ -22,6 +22,8 @@ How to triage, classify, and merge Grok's adversarial feedback back into the sou
 | **Minor** | Auto-apply | Same as conservative |
 | **Nit** | Auto-apply | Same as conservative |
 
+Aggressive mode changes only the Major row. The backup in "Backup and Recovery" below is taken before the first edit in this mode too.
+
 ## Auto-Apply Rules
 
 When auto-applying a suggestion:
@@ -74,10 +76,43 @@ After all edits are applied:
 
 ## Backup and Recovery
 
-- Before the first edit, copy the original to `{filename}.pre-review.md`
+- Before the first edit, in either mode, copy the original to `{filename}.pre-review.md` and check the copy matches the original (`cmp`)
+- If a backup already exists at that path, do not overwrite it — it is the only copy of an earlier original. Write this one to `{filename}.pre-review.<timestamp>.md`
+- If the backup cannot be written or does not match, stop: apply no edits and tell the user
 - If the user is unhappy with the result, they can restore from the backup
 - After the user confirms they're satisfied, suggest deleting the backup to keep the workspace clean
 
 ## Syncing Changes Back to Grok
 
-After applying edits locally, the Grok project source file is stale. See SKILL.md Step 11 for the full sync workflow (delete old file from project sources, re-upload updated version, verify). This is especially important when a project accumulates multiple review cycles.
+After applying edits locally, the Grok project source file is stale. See SKILL.md Step 12 for the full sync workflow (new snapshot, scan and confirmation of the edited document, `check` immediately before the upload, then delete old file from project sources, re-upload updated version, verify). This is especially important when a project accumulates multiple review cycles.
+
+## Summary Report
+
+Output this at the end of a run, after the snapshots are removed (SKILL.md step 13):
+
+```
+## Adversarial Review Summary
+
+**Source:** [filename]
+**Reviewer:** Grok (grok.com)
+**Mode:** Conservative | Aggressive
+**Project:** [project name]
+
+### Findings by Severity
+- Critical: N
+- Major: N
+- Minor: N
+- Nit: N
+
+### Changes Applied
+- [list with line references]
+
+### Changes Proposed (Declined)
+- [list with rationale for declining]
+
+### Logged for Reference
+- [interesting but out-of-scope findings]
+
+### Open Questions
+- [any unresolved items from the review]
+```

@@ -33,7 +33,7 @@ If the Projects section is collapsed, click the "Projects" button to expand it.
 Once Projects is expanded in the sidebar:
 
 1. Scan the list items for a link matching the target project name
-2. Project links have the format: `link "ProjectName"` with URL `/project/{uuid}`
+2. Project links have the format: `link "ProjectName"` with URL `/project/{uuid}`. The `{uuid}` is the project identifier the SKILL.md step 5 question names; two projects can share a name
 3. Click the matching link to open the project
 
 There is no search/filter input for projects — they are listed directly in the sidebar.
@@ -53,8 +53,10 @@ If the target project is not found:
 1. The dialog advances to "Project Sources" with a drag-and-drop zone
 2. Click `button "Attach"` — this opens a dropdown menu (NOT a file chooser directly)
 3. Click `menuitem "Upload a file"` from the dropdown
-4. The file chooser modal appears — use `browser_file_upload` with the document path
+4. The file chooser modal appears. Do the SKILL.md step 6 destination re-check now (account and project on this tab), then the `check`, as the last command before the upload, then use `browser_file_upload` with the approved snapshot path, never the source path. The snapshot keeps the document's filename
 5. Verify the file appears in the dialog with filename and size
+
+If `browser_file_upload` refuses the snapshot path as outside the directories it may read, make the snapshot inside the workspace instead: `snapshot-document.sh create "<document>" "<workspace directory>"`. Scan it, run `check`, and upload it. The approval is for a sha256, so an identical sha256 needs no new question; a different one does. This snapshot replaces the first one for the rest of the run: remove the first, and keep this one until its last use (SKILL.md step 11 checks the source against it). It goes out with the normal cleanup, on every way out of the run. Never commit it.
 
 **Step 3 — Create:**
 1. Click `button "Create"` to finalize the project
@@ -69,7 +71,7 @@ To update or add source files in an existing project:
 2. Look for the Sources section in the project side panel (button labeled "Personal files N")
 3. Click it to expand the file list
 4. To delete an old file: look for a remove/delete button next to the filename
-5. To add a new file: use the Attach button in the sources panel, follow the same Upload flow as project creation
+5. To add a new file: use the Attach button in the sources panel, follow the same Upload flow as project creation, with the approved snapshot path, and the destination re-check and the `check` immediately before the upload
 
 ## Chat Input Field
 
@@ -148,7 +150,7 @@ Grok's page contains multiple `.prose` / `.markdown` elements — the user's ech
 }
 ```
 
-Identify the assistant response as the largest element whose preview does NOT start with the submitted prompt content (matching the rule in SKILL.md Step 9). It often begins with "Thought for Xs" followed by the findings. Then extract that specific element by its index from the enumeration:
+Identify the assistant response as the largest element whose preview does NOT start with the submitted prompt content. It often begins with "Thought for Xs" followed by the findings. Then extract that specific element by its index from the enumeration:
 
 ```javascript
 () => {
