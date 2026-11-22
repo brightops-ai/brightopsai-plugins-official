@@ -30,39 +30,26 @@ hold values:
   `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.git-credentials`
 - agent config that embeds tokens: `~/.claude.json`, MCP config files
 
-For those, rely on the collector's output. When a detail is missing and the
-collector cannot supply it, extract names only:
+For those, rely on the collector's output. When a detail is missing, ask the
+collector for key names. It prints names and line numbers, never values, and
+it understands quoted values that span several lines (a PEM key in a `.env`),
+which `cut` and `grep` do not:
 
 ```bash
-cut -s -d= -f1 .env.test                         # key names; -s drops lines with no '='
-grep -n 'DATABASE_URL' .env.test | cut -s -d= -f1   # which line, not what it says
-grep -c . ~/.netrc                               # how many entries
+python3 <skill-dir>/scripts/collect.py --keys .env.test     # 3: DATABASE_URL
+python3 <skill-dir>/scripts/collect.py --keys .mcp.json     # mcpServers.x.env.API_KEY (str)
 ```
 
-For a JSON config, list key paths and value types, never values:
+Do not pipe such a file through `cat`, `head`, `grep`, `cut` or a JSON
+pretty-printer, and do not open it with a file-read tool. That includes
+tracked project config such as `.mcp.json` and `.claude/settings.json`: an
+argument list, a URL or a hook command can hold a literal credential, and no
+check short of reading the value can rule that out. Work from the collector's
+leads and the key listing. Where judging a hook or server needs its full
+command line, report what the collector shows (the program it runs, how many
+arguments) and put the rest to the user as a question.
 
-```bash
-python3 -c 'import json, sys
-def walk(node, path=""):
-    if isinstance(node, dict):
-        for key, value in node.items(): walk(value, f"{path}.{key}" if path else str(key))
-    elif isinstance(node, list):
-        for index, value in enumerate(node): walk(value, f"{path}[{index}]")
-    else: print(path, type(node).__name__)
-walk(json.load(open(sys.argv[1])))' .mcp.json
-```
-
-Do not pipe such a file through `cat`, `head`, `grep` without a `cut -s`, or
-a JSON pretty-printer.
-
-A tracked project config (`.mcp.json`, `.claude/settings.json`) may be opened
-only when all three hold: the collector parsed it (no `config-not-parsed`
-lead), it reports no `LITERAL SECRET` for it, and the key listing shows no
-string value under `env`, `headers` or a key named like a credential.
-Otherwise work from the collector's lines and the key listing. A script *file*
-that a hook or MCP server runs is code: read it. The collector names the
-program a hook or server runs and counts its arguments without showing them,
-because arguments are where inline secrets live.
+A script *file* that a hook or MCP server runs is code: read it.
 
 A `token-shaped-string` lead is a line that may hold a real value. Judge it
 without displaying that line: from the path (a fixtures directory), the file's
@@ -268,9 +255,11 @@ permission on the repo), `branch-protection` (classic protection),
 (whether this token is bound by the protection, can bypass it, or `UNKNOWN`
 when the settings were not readable), `org` (whether members can create public
 repos). The `examined:` line lists the required status checks. Requests go to
-github.com only, are GET only, and the token is neither fetched nor refreshed.
-The verdict does not evaluate ruleset bypass lists: with rulesets present,
-check who may bypass them in the repository settings.
+github.com only and are GET only, and the collector never fetches the token;
+`gh` authenticates them itself, which can include refreshing an expiring
+login. The verdict does not evaluate ruleset bypass lists: with rulesets
+present it stays `UNKNOWN`, so check who may bypass them in the repository
+settings.
 
 **By hand:**
 
@@ -337,8 +326,13 @@ in tracked files; `hidden-unicode` with file:line:column and code point.
 - For each MCP server: is its source known, is the version pinned, and does it
   hold a token with more than read access when it only reads?
 - For every hook, read the script file it runs. A SessionStart hook runs
-  before the user types anything. Unknown origin is a finding. For a hook
-  written as an inline command, see "Reading safely" before opening the config.
+  before the user types anything. Unknown origin is a finding. A hook written
+  as an inline command is shown as its program and an argument count: an
+  inline `curl`, `sh -c` or interpreter one-liner is a finding as it stands,
+  and its full text is a question for the user (see "Reading safely").
+- The collector shows permission rules up to their leading command words
+  (`Bash(curl ...)`), because a saved "always allow" rule can record a whole
+  command, credentials included.
 - `config-not-parsed` means a config file exists that the collector could not
   read: it is unexamined, not clean.
 - For skills and plugins the user did not obviously install, list the name
@@ -409,10 +403,14 @@ one would run them.
 **By hand:**
 
 - Run `bash -c 'type rm'` (and `zsh -c 'type rm'` where zsh is the login
-  shell). The shell an agent runs commands in is the non-interactive shell in
-  question. If it reports the plain binary while a `shell-safety-net` lead
-  exists, the safety net does not exist for an agent: an alias in `.zshrc` or
-  `.bashrc` is loaded by interactive shells only.
+  shell). This is the one command in the audit that starts a shell, and a
+  shell runs its non-interactive startup files (`BASH_ENV`, `.zshenv`): the
+  same files that already run for every command an agent executes on this
+  machine, so nothing new is exercised, but it is not a read. Skip it if the
+  user asked for a strictly read-only audit and rely on the collector's
+  classification instead. If it reports the plain binary while a
+  `shell-safety-net` lead exists, the safety net does not exist for an agent:
+  an alias in `.zshrc` or `.bashrc` is loaded by interactive shells only.
 - A broad allow rule (`Bash`, `Bash(rm *)`, `Bash(git push *)`) is a standing
   auto-approval; read it as one.
 - Is there a sandbox, and does it confine writes to the project directory?

@@ -34,6 +34,7 @@ PASSWORD = MARK + "-db-pw"
 CANARIES = [
     "winterblue7", "tangerine-harbor-51", "orchardcanary3", "quartzcanary8",
     "Zq7pR2mX9vL4kT8wB1nC5hJ3", "maplecanary2", "lilaccanary6", "plumcanary9",
+    "fakequoted", "fakeargv", "fakeimage", "orchidheader4", "cedarline5", "birchvalue6",
 ]
 
 
@@ -62,7 +63,9 @@ def _private_key() -> str:
 
 def _build_repo(repo: Path, outside: Path) -> None:
     _write(repo, ".gitignore", ".env\n")
-    _write(repo, ".env", f"API_TOKEN={GH_TOKEN}\n")
+    _write(repo, ".env", f"API_TOKEN={GH_TOKEN}\nPRIVATE_KEY=\"-----BEGIN FAKE-----\ncedarline5=\n"
+                         "birchvalue6=remaining material\n-----END FAKE-----\"\nAFTER_KEY=1\n")
+    _write(repo, "terraform.tfvars", "db_url = \"postgres://u:pw@statefile.example.com/app\"\n")
     _write(repo, ".env.test",
            f"DATABASE_URL=postgres://app:{PASSWORD}@prod-db.example.com:5432/app\n"
            f"STRIPE_SECRET_KEY={LIVE_KEY}\nREDIS_HOST=localhost\n")
@@ -85,10 +88,13 @@ def _build_repo(repo: Path, outside: Path) -> None:
         "stripe": {"command": "node", "args": ["server.js", "--token", MARK + "shortarg"],
                    "env": {"STRIPE_API_KEY": MARK + "mcptoken123"}},
         "posargs": {"command": "node", "args": ["server.js", "tangerine-harbor-51"]},
+        "scriptish": {"command": "node", "args": ["server.js", "fakeargv.py"]},
+        "container": {"command": "docker", "args": ["run", "example/image:1", "user:fakeimage"]},
     }}))
     _write(repo, ".claude/settings.json", json.dumps({
-        "permissions": {"defaultMode": "bypassPermissions", "allow": ["Bash", "Read"],
-                        "deny": ["Bash(echo plumcanary9 > out.txt)"]},
+        "permissions": {"defaultMode": "bypassPermissions",
+                        "allow": ["Bash", "Read", "Bash(curl -H x-api-key=orchidheader4 https://example.com)"],
+                        "deny": ["Bash(echo plumcanary9 > out.txt)", "Bash(git push --force *)"]},
         "hooks": {"SessionStart": [{"hooks": [
             {"type": "command",
              "command": f'curl -H "Authorization: Bearer {MARK}bearer99" https://example.com/hook'},
@@ -124,7 +130,8 @@ def _build_home(home: Path) -> None:
     _write(home, ".kube/config",
            "apiVersion: v1\ncurrent-context: prod-cluster\ncontexts:\n- context:\n    cluster: a\n  name: prod-cluster\n"
            f"- context:\n    cluster: b\n  name: dev\n- context:\n    cluster: c\n  name: ctx;$(maplecanary2)\nusers:\n- name: admin\n  user:\n    token: {MARK}kubetoken\n")
-    _write(home, ".netrc", f"machine api.example.com login me password {MARK}netrcpw\n")
+    _write(home, ".netrc", f"machine api.example.com login me password {MARK}netrcpw\n"
+                           'machine two.example.com login me password "before machine fakequoted after"\n')
     _write(home, ".pgpass", f"prod-db.example.com:5432:app:admin:{MARK}pgpw\n")
     _write(home, ".npmrc", f"//registry.npmjs.org/:_authToken={NPM_TOKEN}\n")
     _write(home, ".config/gh/hosts.yml", f"github.com:\n    oauth_token: {GH_TOKEN}\n    user: someone\n")
@@ -232,6 +239,16 @@ class CollectorFixtureTests(unittest.TestCase):
         self.mod.Collector(self.repo, self.home, self.environ, system_paths=False).run()
         self.assertEqual(before, digest())
 
+    def test_no_environment_value_is_echoed_outside_the_selector_list(self) -> None:
+        everything = self.text + json.dumps([self.collector.items, self.collector.notes, self.collector.coverage])
+        for name, value in self.environ.items():
+            if name in self.mod.SELECTORS or name == "PATH" or len(value) < 6:
+                continue
+            self.assertNotIn(value, everything, f"value of {name}")
+
+    def test_state_and_variable_files_are_not_pattern_scanned(self) -> None:
+        self.assertNotIn("statefile.example.com", self.text)
+
     def test_selector_values_are_the_only_values_shown(self) -> None:
         self.assertLead(2, "context-selector", "env:APP_ENV", "= staging")
         self.assertLead(2, "context-selector", "env:ENVIRONMENT", "value withheld")
@@ -263,7 +280,8 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertLead(2, "credential-file", "~/.aws/credentials", "STATIC LONG-LIVED KEY")
         self.assertLead(2, "default-context", "kubectl current-context: prod-cluster", "PROD-LIKE")
         self.assertLead(2, "credential-file", "~/.kube/config", "STATIC CREDENTIAL")
-        self.assertLead(2, "credential-file", "~/.netrc", "api.example.com")
+        self.assertLead(2, "credential-file", "~/.netrc", "logins for: api.example.com, two.example.com")
+        self.assertLead(2, "env-file", ".env |", "untracked, ignored", "3 keys", "API_TOKEN@1, PRIVATE_KEY@2")
         self.assertLead(2, "credential-file", "~/.pgpass", "prod-db.example.com:5432/app")
         self.assertLead(2, "credential-file", "~/.npmrc", "LITERAL in file")
         self.assertLead(2, "credential-file", "~/.config/gh/hosts.yml", "PLAINTEXT")
@@ -306,6 +324,8 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertLead(8, "hook", ".claude/settings.json", "SessionStart", "runs curl", "arguments not shown")
         self.assertLead(8, "hook", ".claude/settings.json", "SessionStart", "runs mysql", "arguments not shown")
         self.assertLead(8, "mcp-server", ".mcp.json", "posargs:", "runs node server.js (+1 arguments not shown)")
+        self.assertLead(8, "mcp-server", ".mcp.json", "scriptish:", "runs node server.js (+1 arguments not shown)")
+        self.assertLead(8, "mcp-server", ".mcp.json", "container:", "runs docker (+3 arguments not shown)")
         self.assertLead(8, "install-script", "web/package.json", "postinstall: runs node setup.js")
         self.assertLead(8, "hidden-unicode", "AGENTS.md:3:6", "U+200B")
         self.assertLead(8, "skills", "~/.claude/skills", "demo")
@@ -321,7 +341,9 @@ class CollectorFixtureTests(unittest.TestCase):
         self.assertLead(10, "bypass-in-shell-rc", "~/.zshrc:3", "alias deploy")
         self.assertLead(10, "shell-safety-net", "~/.zshrc:1", "named rm", "INTERACTIVE shells only")
         self.assertLead(10, "agent-setting", "~/.codex/config.toml:1", "approval_policy = never")
-        self.assertLead(5, "enforcement", ".claude/settings.json", "deny rules: 1", "1 with unusual text not shown")
+        self.assertLead(5, "enforcement", ".claude/settings.json", "deny rules: 2",
+                        "Bash(echo ...)", "Bash(git push --force *)")
+        self.assertLead(10, "agent-mode", ".claude/settings.json", "BROAD ALLOW: Bash; Bash(curl -H ...)")
 
     def test_check_11_money_and_messages(self) -> None:
         self.assertLead(11, "moves-money", "pay.py:1")
@@ -397,6 +419,112 @@ class TargetedFixtureTests(unittest.TestCase):
     def rows(collector, kind: str) -> list:
         return [f"{i['loc']} | {i['note']}" for i in collector.items if i["kind"] == kind]
 
+    def test_netrc_is_read_by_token_position(self) -> None:
+        machines = self.mod.netrc_machines
+        self.assertEqual(machines('machine a.example.com login x password "p machine fakequoted q"\ndefault login y password z\n'),
+                         ["a.example.com"])
+        self.assertIsNone(machines('machine a.example.com password "unterminated\n'))
+
+    def test_dotenv_continuation_lines_are_not_keys(self) -> None:
+        text = 'A=1\nKEY="-----BEGIN-----\ncedarline5=\nbirchvalue6=x\n-----END-----"\nB=2\n'
+        self.assertEqual([(line, key) for line, key, _ in self.mod.env_assignments(text)], [(1, "A"), (2, "KEY"), (6, "B")])
+
+    def test_keys_mode_prints_names_and_never_values(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        _write(base, "a.env", f'A={MARK}one\nKEY="x\ncedarline5=\n{MARK}two"\nB={MARK}three\n')
+        _write(base, "c.json", json.dumps({"mcpServers": {"x": {"env": {"API_KEY": MARK + "four"}, "args": [MARK + "five"]}}}))
+        _write(base, "d.toml", f'[mcp_servers.docs]\ncommand = "npx"\n\n[mcp_servers.docs.env]\nTOKEN = "{MARK}six"\n')
+        script = Path(self.mod.__file__)
+        for name, wanted in (("a.env", ["1: A", "2: KEY (multi-line value)", "5: B"]),
+                             ("c.json", ["mcpServers.x.env.API_KEY (str)", "mcpServers.x.args[0] (str)"]),
+                             ("d.toml", ["[mcp_servers.docs] command", "[mcp_servers.docs.env] TOKEN"])):
+            done = subprocess.run([sys.executable, str(script), "--keys", str(base / name)],
+                                  capture_output=True, text=True, check=True, env={"PATH": os.environ.get("PATH", "")})
+            self.assertNotIn(MARK, done.stdout + done.stderr)
+            self.assertNotIn("cedarline5", done.stdout)
+            self.assertEqual(done.stdout.splitlines(), wanted)
+
+    def test_rule_head_stops_at_the_first_word_that_is_not_a_command_word(self) -> None:
+        head = self.mod.rule_head
+        self.assertEqual(head("Bash(git push --force *)"), "Bash(git push --force *)")
+        self.assertEqual(head("Bash(rm -rf:*)"), "Bash(rm -rf *)")
+        self.assertEqual(head("Bash(curl fake-deny-value)"), "Bash(curl ...)")
+        # Assembled at runtime: written out, it reads as a real header to the repo's secret scanner.
+        header = "Authorization" + ": " + "Bearer " + "orchidheader4"
+        self.assertEqual(head(f'Bash(curl -H "{header}" https://x)'), "Bash(curl -H ...)")
+        self.assertEqual(head("Read(./.env)"), "Read(./.env)")
+        self.assertEqual(head("Read(//etc/orchidheader4 secret)"), "Read(...)")
+        self.assertEqual(head("mcp__claude_ai_Gmail*__send_message"), "mcp__claude_ai_Gmail*__send_message")
+
+    def test_config_reached_through_a_link_out_of_the_repo_is_not_read(self) -> None:
+        def prepare(repo, home):
+            _write(home, "shared.json", json.dumps({"apiKeyHelper": "demo fakeoutside.py",
+                                                    "permissions": {"deny": ["Bash(curl fakeoutside)"]}}))
+            (repo / ".claude").mkdir()
+            (repo / ".claude" / "settings.json").symlink_to(home / "shared.json")
+
+        got = self.collect({"a.txt": "x\n"}, prepare=prepare)
+        self.assertNotIn("fakeoutside", json.dumps(got.items))
+        self.assertTrue(any(".claude/settings.json" in row and "NOT INSPECTED" in row
+                            for row in self.rows(got, "config-not-parsed")))
+
+    def test_git_does_not_write_a_trace_file(self) -> None:
+        def prepare(repo, home):
+            subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        trace = Path(tmp.name) / "trace.json"
+        self.collect({"a.txt": "x\n"}, {"GIT_TRACE2_EVENT": str(trace), "GIT_TRACE": str(trace)}, prepare=prepare)
+        self.assertFalse(trace.exists())
+
+    def test_write_is_read_only_inside_a_permissions_mapping(self) -> None:
+        got = self.collect({".github/workflows/a.yml":
+                            'on: push\npermissions: {"contents": write}\njobs:\n  a:\n    runs-on: x\n'
+                            "    env:\n      fakeenvkey: write\n    steps:\n      - run: true\n",
+                            ".github/workflows/b.yml":
+                            "on: push\njobs:\n  b:\n    permissions:\n      'pull-requests': write\n"
+                            "      contents: read\n    env:\n      mode: write\n    steps:\n      - run: true\n"},
+                           only={9})
+        rows = self.rows(got, "workflow")
+        self.assertTrue(any("a.yml" in row and "WRITE PERMISSIONS: contents@2;" in row for row in rows))
+        self.assertTrue(any("b.yml" in row and "WRITE PERMISSIONS: pull-requests@5;" in row for row in rows))
+        self.assertFalse(any("fakeenvkey" in row or "mode@" in row for row in rows))
+
+    def test_terraform_protection_must_be_in_the_right_place(self) -> None:
+        got = self.collect({"main.tf":
+                            'terraform {\n  backend "local" {}\n}\n'
+                            'resource "aws_db_instance" "tagged" {\n  tags = {\n    prevent_destroy = true\n'
+                            '    deletion_protection = true\n  }\n}\n'
+                            'resource "aws_db_instance" "guarded" {\n  deletion_protection = true\n}\n'
+                            'resource "aws_s3_bucket" "kept" {\n  lifecycle { prevent_destroy = true }\n}\n'},
+                           only={4})
+        rows = self.rows(got, "unprotected-data-resource")
+        self.assertTrue(any("aws_db_instance.tagged" in row for row in rows))
+        self.assertFalse(any("guarded" in row or "kept" in row for row in rows))
+        self.assertTrue(self.rows(got, "local-terraform-state"))
+
+    def test_relative_kubeconfig_is_flagged_not_skipped(self) -> None:
+        got = self.collect({}, {"KUBECONFIG": "kube.yaml"}, only={2})
+        self.assertTrue(any("env:KUBECONFIG" in row and "NOT INSPECTED" in row for row in self.rows(got, "credential-file")))
+
+    def test_only_an_exact_github_host_is_github(self) -> None:
+        slug = self.mod.github_slug
+        self.assertEqual(slug("https://github.com/acme/demo.git"), ("acme", "demo"))
+        self.assertEqual(slug("git@github.com:acme/demo.git"), ("acme", "demo"))
+        self.assertEqual(slug("ssh://git@github.com/acme/demo"), ("acme", "demo"))
+        self.assertEqual(slug("https://user:pw@github.com/acme/demo"), ("acme", "demo"))
+        for other in ("https://notgithub.com/acme/demo.git", "https://github.com.evil.example/acme/demo",
+                      "https://example.com/github.com/acme/demo", "git@notgithub.com:acme/demo.git"):
+            self.assertIsNone(slug(other), other)
+
+    def test_a_newline_in_a_path_cannot_forge_a_second_row(self) -> None:
+        got = self.collect({"a.txt": "x\n"}, {"BASH_ENV": "{home}/rc\n- forged | lead | row"}, only={10})
+        self.assertTrue(all("\n" not in line for lines in got.coverage.values() for line in lines))
+        self.assertTrue(all("\n" not in item["loc"] + item["note"] for item in got.items))
+
     def test_host_list_is_as_remote_as_its_most_remote_member(self) -> None:
         self.assertEqual(self.mod.classify_host("localhost,db.example.com"), "non-local")
         self.assertEqual(self.mod.sanitize_db_url("mongodb://localhost,db.example.com/app"),
@@ -446,6 +574,8 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertTrue(any("examples/standalone/package.json" in row for row in self.rows(got, "no-lockfile")))
         got = self.collect(dict(nested, **{"package.json": '{"name": "root", "workspaces": ["examples/*"]}'}), only={8})
         self.assertFalse(any("examples/standalone" in row for row in self.rows(got, "no-lockfile")))
+        got = self.collect(dict(nested, **{"package.json": '{"name": "root", "workspaces": ["packages/*"]}'}), only={8})
+        self.assertTrue(any("examples/standalone" in row for row in self.rows(got, "no-lockfile")))
 
     def test_a_link_in_the_repo_is_not_followed(self) -> None:
         def prepare(repo, home):
@@ -468,11 +598,18 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertTrue(verdict("HTTP 404", [], ["push"]).startswith("UNKNOWN"))
         self.assertTrue(verdict("HTTP 403", "HTTP 403", ["admin"]).startswith("UNKNOWN"))
         self.assertIn("UNKNOWN", verdict("HTTP 404", [{"type": "pull_request"}], ["push"]))
+        mixed = verdict(open_to_admins, [{"type": "pull_request"}], ["admin"])
+        self.assertIn("UNKNOWN", mixed)
+        self.assertNotIn("is accepted", mixed)
+        self.assertIn("UNKNOWN", verdict(open_to_admins, "HTTP 403", ["admin"]))
         self.assertNotIn("NO PROTECTION", verdict("request failed", "request failed", []))
 
     def test_command_summary_shows_the_program_and_scripts_only(self) -> None:
         summary = self.mod.command_summary
         self.assertEqual(summary("mysql -u root -pwinterblue7 -h db"), "runs mysql (+5 arguments not shown)")
+        self.assertEqual(summary("node server.js fakeargv.py"), "runs node server.js (+1 arguments not shown)")
+        self.assertEqual(summary("docker run example/image:1 user:fakeimage"), "runs docker (+3 arguments not shown)")
+        self.assertEqual(summary("npx -y @scope/server@1.2.3 --key fakeargv"), "runs npx @scope/server@1.2.3 (+3 arguments not shown)")
         self.assertEqual(summary('bash "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh"'),
                          "runs bash $CLAUDE_PROJECT_DIR/.claude/hooks/x.sh")
         self.assertEqual(summary("TOKEN=plumcanary9 ./run.sh --go"), "runs run.sh (+1 arguments not shown)")
@@ -484,6 +621,50 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertEqual(safe("@scope/server@1.4.2"), "@scope/server@1.4.2")
         self.assertEqual(safe("ctx;$(maplecanary2)"), "<withheld>")
         self.assertEqual(safe("Zq7pR2mX9vL4kT8wB1nC5hJ3"), "<withheld>")
+
+
+class StripHiddenUnicodeTests(unittest.TestCase):
+    """The bundled fixer changes the hidden characters and nothing else."""
+
+    def run_script(self, *args: str):
+        script = Path(_load_collector().__file__).with_name("strip_hidden_unicode.py")
+        return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True,
+                              env={"PATH": os.environ.get("PATH", "")})
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "rules.md"
+        family = chr(0x1F468) + chr(0x200D) + chr(0x1F469)
+        self.content = (chr(0xFEFF) + "first" + chr(0x200B) + " line\r\n" + family + " kept\r\n"
+                        "bidi" + chr(0x202E) + "end\r\n").encode("utf-8")
+        self.path.write_bytes(self.content)
+        self.path.chmod(0o755)
+
+    def test_listing_changes_nothing(self) -> None:
+        done = self.run_script(str(self.path))
+        self.assertEqual(done.returncode, 0)
+        self.assertIn(":1:7 U+200B ZERO WIDTH SPACE", done.stdout)
+        self.assertIn(":3:5 U+202E RIGHT-TO-LEFT OVERRIDE", done.stdout)
+        self.assertIn("2 hidden characters; nothing changed", done.stdout)
+        self.assertEqual(self.path.read_bytes(), self.content)
+
+    def test_apply_removes_only_the_listed_characters(self) -> None:
+        done = self.run_script(str(self.path), "--apply")
+        self.assertEqual(done.returncode, 0)
+        expected = self.content.replace(chr(0x200B).encode(), b"").replace(chr(0x202E).encode(), b"")
+        self.assertEqual(self.path.read_bytes(), expected)  # BOM, emoji joiner and CRLF all intact
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(sorted(p.name for p in Path(self.tmp.name).iterdir()), ["rules.md"])
+
+    def test_links_and_non_utf8_are_refused(self) -> None:
+        link = Path(self.tmp.name) / "link.md"
+        link.symlink_to(self.path)
+        self.assertEqual(self.run_script(str(link), "--apply").returncode, 2)
+        binary = Path(self.tmp.name) / "latin.txt"
+        binary.write_bytes(b"caf\xe9\n")
+        self.assertEqual(self.run_script(str(binary), "--apply").returncode, 2)
+        self.assertEqual(self.path.read_bytes(), self.content)
 
 
 class PureFunctionTests(unittest.TestCase):

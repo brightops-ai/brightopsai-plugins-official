@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   developer machine for eleven classes of hazard through which an agent or a
   script could do irreversible damage, reports findings ranked by blast
   radius, and applies in-repo fixes only after approval. Ships a read-only,
-  standard-library collector (`scripts/collect.py`) that reduces environment
-  variables and credential files to names, paths and hosts so no secret value
-  reaches the transcript. Model-invocable, with frontmatter limited to Agent
+  standard-library collector (`scripts/collect.py`) whose output is built
+  from names, paths, hosts and fixed text rather than file content, with a
+  `--keys` mode that lists a config file's key names, and
+  `scripts/strip_hidden_unicode.py`, which lists and removes hidden Unicode
+  without touching anything else in the file. Model-invocable, with frontmatter limited to Agent
   Skills standard fields so the folder is portable to other agents.
 
 ## [1.3.2] - 2026-09-05

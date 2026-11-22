@@ -334,30 +334,18 @@ Remove a hook, server or skill from repo config only when the user approved
 that specific finding. Move a literal secret out of a config file into an
 environment reference (`"${VAR}"`) and list rotation as manual.
 
-Strip hidden Unicode from a tracked file. Preview first, then apply:
+Strip hidden Unicode from a tracked file with the bundled script. List first,
+show the list to the user, then apply to an approved file:
 
 ```bash
-python3 - "$file" ${APPLY:+--apply} <<'PY'
-import os, re, sys, tempfile, unicodedata
-path, apply = sys.argv[1], "--apply" in sys.argv
-text = open(path, encoding="utf-8").read()
-hidden = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f\U000e0100-\U000e01ef]")
-for number, line in enumerate(text.split("\n"), 1):
-    for match in hidden.finditer(line):
-        char = match.group(0)
-        print(f"{path}:{number}:{match.start() + 1} U+{ord(char):04X} {unicodedata.name(char, 'UNNAMED')}")
-if apply:
-    handle, temp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)))
-    with os.fdopen(handle, "w", encoding="utf-8") as out:
-        out.write(hidden.sub("", text))
-    os.replace(temp, path)          # atomic: the original is never left half-written
-PY
+python3 <skill-dir>/scripts/strip_hidden_unicode.py path/to/RULES.md            # lists positions, changes nothing
+python3 <skill-dir>/scripts/strip_hidden_unicode.py path/to/RULES.md --apply    # removes exactly those
 ```
 
-Run it once to list every position, show that list to the user, and run it
-again with `APPLY=1` only for an approved file. Zero-width joiners inside
-emoji and a leading byte-order mark can be intentional; the listing is how the
-user tells which.
+It removes the characters the collector reports and nothing else: a zero-width
+joiner inside an emoji sequence and a leading byte-order mark are kept, line
+endings and permission bits are preserved, the write is atomic, and links are
+refused.
 
 Check `git diff` afterwards. User-level config and read-only tokens are
 manual.

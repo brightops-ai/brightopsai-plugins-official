@@ -8,10 +8,7 @@ compatibility: Needs python3 (3.9+, standard library only) and git. The gh CLI i
 
 Find the places where one wrong command — from an agent, or from a script an
 agent runs — does damage that cannot be undone, and put a real control or a
-point-of-action warning there.
-
-The audit has two halves with a hard stop between them: report, then (only
-after approval) fix.
+point-of-action warning there. Report first; fix only after approval.
 
 ## The contract
 
@@ -24,13 +21,13 @@ reads the most sensitive files on the machine and ends by editing the repo.
    or package install. A test suite wired to a production database is one of
    the things being looked for, and running it to find out is the incident.
 2. **Secret values never reach the output, and should not reach the context.**
-   Report names, paths, hosts and line numbers. Do not open `.env*` files or
-   credential files with a file-read tool, and do not run `env`, `printenv`,
-   `set`, `gh auth token` or `git config --list` (one key, such as
-   `git config --get core.hooksPath`, is fine); the collector reads those
-   sources in-process and prints only names. If a value reaches the context
-   anyway, do not repeat it: report where it was and recommend rotating it,
-   because it is now in a transcript.
+   Report names, paths, hosts and line numbers. Do not open `.env*` files,
+   credential files or agent config with a file-read tool, and do not run
+   `env`, `printenv`, `set`, `gh auth token` or `git config --list` (one key,
+   such as `git config --get core.hooksPath`, is fine); the collector reads
+   those sources in-process and prints only names. If a value reaches the
+   context anyway, do not repeat it: report where it was and recommend
+   rotating it, because it is now in a transcript.
 3. **Credentials are not exercised.** Finding one is the finding; whether it
    works is not the audit's business. No database connections, no cloud CLI
    calls (`aws sts get-caller-identity` included), no payment API calls. One
@@ -218,4 +215,6 @@ findings were not fixed and why, and the manual steps still open.
   exposing values, what counts as a finding. Read in step 3.
 - `references/fixes.md` — the warning format and control ladder (read before
   writing fix lines), then a fix pattern per check (read in step 6).
-- `scripts/collect.py` — the collector. Execute it; do not load it.
+- `scripts/collect.py` — the collector, and `--keys <file>` to list a config
+  file's key names. `scripts/strip_hidden_unicode.py` — the fixer for check 8.
+  Execute them; do not load them.
