@@ -11,6 +11,51 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/install-hooks.sh` reports the hooks active only when both
+  `.githooks/pre-commit` and `.githooks/pre-merge-commit` exist and are
+  executable. With a hook file missing it used to report the scan live.
+- `scripts/install-hooks.sh` runs every check that can end in a refusal
+  before it changes anything, file modes included. A refusal that said
+  "nothing was changed" had already made the hook files executable.
+- `scripts/install-hooks.sh --force` no longer writes the shared repository
+  config when the value in effect comes from a level that outranks it
+  (worktree-level config, the command line or the environment). It used to
+  change every other worktree's `core.hooksPath` and then fail. It now refuses
+  first and names the level and the command that removes the value.
+- `scripts/install-hooks.sh --force` replaces a `core.hooksPath` that has
+  several values in the repository config (`--replace-all`) instead of
+  failing.
+- `scripts/evict-plugin-cache.sh` works when the cache directories are
+  capitalized differently on a case-insensitive filesystem (`Plugins/Cache`).
+  It used to refuse them as outside the cache. Each managed directory
+  (`plugins`, `cache`, the marketplace, the plugin, the version) is now tested
+  for a symlink directly, so a link is refused whatever a path resolver
+  reports, and capitalization is ignored only in those five names below the
+  resolved config directory.
+- The guidance on what the commit hooks do not cover (`CLAUDE.md`,
+  `CONTRIBUTING.md`, `SECURITY.md`, the installer's output) no longer says
+  that `git rebase`, `git cherry-pick` and `git revert` all run no hook. After
+  a conflict, `git cherry-pick --continue` and `git revert --continue` run
+  `pre-commit`, and so does a commit an interactive rebase stops to `reword`;
+  `git rebase --continue` does not (observed with git 2.56.1,
+  `scripts/tests/test_commit_hook_coverage.py`).
+- `.claude/settings.json`: the deny rules for `refs/heads/main` and
+  `gh auth status -t` need a word boundary first, so a branch named
+  `feature/refs/heads/main` and `gh auth status --hostname git-t` are no
+  longer refused. `git push` with `refs/heads/main` as its own word or after
+  a `:` or `+`, and `-t` as its own word, are refused as before
+  (`scripts/tests/test_agent_settings.py`).
+- The SessionStart hook `.claude/hooks/install-plugins.sh` treats a plugin
+  listing row with no `id`, or a project or local row for the plugin without
+  an absolute `projectPath`, as an unreadable listing: it warns and installs
+  nothing. A row with no `id` used to trigger an install, and an empty
+  `projectPath` counted as this project.
+- The registered SessionStart command falls back to the root of the checkout
+  when `CLAUDE_PROJECT_DIR` is unset, so a session started in a subdirectory
+  still runs the hook.
+
 ### Changed
 
 - `.githooks/pre-commit` fails closed: without `gitleaks` on `PATH` the commit
@@ -69,8 +114,9 @@ rather than numbered.
   test directory does not load the guard. CI now creates its
   `CLAUDE_CONFIG_DIR` under the system temp directory so the suites accept it.
 - `.githooks/pre-merge-commit`: runs the same gitleaks gate on the commit an
-  automatic merge creates, which `pre-commit` does not see. `git rebase`,
-  `git cherry-pick` and `git revert` still run no hook; CI is the backstop.
+  automatic merge creates, which `pre-commit` does not see. `git rebase`, and
+  a `git cherry-pick` or `git revert` that applies without a conflict, still
+  run no hook; CI is the backstop.
 - `scripts/evict-plugin-cache.sh <plugin> <old-version>`: removes one old
   version from the plugin cache after a version bump. It validates both
   arguments, refuses a target that does not resolve inside the marketplace

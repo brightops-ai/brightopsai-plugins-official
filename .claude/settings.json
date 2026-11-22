@@ -17,8 +17,13 @@
       "Bash(git push * main *)",
       "Bash(git push *:main)",
       "Bash(git push *:main *)",
-      "Bash(git push *refs/heads/main)",
-      "Bash(git push *refs/heads/main *)",
+      "Bash(git push refs/heads/main *)",
+      "Bash(git push * refs/heads/main)",
+      "Bash(git push * refs/heads/main *)",
+      "Bash(git push * +refs/heads/main)",
+      "Bash(git push * +refs/heads/main *)",
+      "Bash(git push *:refs/heads/main)",
+      "Bash(git push *:refs/heads/main *)",
       "Bash(git -C * push * main)",
       "Bash(git -C * push * main *)",
       "Bash(git push --force *)",
@@ -48,8 +53,9 @@
       "Bash(printenv *)",
       "Bash(gh auth token *)",
       "Bash(gh auth status *--show-token*)",
-      "Bash(gh auth status *-t)",
-      "Bash(gh auth status *-t *)",
+      "Bash(gh auth status -t *)",
+      "Bash(gh auth status * -t)",
+      "Bash(gh auth status * -t *)",
       "Read(**/.env)",
       "Read(**/.env.local)",
       "Read(**/.env.*.local)",
@@ -84,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/install-plugins.sh\" || true"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/hooks/install-plugins.sh\" || true"
           }
         ]
       }

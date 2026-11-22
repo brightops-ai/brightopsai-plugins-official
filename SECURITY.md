@@ -139,10 +139,14 @@ scan failed, which is different from a finding.
 accepts an unscanned commit. It applies only when the scanner is missing; it
 never overrides a finding or a failed scan.
 
-The hooks do not cover every way a commit is made. `git rebase`,
-`git cherry-pick` and `git revert` create commits without running either
-hook, and `--no-verify` skips them. The CI scan below is the backstop for
-all of those.
+The hooks do not cover every way a commit is made. `git rebase` creates
+commits without running either hook, including `git rebase --continue` after
+a conflict, and so do `git cherry-pick` and `git revert` when they apply
+without a conflict. `--no-verify` skips the hooks. The CI scan below is the
+backstop for all of those. Two cases are scanned locally: after a conflict,
+`git cherry-pick --continue` and `git revert --continue` run `pre-commit`, and
+so does a commit an interactive rebase stops to `reword` (observed with git
+2.56.1).
 
 CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
 requests and pushes to `main` with `gitleaks detect --no-git` and

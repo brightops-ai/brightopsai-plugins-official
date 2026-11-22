@@ -88,10 +88,12 @@ scripts/evict-plugin-cache.sh <name> <old-version>
 
 The script refuses an empty or malformed plugin name or version and any
 target that does not resolve to that one directory inside the marketplace
-cache of the config directory. A cache root, plugin directory or version
-directory that is a symlink is refused. The dry run prints the resolved path
-and how many entries are beneath it. It honours `CLAUDE_CONFIG_DIR`. Do not
-hand-write an `rm -rf` on the cache instead.
+cache of the config directory. A `plugins`, `cache`, marketplace, plugin or
+version directory that is a symlink is refused; each is tested directly. On a
+case-insensitive filesystem the capitalization of those names is not compared,
+so a cache created as `Plugins/Cache` is still the cache. The dry run prints
+the path and how many entries are beneath it. It honours `CLAUDE_CONFIG_DIR`.
+Do not hand-write an `rm -rf` on the cache instead.
 
 If a change still does not appear, look in that cache tree before debugging
 the manifest.
@@ -110,8 +112,12 @@ That points `core.hooksPath` at `.githooks/` so the gitleaks scan runs on
 script is safe to re-run: when the hooks are already active it writes
 nothing. If `core.hooksPath` already names another directory it changes
 nothing and exits 1; `./scripts/install-hooks.sh --force` replaces that value
-on purpose. It reports the hooks as active only after reading back the
-value git will really use in that worktree.
+on purpose, in the repository config. `--force` does not touch a value set at
+a level that outranks the repository config (a worktree's own config, the
+command line, the environment): it changes nothing, exits 1 and names the
+command that removes it. The script reports the hooks as active only when both
+hook files exist and are executable and the value git will really use in that
+worktree is `.githooks`.
 
 The hooks fail closed: if `gitleaks` is not on `PATH` they block the commit
 and print how to install it (`brew install gitleaks` on macOS; on Linux the
@@ -126,8 +132,8 @@ A new Claude Code session opened in the clone runs the same script, from
 the SessionStart hook `.claude/hooks/install-plugins.sh` (registered for
 the `startup` source, so not on resume, `/clear` or compaction). That hook
 also installs the `mattpocock-skills` plugin, only when
-`claude plugin list --json` shows it is missing; if the listing fails, it
-warns and installs nothing. It never updates an installed copy and prints
+`claude plugin list --json` shows it is missing; if the listing fails or has
+a row the hook cannot identify, it warns and installs nothing. It never updates an installed copy and prints
 the installed version to stderr. A plugin it installs loads in the next
 session, or after `/reload-plugins`. The plugin cannot be pinned, so
 `.claude/settings.json` turns off auto-update for its marketplace; what
@@ -135,9 +141,13 @@ that does and does not prevent is in [CLAUDE.md](CLAUDE.md) (Guardrails).
 Update on purpose with
 `claude plugin update mattpocock-skills@claude-plugins-official`.
 
-`git rebase`, `git cherry-pick` and `git revert` create commits without
-running either hook. CI (`.github/workflows/ci.yml`) scans the checked-out
-tree on pull requests and `main` and is the backstop for those. Identifier and credential rules are in
+`git rebase` creates commits without running either hook, and so do
+`git cherry-pick` and `git revert` when they apply without a conflict. After
+a conflict, `git cherry-pick --continue` and `git revert --continue` do run
+`pre-commit`; `git rebase --continue` does not, and the only rebase commit a
+hook sees is one an interactive rebase stops to `reword` (observed with git
+2.56.1). CI (`.github/workflows/ci.yml`) scans the checked-out tree on pull
+requests and `main` and is the backstop for the unscanned ones. Identifier and credential rules are in
 [CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).
 Never write a literal maintainer home or workspace path; use
 `<workspace>`, `<project-root>`. Example credentials must look fake
@@ -253,8 +263,9 @@ cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
 
 When touching `scripts/check-marketplace.py` or its fixtures, the
 hooks in `.githooks/`, `scripts/install-hooks.sh`,
-`scripts/evict-plugin-cache.sh`, `scripts/test-support/`, `.gitignore`, or
-the CI workflow. Also when adding a bats file or a Python test directory
+`scripts/evict-plugin-cache.sh`, `scripts/test-support/`, `.gitignore`,
+`.claude/settings.json`, `.claude/hooks/install-plugins.sh`, or the CI
+workflow. Also when adding a bats file or a Python test directory
 anywhere in the repository: the sandbox guard specs check that it loads the
 guard, and run the bats half only when `bats` is on `PATH`. The hook
 and installer specs work in a throwaway repository and the eviction specs
@@ -317,8 +328,8 @@ empty temp directory.
 - [ ] `blast-radius-audit` collector unittest passes when that skill's
       `scripts/` changed; any new output path is covered by the leak test
 - [ ] `python3 -m unittest discover -s scripts/tests -t scripts` when the
-      marketplace checker, a hook in `.githooks/` or a `scripts/*.sh` file
-      changed
+      marketplace checker, a hook in `.githooks/`, a `scripts/*.sh` file,
+      `.claude/settings.json` or `.claude/hooks/install-plugins.sh` changed
 - [ ] `evals/run.sh` when `improve-prompt` changed (manual); eval index
       check when cases changed
 - [ ] User data is not stored in the plugin tree (`${CLAUDE_PLUGIN_DATA}`

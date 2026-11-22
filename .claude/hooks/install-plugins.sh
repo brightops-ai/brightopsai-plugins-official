@@ -21,7 +21,9 @@
 #   - Installs a plugin only when `claude plugin list --json` exits 0, parses
 #     as JSON and has no row for the plugin that applies to this project. If
 #     the listing fails, cannot be parsed or python3 is missing, the answer is
-#     unknown and the hook warns and skips the install.
+#     unknown and the hook warns and skips the install. So does a listing
+#     with a row that has no id, or a project or local row for the plugin
+#     whose projectPath is not an absolute path.
 #   - Never updates an installed plugin, and prints the installed version to
 #     stderr so a change of version is visible.
 #
@@ -53,7 +55,8 @@ fi
 # Decides whether plugin $1 is installed for this project. Sets plugin_state
 # to installed, missing or unknown, and plugin_detail to the versions found or
 # to the reason the answer is unknown. A row counts when its scope is user or
-# managed, or project or local with a projectPath that is this repository.
+# managed, or project or local with an absolute projectPath that is this
+# repository.
 plugin_state="unknown"
 plugin_detail=""
 plugin_status() {
@@ -76,16 +79,25 @@ plugin, root = sys.argv[1], os.path.realpath(sys.argv[2])
 rows = json.load(sys.stdin)
 if not isinstance(rows, list):
     sys.exit(1)
-found = []
+# Every row is checked before any is filtered out. A row without a usable id
+# cannot be told apart from the plugin being looked for, so it makes the
+# answer unknown; skipped, it would read as "not installed".
 for row in rows:
     if not isinstance(row, dict):
         sys.exit(1)
-    if row.get("id") != plugin:
+    row_id = row.get("id")
+    if not isinstance(row_id, str) or not row_id:
+        sys.exit(1)
+found = []
+for row in rows:
+    if row["id"] != plugin:
         continue
     scope = row.get("scope")
     if scope in ("project", "local"):
         path = row.get("projectPath")
-        if not isinstance(path, str):
+        # Absolute or unknown: an empty or relative path would resolve against
+        # the directory this runs in, which is this project.
+        if not isinstance(path, str) or not os.path.isabs(path):
             sys.exit(1)
         if os.path.realpath(path) != root:
             continue

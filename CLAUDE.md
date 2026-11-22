@@ -162,10 +162,18 @@ scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
 The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
 complete, they block the commit. Install gitleaks (the hook prints how).
 `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
-case only; an agent never sets it. `git rebase`, `git cherry-pick` and
-`git revert` run no commit hook, so CI is the only scan for commits made that
-way. `install-hooks.sh` never replaces an existing `core.hooksPath` unless run
-with `--force`.
+case only; an agent never sets it. `install-hooks.sh` never replaces an
+existing `core.hooksPath` unless run with `--force`.
+
+Commits that no hook scans, so CI is the only scan for them (observed with git
+2.56.1; `scripts/tests/test_commit_hook_coverage.py` holds the fixture):
+
+- `git rebase`, including `git rebase --continue` after a conflict. The one
+  exception is a commit an interactive rebase stops to `reword`.
+- `git cherry-pick` and `git revert` when they apply without a conflict.
+
+After a conflict, `git cherry-pick --continue` and `git revert --continue` do
+run `pre-commit`, as `git commit` does.
 
 ### Guardrails
 
@@ -177,11 +185,11 @@ names the control that holds each rule when the tripwire is stepped around.
 
 | Rule | What holds it | What the tripwire refuses | Do this instead |
 |---|---|---|---|
-| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word; `git push` with `<src>:main` or `refs/heads/main`; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
+| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word; `git push` with `<src>:main`, or with `refs/heads/main` as its own word or straight after a `:` or `+`; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
 | No force push | Branch protection refuses a force push to `main`. Nothing holds other branches | `git push` with `--force` or `-f` as its own word | `git push --force-with-lease origin <branch>`, on your own branch only |
 | No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the tree on every pull request and on `main`, so a skipped hook is caught before merge | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
 | No agent started with a permission-bypass flag | Nothing else | `claude` with `dangerously-skip-permissions` or `bypassPermissions` in its arguments; `codex` with `--yolo` or `--dangerously-bypass-approvals-and-sandbox`; `gemini` with `yolo` anywhere (`--yolo`, `--approval-mode=yolo`) or `-y` as its own word | Start it in its default permission mode |
-| No printing the environment or a token | Nothing else | `env` alone, `env -0`, `env --null`; `printenv` with or without a name; `gh auth token`; `gh auth status` with `--show-token` or `-t` | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
+| No printing the environment or a token | Nothing else | `env` alone, `env -0`, `env --null`; `printenv` with or without a name; `gh auth token`; `gh auth status` with `--show-token` anywhere, or `-t` as its own word | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
 | No reading files that hold real environment values | Nothing else | Read, Edit, Write and `cat`-style commands, at any depth, on `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test`, `.env.dev`, `.env.prod` | Keep key names with fake values in `.env.example`, `.env.sample` or `.env.template`, which stay readable and writable |
 | No send, share or delete through a connector | Nothing else | Under any account suffix (observed 2026-11-22): Gmail send, reply, forward, trash, delete draft, delete label; Slack send and schedule message; Google Drive share, trash, request access; Google Calendar create, update, delete, respond | Use the draft tool, or hand the text to the user |
 
@@ -192,8 +200,8 @@ Known misses, none of them matched:
 - Pushes: a bare `git push` from a local `main`; `+main`; `git -c <key>=<value>
   push`; `git -C <dir> push` with a refspec, `--all`, `--mirror` or a force
   flag.
-- Short flags joined to others: `git push -fu`, `git commit -nm`. Also
-  `git -C <dir> commit -n`.
+- Short flags joined to others: `git push -fu`, `git commit -nm`,
+  `gh auth status -at`. Also `git -C <dir> commit -n`.
 - Environment: `env -u NAME`, `export -p`, `set`, and any program that reads
   its own environment.
 - Environment files under other names (`.env.qa`, `.envrc`), and any program
@@ -203,13 +211,19 @@ Known misses, none of them matched:
 Known false positives: a commit message that contains `--no-verify`, or `-n`
 as its own word, is refused; write the message to a file and use
 `git commit -F <file>`. A ref whose name contains `--all` or `--mirror` cannot
-be pushed by that name.
+be pushed by that name. A branch whose name merely ends in `refs/heads/main`
+(`feature/refs/heads/main`) and a `gh auth status --hostname` value that ends
+in `-t` are no longer refused: those rules need a word boundary first
+(`scripts/tests/test_agent_settings.py`).
 
 The SessionStart hook runs for a new session only (the `startup` matcher), not
-on resume, `/clear` or compaction. It installs `mattpocock-skills` only when
+on resume, `/clear` or compaction. The registered command finds it through
+`CLAUDE_PROJECT_DIR` or, when that is unset, at the root of the checkout the
+session started in, so a session started in a subdirectory still runs it. It installs `mattpocock-skills` only when
 `claude plugin list --json` succeeds and shows no install that applies to this
-project; if the listing fails or cannot be parsed, it warns and installs
-nothing. It never updates an installed copy and prints the installed version
+project; if the listing fails, cannot be parsed, or has a row it cannot
+identify (no `id`, or a project row for the plugin with no absolute
+`projectPath`), it warns and installs nothing. It never updates an installed copy and prints the installed version
 to stderr. A plugin it installs loads in the next session, or after
 `/reload-plugins`.
 
