@@ -85,9 +85,9 @@ CLAUDE_SANDBOX_PLAIN='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345
 
 # claude_sandbox_plain <text>
 #
-# One command for the usual case. bats traces every command a helper runs, so
-# the character-by-character rendering below costs seconds per test if every
-# value goes through it.
+# One command for the usual case, in place of the several hundred the
+# character-by-character rendering below takes. A spec that calls
+# claude_sandbox_assert itself runs them under bats' command tracing.
 claude_sandbox_plain() {
   [[ "$1" != *[!$CLAUDE_SANDBOX_PLAIN]* ]]
 }
@@ -187,9 +187,14 @@ claude_sandbox_real_target() {
   esac
 }
 
+# The result of the last successful claude_sandbox_physical call.
+CLAUDE_SANDBOX_PHYSICAL=""
+
 # claude_sandbox_physical <path>
 #
-# Echoes the path with every symbolic link resolved. The path need not exist:
+# Sets CLAUDE_SANDBOX_PHYSICAL to the path with every symbolic link resolved.
+# (A variable, not output: every caller would need a second subshell to read
+# it, and bats runs this for every variable before every test.) The path need not exist:
 # the nearest existing directory is resolved and the rest is appended. Fails
 # when the answer cannot be trusted: a link to a file or to nothing, a ".." in
 # the part that does not exist yet (which a plain prefix test would let climb
@@ -233,7 +238,7 @@ claude_sandbox_physical() {
   if claude_sandbox_has_control "$path"; then
     return 1
   fi
-  printf '%s\n' "$path"
+  CLAUDE_SANDBOX_PHYSICAL="$path"
 }
 
 # claude_sandbox_within <physical-path> <physical-root>
@@ -279,16 +284,21 @@ claude_sandbox_roots() {
   local tmp="${TMPDIR:-/tmp}" primary home config="" candidate extra known root
   CLAUDE_SANDBOX_ROOTS=()
 
-  if [[ ! -d "$tmp" ]] || ! primary="$(claude_sandbox_physical "$tmp")"; then
+  if [[ ! -d "$tmp" ]] || ! claude_sandbox_physical "$tmp"; then
     claude_sandbox_refuse \
       "the temp directory $tmp is not an existing directory this guard can resolve; this test would WRITE its sandbox to a path nobody checked." \
       "Set TMPDIR to an existing directory, or unset it."
     return 1
   fi
 
+  primary="$CLAUDE_SANDBOX_PHYSICAL"
+
   home="$(claude_sandbox_passwd_home)"
-  if [[ "$home" == /* ]] && home="$(claude_sandbox_physical "$home")"; then
-    config="$(claude_sandbox_physical "$home/.claude")" || config=""
+  if [[ "$home" == /* ]] && claude_sandbox_physical "$home"; then
+    home="$CLAUDE_SANDBOX_PHYSICAL"
+    if claude_sandbox_physical "$home/.claude"; then
+      config="$CLAUDE_SANDBOX_PHYSICAL"
+    fi
   else
     home=""
   fi
@@ -315,7 +325,8 @@ claude_sandbox_roots() {
 
   for candidate in /tmp "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"; do
     [[ "$candidate" == /* && -d "$candidate" ]] || continue
-    extra="$(claude_sandbox_physical "$candidate")" || continue
+    claude_sandbox_physical "$candidate" || continue
+    extra="$CLAUDE_SANDBOX_PHYSICAL"
     claude_sandbox_usable_root "$extra" "$home" "$config" || continue
     known=0
     for root in "${CLAUDE_SANDBOX_ROOTS[@]}"; do
@@ -330,9 +341,8 @@ claude_sandbox_roots() {
 # Returns 0 when the variable holds a clean absolute path that resolves under
 # a temp directory. Otherwise prints the refusal and returns 1.
 claude_sandbox_check() {
-  local name="$1" value physical root state noun remedy
+  local name="$1" value physical root state remedy
   value="${!name:-}"
-  noun="$(claude_sandbox_noun "$name")"
   remedy="Unset $name to get a fresh temp directory, or point it under ${CLAUDE_SANDBOX_ROOTS[0]}."
   case "$name" in
     BATS_*) remedy="Run bats with TMPDIR unset, or set to an existing temp directory." ;;
@@ -352,7 +362,7 @@ claude_sandbox_check() {
   # check a different path from the one the script under test receives.
   if claude_sandbox_has_control "$value"; then
     claude_sandbox_refuse \
-      "$name holds a control character ($value); this test would WRITE $noun to a path nobody checked." \
+      "$name holds a control character ($value); this test would WRITE $(claude_sandbox_noun "$name") to a path nobody checked." \
       "$remedy"
     return 1
   fi
@@ -361,17 +371,18 @@ claude_sandbox_check() {
   # used, and the Python code under test expands a leading "~".
   if [[ "$value" != /* ]]; then
     claude_sandbox_refuse \
-      "$name is $value, which is not an absolute path; this test would WRITE $noun to a path nobody checked." \
+      "$name is $value, which is not an absolute path; this test would WRITE $(claude_sandbox_noun "$name") to a path nobody checked." \
       "$remedy"
     return 1
   fi
 
-  if ! physical="$(claude_sandbox_physical "$value")"; then
+  if ! claude_sandbox_physical "$value"; then
     claude_sandbox_refuse \
-      "$name is $value, which cannot be resolved to a real path; this test would WRITE $noun to a path nobody checked." \
+      "$name is $value, which cannot be resolved to a real path; this test would WRITE $(claude_sandbox_noun "$name") to a path nobody checked." \
       "$remedy"
     return 1
   fi
+  physical="$CLAUDE_SANDBOX_PHYSICAL"
 
   for root in "${CLAUDE_SANDBOX_ROOTS[@]}"; do
     if claude_sandbox_within "$physical" "$root"; then
@@ -380,7 +391,7 @@ claude_sandbox_check() {
   done
 
   claude_sandbox_refuse \
-    "$name resolves to $physical, outside the temp directory ${CLAUDE_SANDBOX_ROOTS[0]}; this test would WRITE $noun there." \
+    "$name resolves to $physical, outside the temp directory ${CLAUDE_SANDBOX_ROOTS[0]}; this test would WRITE $(claude_sandbox_noun "$name") there." \
     "$remedy"
   return 1
 }
@@ -420,7 +431,27 @@ claude_sandbox_assert() {
 # claude_sandbox_enter
 #
 # The whole guard. Runs when this file is loaded.
+#
+# bats runs its DEBUG trap on every command of every function while functrace
+# (set -T) is on, which it needs to report where a spec failed. Inside this
+# guard that reporting is worth nothing, since a refusal is reported at the
+# `load` line either way, and it made the guard several times slower than the
+# specs it protects. Functrace is switched off for the functions called from
+# here and put back before returning.
 claude_sandbox_enter() {
+  local traced=0 status=0
+  case "$-" in
+    *T*)
+      traced=1
+      set +T
+      ;;
+  esac
+  claude_sandbox_enter_untraced || status=$?
+  [[ "$traced" -eq 0 ]] || set -T
+  return "$status"
+}
+
+claude_sandbox_enter_untraced() {
   local name base_name="BATS_TEST_TMPDIR" sandbox
 
   claude_sandbox_roots || return 1

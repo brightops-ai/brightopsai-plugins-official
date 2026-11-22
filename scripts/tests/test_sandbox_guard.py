@@ -727,6 +727,22 @@ class TestBashGuard(_DecoyNeverCreated):
         self.assertIn("WARNING: neither BATS_TEST_TMPDIR nor BATS_FILE_TMPDIR is set", result.stderr)
         self.assertIn(" Refusing.", result.stderr)
 
+    def test_function_tracing_is_left_as_the_caller_had_it(self) -> None:
+        # bats needs `set -T` back to report where a spec fails; the guard
+        # switches it off only while it runs.
+        report = 'case "$-" in *T*) echo tracing:on ;; *) echo tracing:off ;; esac'
+        for before, expected in (("set -T", "tracing:on"), ("set +T", "tracing:off")):
+            with self.subTest(before=before):
+                for env in ({}, {"CLAUDE_PLUGIN_DATA": f"{DECOY}/plugin-data"}):
+                    result = subprocess.run(
+                        ["bash", "-c", f'{before}\nsource "$1"\n{report}', "bash", str(BASH_GUARD)],
+                        env=_caller_env(BATS_TEST_TMPDIR=str(self.tmp), **env),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.stdout.strip(), expected, result.stderr)
+
     def test_setup_file_gets_a_sandbox_under_the_file_directory(self) -> None:
         file_tmp = self.tmp / "bats-file"
         file_tmp.mkdir()
