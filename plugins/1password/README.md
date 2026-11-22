@@ -7,6 +7,12 @@ Covers authentication, retrieval, injection, storage, and SSH keys via the
 1Password SSH agent. Private SSH keys stay in 1Password; they are never written
 to disk.
 
+The `1password` skill follows 1Password's
+[guidance for AI agents](https://www.1password.dev/get-started/secure-ai-access):
+the agent acts on secrets without handling them. Its default is `op run` with
+secret references, so a value goes from 1Password to the one process that
+needs it and never into the conversation.
+
 ## Install
 
 Add this marketplace if it is not already configured, then install the plugin
@@ -21,7 +27,7 @@ inside Claude Code:
 
 | Invoke | What it does |
 |--------|----------------|
-| `/1password:1password` | Authenticate with `op`, read and inject secrets, store new items, rotate credentials, render config templates. |
+| `/1password:1password` | Authenticate with `op`, run commands with secrets through `op run`, store new items without the value passing through the agent, render config templates, and set up keys for agent tools and MCP servers with 1Password Environments. |
 | `/1password:ssh-keys` | Create SSH keys in 1Password, offer them through the SSH agent with biometric approval (Touch ID on macOS), copy public keys to remotes and GitHub, and set up git commit signing. |
 
 Both skills are model-invocable.
