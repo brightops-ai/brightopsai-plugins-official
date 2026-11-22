@@ -55,12 +55,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaced. With a lockfile of its own the dashboard installs from the two
   files it holds, as before. With no lockfile it is refused (exit 1), as
   before.
-- The two files are replaced only after `npm ci` has succeeded in the
-  staging directory, so a failed install (exit 4) leaves them as they were.
-  A file that changed while `npm` was running is not replaced: the run exits
-  5 and the next run decides again. `node_modules` is still moved in last.
+- Nothing in the dashboard is touched until `npm ci` has succeeded in the
+  staging directory, so a failed install (exit 4) leaves it as it was. After
+  the install the script checks again that both files are what the install
+  was planned against and that no `node_modules` has appeared. If anything
+  changed while `npm` ran, it exits 5 and the dashboard is byte for byte as
+  it was. This also holds for a dashboard that installs from its own pair.
+- A file is never replaced where it stands. It is moved out of the
+  dashboard, what was moved is checked, and only then is the new file linked
+  into the empty path, which cannot overwrite anything and never shows a
+  partial file. Both old files go out before either new one goes in, and
+  `node_modules` arrives last. If a file turns out to have been edited at
+  the last moment, or a step fails, everything is put back and the run exits
+  5 (4 when a file could not be written). The message names each file and
+  what happened to it.
+- An edit is kept even when its path has been filled by something else
+  before it could be put back: it is saved beside the path as
+  `<name>.set-aside.<id>` and reported.
+- `SIGINT`, `SIGTERM` and `SIGHUP` that arrive during those few steps are
+  held until the steps are complete or undone, then the run exits 130 or
+  143. A run killed outright (`SIGKILL`, power loss) in that moment can leave
+  a file out of the dashboard; it is in the staging directory beside it, and
+  the next run puts it back before doing anything else. That staging
+  directory is not deleted by the next run, which says when it can be.
+- The lockfile is no longer written through to its final name, so an
+  interrupted write cannot leave a partial `package-lock.json` (1.3.0 could).
+- An unreadable `package.json` or `package-lock.json` is reported as
+  unreadable (exit 1).
 - Recognising an earlier release's file needs `sha256sum` or `shasum`. With
   neither, such a file counts as edited.
+- What is not covered. A file that is not being replaced is checked after
+  the install but not again: an edit to it in the instant between that check
+  and the end of the run is not noticed. A program that already has a file
+  open can still write to it after it was moved out and checked. On a
+  filesystem without hard links the new file is renamed into place instead,
+  and a file created at that path in the instant between the check and the
+  rename can be overwritten. `node_modules` is still moved in with the
+  check-then-rename that 1.3.0 uses.
 - The production bundle grows from about 467 kB to 499 kB (126 kB to 138 kB
   gzipped): zod 4 is larger and both schemas are still built at load.
 
@@ -76,6 +107,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/fixtures/`: the `package.json` files earlier releases shipped and
   the 1.3.0 lockfile, byte for byte, so the specs for the cases above do not
   depend on the revision under test.
+- `tests/ensure-dashboard.bats` goes from 21 to 60 specs: the earlier-release
+  cases, each thing that can change, fail or stop while the two files are
+  exchanged, and each state a killed run can leave with what the next run
+  does.
 
 ## [1.3.0] - 2026-11-22
 
