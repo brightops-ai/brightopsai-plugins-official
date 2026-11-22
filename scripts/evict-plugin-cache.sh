@@ -87,7 +87,7 @@ fi
 root_real="$(resolve "$cache_root")"
 target_real="$(resolve "$target")"
 if [ -z "$root_real" ] || [ "$target_real" != "$root_real/$plugin/$version" ]; then
-  echo "WARNING: '$target' resolves to '$target_real', not '$root_real/$plugin/$version'; this DELETES files outside the plugin cache. Refusing." >&2
+  echo "WARNING: '$target' resolves to '$target_real', not '$root_real/$plugin/$version'; this DELETES a different directory. Refusing." >&2
   exit 1
 fi
 
