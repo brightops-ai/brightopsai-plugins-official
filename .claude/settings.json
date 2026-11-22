@@ -10,6 +10,48 @@
   "enabledPlugins": {
     "mattpocock-skills@claude-plugins-official": true
   },
+  "permissions": {
+    "deny": [
+      "Bash(git push * main)",
+      "Bash(git push * main *)",
+      "Bash(git push *:main)",
+      "Bash(git push *:main *)",
+      "Bash(git push *--force)",
+      "Bash(git push *--force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)",
+      "Bash(git commit *--no-verify*)",
+      "Bash(git commit -n *)",
+      "Bash(claude *dangerously-skip-permissions*)",
+      "Bash(claude *bypassPermissions*)",
+      "Bash(codex *--dangerously-bypass-approvals-and-sandbox*)",
+      "Bash(codex *--yolo*)",
+      "Bash(gemini *--yolo*)",
+      "Bash(env)",
+      "Bash(printenv *)",
+      "Bash(gh auth token *)",
+      "Bash(gh auth status *--show-token*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "mcp__claude_ai_Gmail*__send_message",
+      "mcp__claude_ai_Gmail*__reply",
+      "mcp__claude_ai_Gmail*__forward",
+      "mcp__claude_ai_Gmail*__trash_message",
+      "mcp__claude_ai_Gmail*__trash_thread",
+      "mcp__claude_ai_Gmail*__delete_draft",
+      "mcp__claude_ai_Gmail*__delete_label",
+      "mcp__claude_ai_Slack*__slack_send_message",
+      "mcp__claude_ai_Slack*__slack_schedule_message",
+      "mcp__claude_ai_Google_Drive*__share_file",
+      "mcp__claude_ai_Google_Drive*__trash_file",
+      "mcp__claude_ai_Google_Drive*__request_access",
+      "mcp__claude_ai_Google_Calendar*__create_event",
+      "mcp__claude_ai_Google_Calendar*__update_event",
+      "mcp__claude_ai_Google_Calendar*__delete_event",
+      "mcp__claude_ai_Google_Calendar*__respond_to_event"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

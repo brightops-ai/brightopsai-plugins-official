@@ -18,6 +18,20 @@ rather than numbered.
   receiving updates. A replacement skill will be published separately by
   BrightOps AI. See [ADR 0001](docs/adr/0001-plugin-consolidation-scope.md).
 
+### Security
+
+- `.claude/settings.json` gains a `permissions.deny` block for Claude Code
+  sessions in this repo: pushes to `main`, `git push --force`, hook-skipping
+  commits, agents started with a permission-bypass flag, printing the
+  environment or a GitHub token, reading `.env` files, and connector tools
+  that send, share or delete. The rules are tripwires, not a boundary;
+  `CLAUDE.md` (Guardrails) names what else enforces each one.
+- `.github/CODEOWNERS` names the repository owner for every path.
+- The SessionStart hook `.claude/hooks/install-plugins.sh` now activates the
+  tracked git hooks (`scripts/install-hooks.sh`) and installs
+  `mattpocock-skills` only when it is missing, printing the installed version
+  to stderr, where it used to re-resolve the plugin on every session.
+
 ### Added
 
 - GitHub Actions workflow `.github/workflows/ci.yml`: plugin validate,

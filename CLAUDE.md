@@ -136,8 +136,42 @@ Two consequences for anything written here, including docs:
   Identifiers are what get placeholdered.
 - **Example credentials must look fake** (`sk_test_REPLACE_ME`), not
   realistically shaped. If a rule fires, fix the value or add a *rule-scoped*
-  allowlist; don't add a path allowlist and don't use `--no-verify`.
+  allowlist; don't add a path allowlist and don't use `--no-verify` (a deny
+  rule refuses it; see Guardrails below).
 
-Git never clones hooks, so in a fresh clone assume the local pre-commit
-gate is inactive until `./scripts/install-hooks.sh` has run. CI still
+Git never clones hooks. A Claude Code session runs
+`./scripts/install-hooks.sh` at start, from the SessionStart hook
+`.claude/hooks/install-plugins.sh`. In any other fresh clone assume the local
+pre-commit gate is inactive until that script has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
+
+### Guardrails
+
+`permissions.deny` in [`.claude/settings.json`](.claude/settings.json) backs
+the rules below for a Claude Code session opened here. A deny rule refuses the
+usual spelling of a command. It is a tripwire, not a security boundary: the
+same program run by path, inside `bash -c` or from a script is not matched, and
+other agents do not read the file.
+
+| Rule | Enforced by | Do this instead |
+|---|---|---|
+| No push to `main` | Branch protection: pull request and one approval, administrators exempt (checked 2026-11-22). Deny rules on `git push <remote> main` and `<src>:main`; a bare `git push` from a local `main` is not matched | `git push -u origin <branch>`, then `gh pr create` |
+| No `git push --force` or `-f` | Deny rules; branch protection refuses a force push to `main` | `git push --force-with-lease origin <branch>`, on your own branch only |
+| No `git commit --no-verify` or `-n` | Deny rules; the CI gitleaks scan still runs on the pull request | Fix what the hook flagged, then `git commit` |
+| No agent started with a permission-bypass flag (`claude --dangerously-skip-permissions`, `--permission-mode bypassPermissions`, `codex --yolo`, `gemini --yolo`) | Deny rules only | Start it in its default permission mode |
+| No printing the environment or a token (`env` alone, `printenv`, `gh auth token`, `gh auth status --show-token`) | Deny rules only | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
+| No reading `.env` or `.env.*` at any depth | `Read` deny rules, which also cover `cat`, `head` and similar; a script that opens the file itself is not matched | Ask for the variable name and test it as above |
+| No send, reply, forward, share, trash or delete through the Gmail, Slack, Google Drive and Google Calendar connectors | Deny rules only. They match those connectors under any account suffix (observed 2026-11-22); other connectors are not covered | Use the draft tool, or hand the text to the user |
+
+A commit message that contains the text `--no-verify` also trips the rule;
+write the message to a file and use `git commit -F <file>`.
+
+The same SessionStart hook installs `mattpocock-skills` only when it is
+missing. `claude plugin install` takes no version pin (Claude Code 2.1.330), so
+the hook never updates an installed copy, and it prints the installed version
+to stderr on every start. Update on purpose with
+`claude plugin update mattpocock-skills@claude-plugins-official`.
+
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names the reviewer for every path.
+It binds only once branch protection requires code-owner review, which is a
+repository setting.

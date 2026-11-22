@@ -70,7 +70,8 @@ confidential material.
 A pre-commit gitleaks hook in `.githooks/pre-commit`, activated by
 `./scripts/install-hooks.sh` (`core.hooksPath`), scans staged changes.
 Git does not clone hooks, so a fresh clone has no local scan until that
-script runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
+script runs. A Claude Code session opened in the clone runs it at session
+start. If `gitleaks` is missing, the hook skips the scan and exits 0.
 
 CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
 requests and pushes to `main` with `gitleaks detect --no-git` and

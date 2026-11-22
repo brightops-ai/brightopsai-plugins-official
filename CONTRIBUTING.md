@@ -98,6 +98,12 @@ the repository root:
 
 That points `core.hooksPath` at `.githooks/` so the gitleaks pre-commit
 scan runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
+A Claude Code session opened in the clone runs the same script at start,
+from the SessionStart hook `.claude/hooks/install-plugins.sh`. That hook
+also installs the `mattpocock-skills` plugin when it is missing. It never
+updates an installed copy, because `claude plugin install` takes no version
+pin, and it prints the installed version to stderr. Update on purpose with
+`claude plugin update mattpocock-skills@claude-plugins-official`.
 CI (`.github/workflows/ci.yml`) still scans the checked-out tree on pull
 requests and `main`. Identifier and credential rules are in
 [CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).

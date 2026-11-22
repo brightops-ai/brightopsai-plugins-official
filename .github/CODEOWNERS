@@ -1,0 +1,4 @@
+# Default owner for every path. GitHub requests this review on each pull
+# request; it is required only where branch protection asks for code-owner
+# review.
+* @danielcbright
