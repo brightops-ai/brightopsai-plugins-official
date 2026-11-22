@@ -3,8 +3,10 @@
 # Behaviour of the spawn-session skill's script and its pure decision lib.
 #
 # Specs that drive tmux use a private server named with `tmux -L` (see
-# helpers/tmux-sandbox.bash) and only ever create zz-spawn-* sessions. No spec
-# launches the real `claude` binary.
+# helpers/tmux-sandbox.bash) and only ever create zz-spawn-* sessions. The
+# specs for what the launcher says before it launches put a recording stand-in
+# for the multiplexer on PATH instead, so they need no tmux and reach no
+# server. No spec launches the real `claude` binary.
 
 setup() {
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
@@ -160,11 +162,27 @@ live_setup() {
   # belonging to every session on the machine.
   CONFIG_FILE="$BATS_TEST_TMPDIR/claude.json"
   echo '{"projects":{}}' > "$CONFIG_FILE"
+  TRUST_FLAG="--trust-folder"
+}
+
+# pretrust <dir>
+#
+# Record trust for a directory in the fixture configuration, and stop passing
+# --trust-folder. --bypass is refused alongside --trust-folder, so a spec that
+# launches with bypass settles trust first — the same two steps a caller takes.
+# The key is derived the way the launcher derives it, so the entry written is
+# the entry it looks up.
+pretrust() {
+  local dir key
+  dir="$(cd "$1" && pwd)"
+  key="$(trust_key "$dir" "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)")"
+  python3 "$SKILL_DIR/scripts/lib/trust-config.py" grant "$CONFIG_FILE" "$key"
+  TRUST_FLAG=""
 }
 
 spawn() {
   SPAWN_SESSIONS_DIR="$SESSIONS_DIR" SPAWN_CONFIG_FILE="$CONFIG_FILE" \
-    "$SPAWN" --socket "$SANDBOX_SOCKET" --pre-launch "$PRE_LAUNCH" --trust-folder "$@"
+    "$SPAWN" --socket "$SANDBOX_SOCKET" --pre-launch "$PRE_LAUNCH" ${TRUST_FLAG:+"$TRUST_FLAG"} "$@"
 }
 
 teardown() {
@@ -176,6 +194,7 @@ teardown() {
   live_setup
   local dir="$BATS_TEST_TMPDIR/work"
   mkdir -p "$dir"
+  pretrust "$dir"
 
   run spawn "zz-spawn-a" --dir "$dir" --bypass --no-verify
   [ "$status" -eq 0 ]
@@ -227,6 +246,7 @@ teardown() {
 # bats test_tags=live
 @test "dry run reports the plan and launches nothing" {
   live_setup
+  pretrust /tmp
 
   run spawn "zz-spawn-dry" --dir /tmp --bypass --dry-run
   [ "$status" -eq 0 ]
@@ -415,7 +435,7 @@ live_setup_hs() {
 spawn_hs() {
   SPAWN_SESSIONS_DIR="$SESSIONS_DIR" SPAWN_PROJECTS_DIR="$PROJECTS_DIR" \
   SPAWN_CONFIG_FILE="$CONFIG_FILE" \
-    "$SPAWN" --socket "$SANDBOX_SOCKET" --pre-launch "$PRE_LAUNCH" --trust-folder "$@"
+    "$SPAWN" --socket "$SANDBOX_SOCKET" --pre-launch "$PRE_LAUNCH" ${TRUST_FLAG:+"$TRUST_FLAG"} "$@"
 }
 
 # bats test_tags=live
@@ -423,6 +443,7 @@ spawn_hs() {
   live_setup_hs
   local dir="$BATS_TEST_TMPDIR/work"
   mkdir -p "$dir"
+  pretrust "$dir"
   stub_answering "\$PWD" bypass
 
   run spawn_hs "zz-spawn-hs-ok" --dir "$dir" --bypass --timeout 25
@@ -435,6 +456,7 @@ spawn_hs() {
   live_setup_hs
   local dir="$BATS_TEST_TMPDIR/work"
   mkdir -p "$dir"
+  pretrust "$dir"
   # Answers from somewhere it is not: the shape of a handshake that reached a
   # different pane than the one intended.
   stub_answering "/somewhere/else" bypass
@@ -741,4 +763,258 @@ Quick safety check: Is this a project you created or one you trust?
 
   run trust_grantable "/srv/thing" "/home/someone"
   [ "$status" -eq 0 ]
+}
+
+# ── saying what is about to happen ──────────────────────────────────────────
+#
+# A hazard is named by the command, on stderr, at the moment it runs: that is
+# when the caller is deciding what to do next. These specs pin the wording
+# shape (the run-time fact, then the consequence as one capitalised verb) and
+# the stream, because a warning on stdout would corrupt --porcelain output and
+# a warning nobody can parse out of the report would be dropped.
+
+# has <text> <needle> / lacks <text> <needle>
+#
+# Literal substring checks, as functions. A bare `[[ ]]` that comes out false
+# fails a spec only where the shell running bats applies errexit to it, which
+# bash 3.2 — still the system shell on macOS — does not unless it is the last
+# line. A function returning non-zero fails the spec everywhere, so the specs
+# below cannot pass on one machine for want of the shell that would fail them.
+has() {
+  [[ "$1" == *"$2"* ]] || { echo "expected to find: $2"; echo "in: $1"; return 1; }
+}
+
+lacks() {
+  [[ "$1" != *"$2"* ]] || { echo "expected not to find: $2"; echo "in: $1"; return 1; }
+}
+
+@test "bypass_warning names the session and directory, then the consequence" {
+  run bypass_warning "demo" "/some/where"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  has "$output" "WARNING: --bypass turns ALL permission prompts off for 'demo' in /some/where; this LAUNCHES "
+
+  # A dry run launches nothing, so it says what the real run does.
+  run bypass_warning "demo" "/some/where" dry-run
+  [ "${#lines[@]}" -eq 1 ]
+  has "$output" "'demo' in /some/where; without --dry-run this LAUNCHES "
+}
+
+@test "trust_is_wider is true only for a directory below a repository root" {
+  run trust_is_wider "/repo/sub/dir" "/repo"
+  [ "$status" -eq 0 ]
+
+  # The root itself is exactly what was named.
+  run trust_is_wider "/repo" "/repo"
+  [ "$status" -ne 0 ]
+
+  # Outside a repository the key is the directory, so nothing is widened.
+  run trust_is_wider "/loose/dir" ""
+  [ "$status" -ne 0 ]
+}
+
+@test "trust_scope_warning names both the directory and the repository" {
+  run trust_scope_warning "/repo/sub/dir" "/repo"
+  [ "${#lines[@]}" -eq 1 ]
+  has "$output" "WARNING: /repo/sub/dir is inside the repository /repo; this RECORDS trust for the whole repository"
+
+  run trust_scope_warning "/repo/sub/dir" "/repo" dry-run
+  has "$output" "/repo; without --dry-run this RECORDS trust for the whole repository"
+}
+
+# stub_setup
+#
+# A fixture configuration and a stand-in multiplexer that records each call
+# and reports that no session exists. With --no-verify the launcher's only
+# effects are multiplexer calls, so everything up to and including the launch
+# is assertable with no tmux installed and no server — private or otherwise —
+# ever contacted.
+stub_setup() {
+  CONFIG_FILE="$BATS_TEST_TMPDIR/claude.json"
+  echo '{"projects":{}}' > "$CONFIG_FILE"
+  TRUST_FLAG=""
+  WORK="$BATS_TEST_TMPDIR/work"
+  mkdir -p "$WORK"
+  ERR="$BATS_TEST_TMPDIR/stderr"
+  MUX_LOG="$BATS_TEST_TMPDIR/mux.log"
+  MUX_DIR="$BATS_TEST_TMPDIR/mux"
+  mkdir -p "$MUX_DIR"
+  cat > "$MUX_DIR/tmux" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MUX_LOG"
+case " $* " in
+  *" has-session "*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$MUX_DIR/tmux"
+}
+
+# spawn_stub <args...>
+#
+# Runs the launcher against the stand-in. stdout is left for `run` to capture
+# and stderr goes to $ERR, so a spec can say which stream a line arrived on.
+spawn_stub() {
+  PATH="$MUX_DIR:$PATH" MUX_LOG="$MUX_LOG" \
+  SPAWN_CONFIG_FILE="$CONFIG_FILE" \
+  SPAWN_SESSIONS_DIR="$BATS_TEST_TMPDIR/sessions" \
+  SPAWN_PROJECTS_DIR="$BATS_TEST_TMPDIR/projects" \
+    "$SPAWN" --socket "zzspawn-stub" "$@" 2>"$ERR"
+}
+
+@test "a bypass launch warns on stderr, naming the session and directory" {
+  stub_setup
+  pretrust "$WORK"
+
+  run spawn_stub "zz-spawn-warn" --dir "$WORK" --bypass --no-verify
+  [ "$status" -eq 0 ]
+
+  local err
+  err="$(cat "$ERR")"
+  has "$err" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-warn' in $WORK; this LAUNCHES "
+
+  # On stderr only: the report on stdout carries no trace of it.
+  lacks "$output" "WARNING"
+  has "$output" "(bypass)"
+
+  # And the launch did happen, with the flag the warning is about.
+  grep -q -- 'new-session -d -s zz-spawn-warn' "$MUX_LOG"
+  grep -q -- '--dangerously-skip-permissions' "$MUX_LOG"
+}
+
+@test "a launch without --bypass prints no warning" {
+  stub_setup
+  pretrust "$WORK"
+
+  run spawn_stub "zz-spawn-plain" --dir "$WORK" --no-verify
+  [ "$status" -eq 0 ]
+  [ ! -s "$ERR" ]
+  grep -q -- '--permission-mode acceptEdits' "$MUX_LOG"
+}
+
+@test "a dry run with --bypass prints the warning and launches nothing" {
+  stub_setup
+  pretrust "$WORK"
+
+  run spawn_stub "zz-spawn-drywarn" --dir "$WORK" --bypass --dry-run
+  [ "$status" -eq 0 ]
+
+  local err
+  err="$(cat "$ERR")"
+  has "$err" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-drywarn' in $WORK; without --dry-run this LAUNCHES "
+
+  # The plan is still on stdout, and still free of the warning.
+  has "$output" "would spawn 'zz-spawn-drywarn'"
+  has "$output" "--dangerously-skip-permissions"
+  lacks "$output" "WARNING"
+
+  # Nothing was asked of the multiplexer at all.
+  [ ! -e "$MUX_LOG" ]
+}
+
+@test "--bypass with --trust-folder is refused as usage, naming the two steps" {
+  stub_setup
+  local before
+  before="$(cat "$CONFIG_FILE")"
+
+  local args
+  for args in "--bypass --trust-folder" "--trust-folder --bypass" "-b --trust-folder --dry-run"; do
+    # shellcheck disable=SC2086 # word splitting is the point: one flag per word
+    run spawn_stub "zz-spawn-both" --dir "$WORK" --no-verify $args
+    [ "$status" -eq 2 ] || { echo "'$args' exited $status"; return 1; }
+    [ -z "$output" ]
+
+    local err
+    err="$(cat "$ERR")"
+    has "$err" "--bypass and --trust-folder cannot be combined"
+    # The alternative, in order: trust without bypass, then bypass alone.
+    has "$err" "First record trust: run once with --trust-folder and without --bypass"
+    has "$err" "Then run again with --bypass and without --trust-folder."
+    # A refusal launches nothing, so it must not announce a launch.
+    lacks "$err" "this LAUNCHES"
+  done
+
+  # Refused before anything was done: no trust recorded, no multiplexer call.
+  [ "$(cat "$CONFIG_FILE")" = "$before" ]
+  [ ! -e "$MUX_LOG" ]
+}
+
+@test "an untrusted workspace under --bypass is refused with the two steps" {
+  stub_setup
+
+  run spawn_stub "zz-spawn-untrusted" --dir "$WORK" --bypass --no-verify
+  [ "$status" -eq 2 ]
+
+  local err
+  err="$(cat "$ERR")"
+  has "$err" "not a trusted workspace"
+  # Not the usual "re-run with --trust-folder": that combination is refused,
+  # so the advice has to be the one that works.
+  has "$err" "First record trust: run once with --trust-folder and without --bypass"
+  has "$err" "Then run again with --bypass and without --trust-folder."
+  lacks "$err" "this LAUNCHES"
+  run grep -c -- 'new-session' "$MUX_LOG"
+  [ "$output" = "0" ]
+
+  # The dry run reports the same decision without making it.
+  run spawn_stub "zz-spawn-untrusted" --dir "$WORK" --bypass --dry-run
+  [ "$status" -eq 0 ]
+  has "$output" "would refuse; record trust first, without --bypass"
+}
+
+@test "porcelain stdout is unchanged by a bypass launch; the warning is on stderr" {
+  stub_setup
+  pretrust "$WORK"
+
+  run spawn_stub "zz-spawn-tsv2" --dir "$WORK" --bypass --no-verify --porcelain
+  [ "$status" -eq 0 ]
+
+  # Byte for byte what a caller parses: key, tab, value, and nothing else.
+  local want
+  want="$(printf 'name\tzz-spawn-tsv2\ndirectory\t%s\nposture\tbypass\nverdict\tlaunched\npid\t\nbrief\tnone' "$WORK")"
+  [ "$output" = "$want" ]
+
+  has "$(cat "$ERR")" "WARNING: --bypass turns ALL permission prompts off for 'zz-spawn-tsv2'"
+}
+
+@test "--trust-folder inside a repository warns that the whole repository is trusted" {
+  stub_setup
+  local repo="$BATS_TEST_TMPDIR/repo"
+  git init -q "$repo"
+  mkdir -p "$repo/sub/dir"
+  local root
+  root="$(cd "$repo" && pwd -P)"
+
+  # The dry run says it and writes nothing.
+  local before
+  before="$(cat "$CONFIG_FILE")"
+  run spawn_stub "zz-spawn-scope" --dir "$repo/sub/dir" --trust-folder --dry-run
+  [ "$status" -eq 0 ]
+  has "$(cat "$ERR")" "WARNING: $repo/sub/dir is inside the repository $root; without --dry-run this RECORDS trust for the whole repository"
+  lacks "$output" "WARNING"
+  [ "$(cat "$CONFIG_FILE")" = "$before" ]
+
+  # The real run says it, then records exactly the key it named.
+  run spawn_stub "zz-spawn-scope" --dir "$repo/sub/dir" --trust-folder --no-verify
+  [ "$status" -eq 0 ]
+  has "$(cat "$ERR")" "WARNING: $repo/sub/dir is inside the repository $root; this RECORDS trust for the whole repository"
+  lacks "$output" "WARNING"
+  python3 "$SKILL_DIR/scripts/lib/trust-config.py" check "$CONFIG_FILE" "$root"
+}
+
+@test "--trust-folder at a repository root prints no scope warning" {
+  stub_setup
+  local repo="$BATS_TEST_TMPDIR/repo"
+  git init -q "$repo"
+
+  run spawn_stub "zz-spawn-root" --dir "$repo" --trust-folder --dry-run
+  [ "$status" -eq 0 ]
+  [ ! -s "$ERR" ]
+
+  # Reached through a symbolic link the named path and the reported root
+  # differ as text while being one directory; that is not a wider grant.
+  ln -s "$repo" "$BATS_TEST_TMPDIR/link"
+  run spawn_stub "zz-spawn-root" --dir "$BATS_TEST_TMPDIR/link" --trust-folder --dry-run
+  [ "$status" -eq 0 ]
+  [ ! -s "$ERR" ]
 }

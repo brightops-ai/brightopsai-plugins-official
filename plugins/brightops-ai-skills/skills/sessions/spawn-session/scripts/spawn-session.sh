@@ -76,11 +76,13 @@ usage: spawn-session.sh <name> [options]
   -C, --dir <dir>        directory to launch in (default: current directory)
   -p, --prompt <text>    starter brief, delivered once the session is confirmed
   -f, --prompt-file <p>  starter brief read from a file ('-' for standard input)
-  -b, --bypass           launch with permissions bypassed (default: acceptEdits)
+  -b, --bypass           launch with permissions bypassed (default: acceptEdits);
+                         prints a warning on stderr, refused with --trust-folder
       --pre-launch <cmd> shell command run in the pane before the CLI starts
       --socket <name>    address a named multiplexer server instead of the default
       --resume           pick up a session that already exists instead of creating one
       --trust-folder     pre-authorize this workspace if it is not trusted yet
+                         (the whole repository, when the directory is inside one)
       --timeout <secs>   how long to wait for the session to come up (default 120)
       --no-verify        report as soon as the session is launched
   -n, --dry-run          report the plan and launch nothing
@@ -255,6 +257,14 @@ git_root_of() {
   git -C "$1" rev-parse --show-toplevel 2>/dev/null || true
 }
 
+# physical_dir <dir>
+#
+# Echoes the directory with symbolic links resolved, which is the form the
+# repository root is reported in.
+physical_dir() {
+  (cd "$1" && pwd -P)
+}
+
 # have_trust_tool
 #
 # Whether trust can be inspected at all. The check needs an interpreter that
@@ -410,6 +420,14 @@ main() {
   valid_session_name "$NAME" ||
     die "'$NAME' is not a usable session name: use letters, digits, underscore and dash only (a dot or colon is silently rewritten by the multiplexer, leaving a session under a name you did not choose)"
 
+  # Trusting a workspace and removing supervision are two decisions, and one
+  # command that takes both lets a single line authorise a directory and turn
+  # an unattended session loose in it. Refused as usage, whatever the workspace
+  # state, so the same invocation never works on one machine and not another.
+  if [[ "$POSTURE" == "bypass" ]] && (( TRUST_FOLDER )); then
+    die "--bypass and --trust-folder cannot be combined: trusting a workspace and launching with no supervision are two separate decisions. $(trust_first_steps)"
+  fi
+
   local source
   source="$(brief_source "$PROMPT" "$PROMPT_FILE")" ||
     die "give either --prompt or --prompt-file, not both"
@@ -434,20 +452,32 @@ main() {
   launch_line="$(spawn_launch_command "$NAME" "$POSTURE" "$PRE_LAUNCH")"
 
   if (( DRY_RUN )); then
+    # A dry run is where a launch is previewed, so the warning the real run
+    # prints belongs here too. On stderr, like every warning, so the plan on
+    # stdout reads the same with or without it.
+    if [[ "$POSTURE" == "bypass" ]]; then
+      bypass_warning "$NAME" "$DIR" dry-run >&2
+    fi
     echo "would spawn '$NAME' in $DIR"
     echo "  $launch_line"
     # Report the trust decision without acting on it. A dry run that wrote to
     # the CLI's configuration would not be a dry run.
     if have_trust_tool; then
-      local dry_key
-      dry_key="$(trust_key "$DIR" "$(git_root_of "$DIR")")"
+      local dry_root dry_key
+      dry_root="$(git_root_of "$DIR")"
+      dry_key="$(trust_key "$DIR" "$dry_root")"
       if config_trusts "$CONFIG_FILE" "$dry_key"; then
         echo "  workspace already trusted ($dry_key)"
       elif (( TRUST_FOLDER )) && trust_grantable "$dry_key" "$HOME"; then
+        if trust_is_wider "$(physical_dir "$DIR")" "$dry_root"; then
+          trust_scope_warning "$DIR" "$dry_root" dry-run >&2
+        fi
         echo "  would record workspace trust for $dry_key"
       elif (( TRUST_FOLDER )); then
         echo "  workspace trust CANNOT be recorded for the home directory — the CLI"
         echo "  keeps that decision per-session and never writes it down"
+      elif [[ "$POSTURE" == "bypass" ]]; then
+        echo "  workspace NOT trusted ($dry_key) — would refuse; record trust first, without --bypass"
       else
         echo "  workspace NOT trusted ($dry_key) — would refuse without --trust-folder"
       fi
@@ -477,14 +507,26 @@ main() {
   # an untrusted directory stops at a dialog nothing here will answer by
   # simulating input, so the choice is made explicitly, in advance, by a flag.
   if have_trust_tool; then
-    local key
-    key="$(trust_key "$DIR" "$(git_root_of "$DIR")")"
+    local git_root key
+    git_root="$(git_root_of "$DIR")"
+    key="$(trust_key "$DIR" "$git_root")"
     if ! config_trusts "$CONFIG_FILE" "$key"; then
       if (( TRUST_FOLDER )); then
         trust_grantable "$key" "$HOME" ||
           die "workspace trust cannot be recorded for the home directory: the CLI accepts it for one session only and never writes it down. Launch in a subdirectory, or start the CLI here once by hand."
+        # Said before the write, not after: the grant covers more than the
+        # directory that was named, and that is the last moment a caller
+        # reading this can still stop it.
+        if trust_is_wider "$(physical_dir "$DIR")" "$git_root"; then
+          trust_scope_warning "$DIR" "$git_root" >&2
+        fi
         grant_trust "$CONFIG_FILE" "$key" || die "could not record workspace trust"
         TRUST_GRANTED="$key"
+      elif [[ "$POSTURE" == "bypass" ]]; then
+        # The usual advice here is --trust-folder, which is refused alongside
+        # --bypass; sending the caller to a combination that fails would cost
+        # them a second refusal to learn what this one could have said.
+        die "$DIR is not a trusted workspace yet, so the session would stop at the trust prompt. --trust-folder would record trust for '$key', but it cannot be combined with --bypass. $(trust_first_steps)"
       else
         die "$DIR is not a trusted workspace yet, so the session would stop at the trust prompt. Re-run with --trust-folder to record trust for '$key', or start the CLI there once by hand and accept the prompt."
       fi
@@ -495,6 +537,12 @@ main() {
 
 
   if (( ! RESUME )); then
+    # Printed on every bypass launch, immediately before it and after every
+    # refusal above, so the line never appears for a launch that did not
+    # happen. On stderr, which leaves --porcelain output on stdout untouched.
+    if [[ "$POSTURE" == "bypass" ]]; then
+      bypass_warning "$NAME" "$DIR" >&2
+    fi
     tm new-session -d -s "$NAME" -c "$DIR"
     tm send-keys -t "=$NAME:" "$launch_line" Enter
   fi

@@ -75,12 +75,57 @@ At the **ceiling** (`--timeout`, default 120 seconds) it decides:
 - a recognised dialog is holding the session → **blocked**, exit 4
 - no answer and nothing recognisable → **unconfirmed**, exit 5
 
+## Warnings
+
+Two hazards are announced by the launcher itself, on stderr, each as one line:
+
+```
+WARNING: <the fact that makes this dangerous now>; this <VERB> <what>.
+```
+
+The fact is read at run time — the session name, the directory, the repository
+root — and the consequence is one verb in capitals. A line in the command's
+own output reaches the caller at the step where it decides what to do next. A
+caution in a document was read earlier and gives no signal that this
+invocation is the one it was about.
+
+| Printed | Line |
+|---|---|
+| On every launch with `--bypass`, immediately before the session is created | `WARNING: --bypass turns ALL permission prompts off for '<name>' in <dir>; this LAUNCHES a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.` |
+| When `--trust-folder` is about to record trust and `<dir>` is inside a repository without being its root | `WARNING: <dir> is inside the repository <root>; this RECORDS trust for the whole repository, not only that directory.` |
+
+`--dry-run` prints the same lines with `without --dry-run this` in front of the
+verb, because nothing is launched or recorded.
+
+A run that is refused prints neither: a warning announces something that is
+about to happen. `--resume` launches nothing either, so it prints no bypass
+warning; there `--bypass` only names the posture the existing session is
+expected to report.
+
+Warnings never go to stdout. `--porcelain` output is the same keys and values
+with or without them, so a caller that parses stdout keeps working and reads
+stderr for the warning.
+
+### `--bypass` with `--trust-folder`
+
+The two flags are refused together, as a usage error (exit 2), before anything
+is read, written or launched. One invocation taking both would let a single
+command authorise a directory and start an unsupervised session in it. Split
+in two, each is a decision someone took on its own. The refusal message names
+the two invocations that replace the one.
+
+The refusal does not depend on whether the workspace is already trusted, so
+the same command line never works on one machine and fails on another. A
+`--bypass` launch in a workspace that is not trusted yet gets the same two
+steps, because the usual advice there — add `--trust-folder` — is the refused
+combination.
+
 ## Exit codes
 
 | Code | Name | Meaning |
 |---|---|---|
 | 0 | confirmed | Identity confirmed, bridge live, brief delivered if given |
-| 2 | refused | Usage error, unusable name, name already taken, identity mismatch |
+| 2 | refused | Usage error, unusable name, name already taken, `--bypass` with `--trust-folder`, untrusted workspace, identity mismatch |
 | 3 | unreachable | Confirmed and briefed, but no remote-control bridge |
 | 4 | never usable | No process appeared, or a startup dialog is holding it |
 | 5 | unconfirmed | Running, no answer within the ceiling, nothing recognisable |

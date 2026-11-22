@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-22
+
+### Changed
+
+- `spawn-session`: `--bypass` together with `--trust-folder` is now refused as
+  a usage error (exit 2). Trusting a workspace and launching a session with no
+  supervision are separate invocations: record trust first (run once with
+  `--trust-folder` and without `--bypass`, or start the CLI in the directory
+  by hand and accept the prompt), then launch with `--bypass` alone. A command
+  line that passed both flags must be split into those two steps.
+- `spawn-session`: a `--bypass` launch in a workspace that is not trusted yet
+  is refused with the same two steps, instead of advice to add
+  `--trust-folder`.
+
+### Added
+
+- `spawn-session`: every `--bypass` launch prints a `WARNING:` line on stderr
+  naming the session, the directory and the consequence. `--dry-run` prints
+  it too.
+- `spawn-session`: `--trust-folder` prints a `WARNING:` line on stderr when
+  the trust it records covers a whole repository rather than only the
+  directory given.
+- Warnings go to stderr only, so `--porcelain` output on stdout is unchanged.
+
 ## [1.4.0] - 2026-11-22
 
 ### Added

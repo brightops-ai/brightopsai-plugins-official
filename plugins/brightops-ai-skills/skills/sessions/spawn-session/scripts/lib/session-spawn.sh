@@ -231,6 +231,64 @@ trust_key() {
   fi
 }
 
+# ── saying what is about to happen ──────────────────────────────────────────
+#
+# A hazard is named by the command itself, on stderr, at the moment it is run.
+# A caution in a document was read at some earlier point and gives no signal
+# that this invocation is the one it was about; a line in the command's own
+# output arrives exactly when the caller is deciding what to do next. Each
+# message states the run-time fact first and the consequence as one verb in
+# capitals after "this".
+
+# bypass_warning <session_name> <dir> [dry-run]
+#
+# Echoes the warning for a launch with permissions bypassed. In a dry run the
+# consequence is worded as what the real run does, since nothing launches.
+bypass_warning() {
+  local name="$1" dir="$2" mode="${3:-}"
+  local act="this LAUNCHES"
+  [[ "$mode" == "dry-run" ]] && act="without --dry-run this LAUNCHES"
+
+  printf "WARNING: --bypass turns ALL permission prompts off for '%s' in %s; %s a session that can use every credential in the environment it inherits, with nobody approving its commands. Omit --bypass to launch as acceptEdits.\n" \
+    "$name" "$dir" "$act"
+}
+
+# trust_is_wider <physical_dir> <git_root>
+#
+# Returns 0 if recording trust covers more than the directory that was named:
+# the directory is inside a repository and is not that repository's root.
+#
+# Both arguments must be physical paths. The repository root is always reported
+# with symbolic links resolved, so comparing it against a path that still
+# contains one would call a repository root "wider" than itself.
+trust_is_wider() {
+  local dir="$1" git_root="$2"
+  [[ -n "$git_root" && "$git_root" != "$dir" ]]
+}
+
+# trust_scope_warning <dir> <git_root> [dry-run]
+#
+# Echoes the warning for a trust grant that covers a whole repository when a
+# directory inside it was named.
+trust_scope_warning() {
+  local dir="$1" git_root="$2" mode="${3:-}"
+  local act="this RECORDS"
+  [[ "$mode" == "dry-run" ]] && act="without --dry-run this RECORDS"
+
+  printf 'WARNING: %s is inside the repository %s; %s trust for the whole repository, not only that directory.\n' \
+    "$dir" "$git_root" "$act"
+}
+
+# trust_first_steps
+#
+# Echoes the two-step alternative to --bypass with --trust-folder. Trusting a
+# workspace and removing supervision are separate decisions, so they are taken
+# in separate invocations; every refusal that turns on that names the same two
+# steps, from here.
+trust_first_steps() {
+  printf '%s\n' "First record trust: run once with --trust-folder and without --bypass, or start the CLI in that directory by hand and accept the prompt. Then run again with --bypass and without --trust-folder."
+}
+
 # ── naming what is holding a session ────────────────────────────────────────
 
 # blocker_for <table_text> <pane_text>
