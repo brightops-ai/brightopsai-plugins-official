@@ -6,8 +6,11 @@ BrightOps AI workflow skills for Claude Code — one plugin holding many skills,
 rather than a plugin per skill. Skills live in category subdirectories and are
 listed in the plugin manifest's `skills` array.
 
-All skills are user-invoked except `dream`, which stays model-invocable so a
-scheduled routine can fire it.
+All skills are user-invoked except two. `dream` stays model-invocable so a
+scheduled routine can fire it. `blast-radius-audit` stays model-invocable so
+any agent, including a spawned or delegated one, can run it; its frontmatter
+uses only Agent Skills standard fields so the skill folder also works when
+copied into another agent's skills directory (see Prerequisites).
 
 ## Install
 
@@ -30,13 +33,21 @@ inside Claude Code:
 | `/brightops-ai-skills:session-analysis` | Distil session transcripts into candidate episodes for a chosen purpose. Runs forked. User-invoked. |
 | `/brightops-ai-skills:send-result` | Deliver a run summary to a configured destination (a file by default, or a command). Never infers a destination. User-invoked. |
 | `/brightops-ai-skills:spawn-session` | Start a named Claude Code session in tmux, confirm it by a handshake token, then paste a starter brief. User-invoked. |
+| `/brightops-ai-skills:blast-radius-audit` | Audit a repo and the dev machine for ways an agent or script could do irreversible damage: production databases in test config, readable production credentials, unguarded recursive deletes, unprotected infrastructure and branches, unpinned MCP servers and hooks, CI agents on untrusted input, bypass modes, uncapped money or message tools. Reports findings ranked by blast radius without printing secret values, then waits for approval before applying in-repo fixes. Model-invocable. |
 
 ## Prerequisites
 
 - `python3` (standard library only) for `dream`, `improve-memory`,
   `session-analysis`, and `send-result`
 - `tmux` and the Claude Code CLI on `PATH` for `spawn-session`. `--trust-folder`
-  on that skill also needs `python3`
+  and `--bypass` on that skill also need `python3`
+- `python3` 3.9+ (standard library only) and `git` for `blast-radius-audit`.
+  The `gh` CLI is optional; with it the audit makes read-only GitHub queries
+  for token scopes and branch protection. To let agents other than Claude
+  Code run the skill, copy
+  `skills/safety/blast-radius-audit/` into the directory that agent reads
+  (`~/.agents/skills/` for Codex and others that follow the Agent Skills
+  convention); it has no dependency on the rest of the plugin
 - **Dream scheduling: Claude Code v2.1.196+.** From that version,
   `disable-model-invocation` also prevents a scheduled task from firing the
   skill. `dream` omits the flag on purpose; setting it would leave a routine
@@ -59,7 +70,8 @@ Persistent plugin state lives under `${CLAUDE_PLUGIN_DATA}`:
 Memory itself and `improve-memory` snapshots live beside the project's memory
 directory, not here, so they survive uninstall. `spawn-session` does not write
 plugin data; it uses tmux. `session-analysis` writes into a run directory the
-caller names (for `dream`, that is under `runs/`).
+caller names (for `dream`, that is under `runs/`). `blast-radius-audit` stores
+nothing: its collector is read-only and the report goes to the conversation.
 
 ## Update
 

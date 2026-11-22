@@ -18,8 +18,9 @@ human checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 - agent-teams — 1 skill: agent-teams
 - adversarial-review — 1 skill: adversarial-review
 - marketplace-scout — 1 skill: marketplace-scout
-- brightops-ai-skills — 7 skills: improve-prompt, calibrate-style, dream,
-  improve-memory, session-analysis, send-result, spawn-session
+- brightops-ai-skills — 8 skills: improve-prompt, calibrate-style, dream,
+  improve-memory, session-analysis, send-result, spawn-session,
+  blast-radius-audit
 - t3-code — 2 skills: restart, 1password-secrets
 
 ## Adding a New Skill
@@ -42,6 +43,13 @@ each. Add the skill under a category subdirectory and list its path in the plugi
     v2.1.196+), so a scheduled routine would fire and do nothing, reporting no error. `dream` is
     the case in this repo: it is person-driven but omits the flag and carries a trigger-phrase
     description deliberately. Do not "correct" it to match the other skills.
+  - **Exception — `blast-radius-audit` is model-invocable and portable on purpose.** It
+    is meant to be run by any agent, including spawned and delegated ones, and to work
+    when its folder is copied into another agent's skills directory. Its frontmatter
+    therefore carries only Agent Skills standard fields (`name`, `description`,
+    `compatibility`): no `disable-model-invocation`, `argument-hint` or other Claude
+    Code-only keys, and its body names no Claude-specific tool or `${CLAUDE_*}`
+    variable.
 - SKILL.md body uses imperative form, not second person
 - Keep SKILL.md under ~2,000 words; move detailed content to references/
 - No duplication between SKILL.md body and reference files
@@ -50,16 +58,30 @@ each. Add the skill under a category subdirectory and list its path in the plugi
   the same change. A marketplace-level change (added or removed plugin, install
   command, shared tooling) gets an entry in the root `CHANGELOG.md`. The README
   plugin table is a checked mirror; marketplace entries omit `version`. Cache
-  eviction and the rest of the bump procedure: [CONTRIBUTING.md](CONTRIBUTING.md)
+  eviction (`scripts/evict-plugin-cache.sh <name> <old-version>`, never a
+  hand-written `rm -rf`) and the rest of the bump procedure:
+  [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Testing
 
-Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
-and pass explicit directories. One test leaked into the real plugin data
-directory during development, which is silent and only found by looking.
+The test harness refuses to run outside a temp directory. Every suite loads
+the sandbox guard in `scripts/test-support/` before its first test. The guard
+points `HOME` at a fresh temp directory, defaults `CLAUDE_CONFIG_DIR`,
+`CLAUDE_PLUGIN_DATA` and the spawn-session overrides beside it, and fails with
+`WARNING: … Refusing.` when one of them resolves anywhere else. It exists
+because one test leaked into the real plugin data directory during
+development, which is silent and only found by looking.
 
-Commands (dream unittest, bats `--unit` and full, `scripts/tests`, evals as
-manual), packaging gates (`python3 scripts/check-marketplace.py`,
+Run the suites with the commands in [CONTRIBUTING.md](CONTRIBUTING.md). When a
+refusal names a variable the shell exports, prefix the command with
+`env -u <NAME>`. A new bats file loads the guard as the first line of
+`setup()` (and of `setup_file()`); a new Python test directory installs it
+from `__init__.py`.
+`scripts/tests/test_sandbox_guard.py` fails when either is missing. What the
+guard does not catch is listed in CONTRIBUTING.md (Tests).
+
+Commands (dream unittest, the `blast-radius-audit` collector unittest, bats
+`--unit` and full, `scripts/tests`, evals as manual), packaging gates (`python3 scripts/check-marketplace.py`,
 `claude plugin validate . --strict`), `/reload-plugins`, and the PR checklist:
 [CONTRIBUTING.md](CONTRIBUTING.md). The packaging gate is
 `.github/workflows/ci.yml` (pull requests and `main`). Behavioural evals stay
@@ -115,8 +137,8 @@ and it falls back to asking.
 
 ### Secret scanning
 
-This repo is **public-bound**. A gitleaks pre-commit hook
-(`.githooks/pre-commit`, activated by `./scripts/install-hooks.sh`) enforces
+This repo is **public-bound**. Gitleaks hooks for `git commit` and merge
+commits (`.githooks/`, activated by `./scripts/install-hooks.sh`) enforce
 [`.gitleaks.toml`](.gitleaks.toml), which blocks infrastructure identifiers on
 top of the default secret rules — workspace name, tailnet hosts/IDs/IPs,
 home-directory paths, LAN IPs, AWS account IDs.
@@ -129,8 +151,79 @@ Two consequences for anything written here, including docs:
   Identifiers are what get placeholdered.
 - **Example credentials must look fake** (`sk_test_REPLACE_ME`), not
   realistically shaped. If a rule fires, fix the value or add a *rule-scoped*
-  allowlist; don't add a path allowlist and don't use `--no-verify`.
+  allowlist; don't add a path allowlist and don't use `--no-verify` (a deny
+  rule refuses it; see Guardrails below).
 
-Git never clones hooks, so in a fresh clone assume the local pre-commit
-gate is inactive until `./scripts/install-hooks.sh` has run. CI still
+Git never clones hooks. A new Claude Code session runs
+`./scripts/install-hooks.sh` from the SessionStart hook
+`.claude/hooks/install-plugins.sh`. In any other fresh clone assume the local
+pre-commit gate is inactive until that script has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
+
+The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
+complete, they block the commit. Install gitleaks (the hook prints how).
+`ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
+case only; an agent never sets it. `git rebase`, `git cherry-pick` and
+`git revert` run no commit hook, so CI is the only scan for commits made that
+way. `install-hooks.sh` never replaces an existing `core.hooksPath` unless run
+with `--force`.
+
+### Guardrails
+
+`permissions.deny` in [`.claude/settings.json`](.claude/settings.json) holds
+tripwires for a Claude Code session opened here. A deny rule refuses a command
+by its text, so it catches the usual spelling and nothing more. It is not a
+security boundary, and other agents do not read the file. The second column
+names the control that holds each rule when the tripwire is stepped around.
+
+| Rule | What holds it | What the tripwire refuses | Do this instead |
+|---|---|---|---|
+| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word; `git push` with `<src>:main` or `refs/heads/main`; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
+| No force push | Branch protection refuses a force push to `main`. Nothing holds other branches | `git push` with `--force` or `-f` as its own word | `git push --force-with-lease origin <branch>`, on your own branch only |
+| No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the tree on every pull request and on `main`, so a skipped hook is caught before merge | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
+| No agent started with a permission-bypass flag | Nothing else | `claude` with `dangerously-skip-permissions` or `bypassPermissions` in its arguments; `codex` with `--yolo` or `--dangerously-bypass-approvals-and-sandbox`; `gemini` with `yolo` anywhere (`--yolo`, `--approval-mode=yolo`) or `-y` as its own word | Start it in its default permission mode |
+| No printing the environment or a token | Nothing else | `env` alone, `env -0`, `env --null`; `printenv` with or without a name; `gh auth token`; `gh auth status` with `--show-token` or `-t` | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
+| No reading files that hold real environment values | Nothing else | Read, Edit, Write and `cat`-style commands, at any depth, on `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test`, `.env.dev`, `.env.prod` | Keep key names with fake values in `.env.example`, `.env.sample` or `.env.template`, which stay readable and writable |
+| No send, share or delete through a connector | Nothing else | Under any account suffix (observed 2026-11-22): Gmail send, reply, forward, trash, delete draft, delete label; Slack send and schedule message; Google Drive share, trash, request access; Google Calendar create, update, delete, respond | Use the draft tool, or hand the text to the user |
+
+Known misses, none of them matched:
+
+- Any of the above run by path (`/usr/bin/git`), inside `bash -c` or `sh -c`,
+  from a script, or by another agent.
+- Pushes: a bare `git push` from a local `main`; `+main`; `git -c <key>=<value>
+  push`; `git -C <dir> push` with a refspec, `--all`, `--mirror` or a force
+  flag.
+- Short flags joined to others: `git push -fu`, `git commit -nm`. Also
+  `git -C <dir> commit -n`.
+- Environment: `env -u NAME`, `export -p`, `set`, and any program that reads
+  its own environment.
+- Environment files under other names (`.env.qa`, `.envrc`), and any program
+  that opens the file itself.
+- Connectors other than the four named; Slack canvases and reactions.
+
+Known false positives: a commit message that contains `--no-verify`, or `-n`
+as its own word, is refused; write the message to a file and use
+`git commit -F <file>`. A ref whose name contains `--all` or `--mirror` cannot
+be pushed by that name.
+
+The SessionStart hook runs for a new session only (the `startup` matcher), not
+on resume, `/clear` or compaction. It installs `mattpocock-skills` only when
+`claude plugin list --json` succeeds and shows no install that applies to this
+project; if the listing fails or cannot be parsed, it warns and installs
+nothing. It never updates an installed copy and prints the installed version
+to stderr. A plugin it installs loads in the next session, or after
+`/reload-plugins`.
+
+The plugin cannot be pinned: `claude plugin install` takes no version
+(Claude Code 2.1.330), and a commit `ref` is refused for a reserved
+marketplace name such as `claude-plugins-official`. That marketplace
+auto-updates by default, so `.claude/settings.json` sets `"autoUpdate": false`
+on its entry. That holds for sessions that read this file after the folder is
+trusted. A session in another project on the same machine can still update the
+shared on-disk copy, and this repo then loads the new version; the version line
+on stderr is how that shows. Update on purpose with
+`claude plugin update mattpocock-skills@claude-plugins-official`.
+
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names the reviewer for every path.
+A code-owner review is required only if branch protection asks for it, which
+is a repository setting that is off today (checked 2026-11-22).

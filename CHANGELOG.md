@@ -11,6 +11,25 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Changed
+
+- `.githooks/pre-commit` fails closed: without `gitleaks` on `PATH` the commit
+  is blocked instead of going through unscanned.
+  `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is the explicit override for a human who
+  accepts the risk; it never overrides a finding. The hook and
+  `scripts/install-hooks.sh` no longer suggest piping an install script into
+  `sh`; they print the pinned release and checksum that CI uses, plus
+  `brew install gitleaks`.
+- A scan that cannot complete (missing or malformed `.gitleaks.toml`, broken
+  `gitleaks`) is reported as a failed scan and still blocks; it is no longer
+  described as a finding.
+- `scripts/install-hooks.sh` leaves an existing `core.hooksPath` that points
+  elsewhere alone and exits 1; `--force` replaces it. It writes nothing when
+  the hooks are already active, and reports them active only after reading
+  back the effective value.
+- `.gitignore` ignores `.env`, `.env.*` (except `.env.example`), `*.pem` and
+  `*.key`.
+
 ### Deprecated
 
 - `agent-teams` is deprecated and will be removed from the marketplace in
@@ -18,8 +37,45 @@ rather than numbered.
   receiving updates. A replacement skill will be published separately by
   BrightOps AI. See [ADR 0001](docs/adr/0001-plugin-consolidation-scope.md).
 
+### Security
+
+- `.claude/settings.json` gains a `permissions.deny` block for Claude Code
+  sessions in this repo: pushes to `main`, `git push --force`, hook-skipping
+  commits, agents started with a permission-bypass flag, printing the
+  environment or a GitHub token, reading environment files that hold real
+  values, and connector tools that send, share or delete. The rules are
+  tripwires, not a boundary; `CLAUDE.md` (Guardrails) names what holds each
+  rule, what the tripwire refuses and what it misses.
+- `.github/CODEOWNERS` names the repository owner for every path.
+- The SessionStart hook `.claude/hooks/install-plugins.sh` now runs for new
+  sessions only, activates the tracked git hooks
+  (`scripts/install-hooks.sh`), and installs `mattpocock-skills` only when
+  the plugin listing shows it is missing, printing the installed version to
+  stderr. It used to re-resolve the plugin on every session event.
+  Auto-update is off for the `claude-plugins-official` marketplace in
+  sessions that read this repo's settings.
+
 ### Added
 
+- `scripts/test-support/`: a sandbox guard that every test suite loads before
+  its first test (`sandbox-guard.bash` for bats, `sandbox_guard.py` for the
+  Python suites). It points `HOME` at a fresh temp directory, defaults
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_PLUGIN_DATA` and the spawn-session path
+  overrides beside it, and refuses to run a test, with a `WARNING: … Refusing.`
+  line, when one of them is not a clean absolute path resolving under a temp
+  directory, or when `CLAUDE_CODE_PROJECT_DIR_NAME` is a path. The rule "tests
+  never write into the real `~/.claude`" was prose until now.
+  `scripts/tests/test_sandbox_guard.py` fails when a bats file or a Python
+  test directory does not load the guard. CI now creates its
+  `CLAUDE_CONFIG_DIR` under the system temp directory so the suites accept it.
+- `.githooks/pre-merge-commit`: runs the same gitleaks gate on the commit an
+  automatic merge creates, which `pre-commit` does not see. `git rebase`,
+  `git cherry-pick` and `git revert` still run no hook; CI is the backstop.
+- `scripts/evict-plugin-cache.sh <plugin> <old-version>`: removes one old
+  version from the plugin cache after a version bump. It validates both
+  arguments, refuses a target that does not resolve inside the marketplace
+  cache, and has a `--dry-run`. It replaces the hand-filled `rm -rf` in
+  `CONTRIBUTING.md`.
 - GitHub Actions workflow `.github/workflows/ci.yml`: plugin validate,
   marketplace check, unit tests, shellcheck, gitleaks tree scan, and eval
   index completeness on pull requests and `main`. Behavioural evals stay
@@ -33,7 +89,7 @@ rather than numbered.
   fake example credentials, `${CLAUDE_PLUGIN_DATA}`, 1Password/`op` handling,
   Facebook Marketplace terms responsibility, grok.com upload plus pre-upload
   secret scan, the gitleaks pre-commit gate (inactive until
-  `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing), and CI
+  `./scripts/install-hooks.sh`, blocking if `gitleaks` is missing), and CI
   tree scan on pull requests and `main`.
 - `t3-code` plugin (0.1.0): `restart` and `1password-secrets` skills for the
   T3 Code desktop app on macOS.

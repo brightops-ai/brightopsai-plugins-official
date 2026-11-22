@@ -4,6 +4,7 @@
 # Fixtures live under $BATS_TEST_TMPDIR so the real evals tree is untouched.
 
 setup() {
+  load '../../../scripts/test-support/sandbox-guard'
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   CHECK="$PLUGIN_ROOT/evals/check-index.sh"
   TREE="$BATS_TEST_TMPDIR/evals"
