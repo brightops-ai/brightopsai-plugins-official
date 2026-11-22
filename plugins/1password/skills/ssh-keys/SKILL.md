@@ -27,17 +27,17 @@ The 1Password SSH agent handles all SSH authentication via biometric approval (T
 
 ## Create a new SSH key
 
-Discard the item summary so the generated private key cannot reach the
-transcript; fetch the public key with the next command instead:
-
 ```bash
-op item create --category "SSH Key" --title "<KEY-NAME>" --vault "<VAULT>" --ssh-generate-key ed25519 >/dev/null
+op item create --category "SSH Key" --title "<KEY-NAME>" --vault "<VAULT>" --ssh-generate-key ed25519
 ```
+
+The item summary conceals sensitive fields unless `--reveal` is passed. Never
+pass `--reveal`.
 
 ## Get the public key
 
 ```bash
-op item get "<KEY-NAME>" --vault <VAULT> --field "public key"
+op item get "<KEY-NAME>" --vault <VAULT> --fields label="public key"
 ```
 
 ## Make a key available in the SSH agent
@@ -56,7 +56,7 @@ Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
 
 1. Save public key to disk:
    ```bash
-   op item get "<KEY-NAME>" --vault <VAULT> --field "public key" > ~/.ssh/<KEY-NAME>.pub
+   op item get "<KEY-NAME>" --vault <VAULT> --fields label="public key" > ~/.ssh/<KEY-NAME>.pub
    ```
 2. Fix permissions:
    ```bash
@@ -69,17 +69,12 @@ Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
 
 ## Add a key to GitHub (auth + signing)
 
-Run with shell tracing off (`set +x`): a trace prints the token. Assign
-first so a failed read stops here instead of exporting an empty token:
+Give `gh` its token through `op run`: the variable holds a secret reference,
+and the value reaches only the `gh` process.
 
 ```bash
-if GH_TOKEN="$(op read 'op://<VAULT>/GitHub Token/token')"; then
-  export GH_TOKEN
-  gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>" --type authentication
-  gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>-signing" --type signing
-else
-  echo "op read failed; key not added to GitHub" >&2
-fi
+GH_TOKEN="op://<VAULT>/GitHub Token/token" op run -- gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>" --type authentication
+GH_TOKEN="op://<VAULT>/GitHub Token/token" op run -- gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>-signing" --type signing
 ```
 
 ## Git commit signing
@@ -94,15 +89,15 @@ Git is configured globally to sign with SSH via 1Password:
 To add a new signing key to allowed_signers:
 
 ```bash
-PUBLIC_KEY=$(op item get "<KEY-NAME>" --vault <VAULT> --field "public key")
+PUBLIC_KEY=$(op item get "<KEY-NAME>" --vault <VAULT> --fields label="public key")
 echo "email@example.com $PUBLIC_KEY" >> ~/.ssh/allowed_signers
 ```
 
 ## Common gotchas
 
 - **Never read the `private key` field** (`op read`, `op item get --reveal`,
-  `--fields "private key"`). The 1Password SSH agent signs, so nothing needs
-  the key material, and reading it prints it into the transcript.
+  `--fields label="private key"`). The 1Password SSH agent signs, so nothing
+  needs the key material, and reading it prints it into the transcript.
 - **Do NOT use `IdentityFile`** in `~/.ssh/config` pointing to `.pub` files — it
   causes "invalid format" errors. The 1Password agent offers keys automatically.
 - Only use `IdentityFile`/`IdentitiesOnly` if using `agent.toml` to limit keys

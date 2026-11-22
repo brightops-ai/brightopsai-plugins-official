@@ -14,8 +14,8 @@
   - Linux: Settings > Security > Unlock using system authentication, then Settings > Developer > Integrate.
 - After integration, run any command to sign in (example in docs: `op vault list`).
 - If multiple accounts: pass `--account <shorthand>` or set `OP_ACCOUNT`. Do not
-  run a bare `op signin` to pick one: without app integration it prints a
-  session token. Use the checked sign-in form in `cli-examples.md`.
+  run a bare `op signin` to pick one: its output can be a session token. Use
+  the sign-in form in `authentication.md`.
 - For non-integration auth, a human runs `op account add` in their own
   terminal. It prompts for the Secret Key and account password, which an agent
   must never be given.

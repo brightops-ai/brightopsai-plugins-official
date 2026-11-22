@@ -11,57 +11,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- No instruction in either skill prints a secret value any more (#80). A
-  value that reaches a session transcript can only be undone by rotating it.
-  - `1password`: the "already in the environment?" check is a presence test
-    that prints `set` or `unset`, replacing `printenv VAR_NAME`.
-  - `1password`: the tmux example wraps the consumer in `op run` instead of
-    sending a bare `op read` and capturing the pane, and signs in with
-    `eval "$(op signin)"` so a session token is not left in the pane.
-  - `1password`: "Read a secret" pipes `op read` to its consumer;
-    `op item create` examples discard the item summary.
-  - `references/cli-examples.md`: commands that print a value (bare
-    `op read`, the OTP and private-key reads, `op run --no-masking`,
-    `op inject` to stdout) moved under "For a human at a terminal only —
-    never for an agent". The key-file example writes to a `mktemp -d`
-    directory outside the work tree instead of `./key.pem`.
-  - `ssh-keys`: key creation discards the item summary, and a new gotcha
-    forbids reading the `private key` field.
-- A new secret no longer passes through the agent. The skill used to ask the
-  user for the value and put it on an `op item create` command line. Now the
-  user enters it in the 1Password app (the agent can create the empty item),
-  or 1Password generates it with `--generate-password`; the agent verifies
-  the item and field by name. Value-on-the-command-line examples moved to the
-  human-only section.
-- Shell tracing and hidden failures:
-  - The presence check expands `${VAR_NAME:+set}`, a fixed word, so it stays
-    safe under `set -x`.
-  - `Common operations` states once that secret-bearing commands run with
-    tracing off.
-  - Every read is assigned and checked before it is exported or eval'd
-    (`export VAR="$(...)"` and `eval "$(...)"` succeed when the read fails);
-    piped reads set `pipefail`. Covers sign-in, the MCP launch-script
-    example and the `GH_TOKEN` read in `ssh-keys`.
-  - The tmux example no longer captures the pane at all: the pane writes one
-    status line (sign-in state or an exit status) to a file and the agent
-    reads only that.
-  - `references/get-started.md` no longer suggests a bare `op signin` to pick
-    an account, and marks `op account add` as a human-only step.
-- `op inject` streams to its consumer instead of `-o config.yml` in the
-  current directory. When a key or rendered config must be a file, one
-  pattern in `references/cli-examples.md` covers both: a checked `mktemp -d`,
-  a refusal when that directory is inside a git work tree, a cleanup trap
-  installed before the write (also run on failure or interrupt), and a stop
-  when the read fails.
+- The `1password` skill is rebuilt on one rule, taken from 1Password's own
+  guidance for AI tools: an agent acts on secrets without handling them
+  (#80). Before, its guardrails forbade pasting secrets into logs or chat
+  while its own examples printed values into the session transcript, where
+  the only remedy is rotation. Every command form now cites the 1Password
+  page it comes from; rules that are this repository's are labelled as such.
+- `op run` with secret references is the default way to use a secret. The
+  value is resolved for one subprocess and concealed in its output. `op read`
+  and `op inject` are the exception, for a consumer that cannot take a secret
+  from an environment variable. The documented subshell form covers a command
+  line that expands the variable.
+- Checks no longer print a value: a fixed-word test for "already in my
+  environment" (`${VAR_NAME:+set}`, safe under `set -x`), `op item get`
+  without `--reveal` for "in the vault", and `op run -- printenv` for "the
+  reference resolves". This replaces `printenv VAR_NAME`.
+- Storing a secret never puts the value on a command line or in the
+  conversation. The user fills the item in the 1Password app or in an item
+  JSON template they edit, or 1Password generates the value
+  (`--generate-password`). The skill used to ask the user for the value and
+  pass it as an assignment statement.
+- Commands that print a value or take one as input (bare `op read`, the OTP
+  and private-key reads, `op run --no-masking`, `--reveal`, `op inject` to
+  stdout, `cat` of a mounted `.env`, assignment statements, `op account add`)
+  are listed under "For a human at a terminal only — never for an agent".
+- A rendered config or key file is written to a private temporary directory
+  outside every git work tree and removed afterwards, by one block that
+  checks the allocation, refuses a directory inside a work tree, installs its
+  cleanup trap before the write, and stops on a failed read. This replaces
+  `op inject -o config.yml` and `op read --out-file ./key.pem` in the current
+  directory.
+- The tmux session for persistent auth never captures the pane. It writes one
+  status line (sign-in state or an exit status) to a file, and the agent
+  reads only that. It used to capture the pane after a bare `op read`.
+- `ssh-keys`: `gh` gets its token through `op run` instead of an exported
+  `op read`; a new gotcha forbids reading the `private key` field.
 
 ### Added
 
-- `1password` guardrail: never run a command whose output is a secret value;
-  when the user asks to see one, hand them the command to run in their own
-  terminal.
-- `1password` guardrail: never take a secret value into the conversation or
-  onto a command line. If the user pastes one into the chat, do not reuse it;
-  say it should be rotated.
+- `references/environments.md`: 1Password Environments, mounted local `.env`
+  files and their stated limits, `op run --environment`, the documented MCP
+  server config (`"command": "op"`), the validation hook, and 1Password's own
+  plugin for Claude Code.
+- `references/authentication.md`: the documented sign-in form, the tmux
+  session, and service accounts for non-interactive use (scoped, read unless
+  it must write, token rotation and revocation).
+
+### Changed
+
+- `SKILL.md` holds the rule, the `op run` default, and when to read which
+  reference; command detail moved to `references/`.
+- `references/cli-examples.md` is organised by task with a source per section.
+- `ssh-keys` uses the documented `--fields label="public key"`; it had
+  `--field`.
+- `references/get-started.md` no longer suggests a bare `op signin` to pick
+  an account, and marks `op account add` as a human-only step.
 
 ## [1.2.2] - 2026-09-05
 

@@ -27,15 +27,21 @@ is uninstalled from every scope.
 
 ## 1password
 
-The `1password` skill reads vault values at runtime with `op` (`op read`,
-`op run`, `op inject`). It tells the agent not to paste secrets into logs,
-chat, or code, not to run a command that prints a secret value, and not to
-write secret values into a work tree. A new secret does not pass through the
-agent: the user enters the value into the item themselves, or 1Password
-generates it, and the agent only creates the empty item and checks by name
-that the item and field exist. `op inject` output is streamed to its consumer;
-when a file is required, the skill has it written to a private temporary
-directory outside every git work tree and removed afterwards. These are
+The `1password` skill follows 1Password's guidance that an agent acts on
+secrets without handling them. Its default is `op run` with secret references:
+the value is resolved for one subprocess and concealed in that subprocess's
+output. `op read` and `op inject` are the exception, for a consumer that
+cannot take a secret from an environment variable. The skill tells the agent
+not to paste secrets into logs, chat, or code, not to run a command that
+prints a secret value, and not to write secret values into a work tree.
+
+A new secret does not pass through the agent. The user enters it in the
+1Password app or in an item template they edit, or 1Password generates it;
+the skill forbids an assignment statement that carries a value. A rendered
+config or key file goes to a private temporary directory outside every git
+work tree and is removed afterwards. For agent tools and MCP servers the
+skill points to 1Password Environments and to launching the server through
+`op run` instead of putting a token in its config file. These are
 instructions to the agent, not a technical boundary.
 
 The `ssh-keys` skill keeps private SSH keys in 1Password. The 1Password SSH

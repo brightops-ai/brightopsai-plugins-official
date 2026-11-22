@@ -11,221 +11,148 @@ homepage: https://developer.1password.com/docs/cli/get-started/
 
 # 1Password CLI
 
-Follow the official CLI get-started steps. Don't guess install commands.
+## The rule
+
+An agent acts on secrets without handling them. 1Password's guidance for AI
+tools is to load credentials "without exposing them in plaintext or allowing
+agents to directly handle your secrets"
+([Secure secrets for AI agents and tools](https://www.1password.dev/get-started/secure-ai-access)).
+Everything below follows from that:
+
+- A secret value goes from 1Password straight to the process that needs it.
+  It never enters the conversation, a tool call, a command line, a log, or a
+  file the agent reads.
+- The agent handles names only: secret references
+  (`op://<vault>/<item>/<field>`), item titles, Environment IDs, variable
+  names.
+- Use the forms 1Password documents. Do not improvise a credential-handling
+  pattern. If no documented form fits, stop and ask the user.
+
+Follow the official install steps; don't guess install commands.
 
 ## References
 
-- `references/get-started.md` — install + app integration + sign-in flow
-- `references/cli-examples.md` — real `op` command examples
+- `references/get-started.md` — installing the CLI and turning on app
+  integration. Read when `op` is missing.
+- `references/authentication.md` — sign-in, the tmux session for persistent
+  auth, service accounts. Read when `op whoami` fails or the run is
+  non-interactive.
+- `references/cli-examples.md` — the exact command forms with their sources:
+  `op run`, checks, storing a secret, config and key files, and the commands
+  only a human may run. Read before running anything beyond the default below.
+- `references/environments.md` — 1Password Environments, mounted `.env`
+  files, MCP server config, the validation hook. Read when giving an agent's
+  tools or an MCP server their keys.
 
-## Existing environment setup
+## Default: `op run` with secret references
 
-Before reading a secret, check whether it's already present in the
-environment. Test for presence only; the check prints `set` or `unset`,
-never the value:
-
-```bash
-if [ "${VAR_NAME:+set}" = set ]; then echo set; else echo unset; fi
-```
-
-`${VAR_NAME:+set}` expands to the word `set`, never to the value, so the check
-stays safe even with shell tracing on. Do not check with `printenv VAR_NAME`,
-`echo "$VAR_NAME"`, `env` or `[ -n "$VAR_NAME" ]`: each can put the value
-into the transcript. Many users pre-inject secrets via
-`op read` in a shell wrapper or launch script, so the value may already be
-available without needing `op` at all.
-
-**SSH agent:**
-- `SSH_AUTH_SOCK` may point to the 1Password SSH agent socket.
-  If configured, SSH operations (git clone/push over SSH, etc.) work
-  automatically.
-
-**Default vault:** use the vault specified in the user's `CLAUDE.md` or
-project config. If none is specified, ask the user which vault to use.
-Use `<VAULT>` as a placeholder in `op://` references and commands below.
-
-### Adding secrets for MCP servers
-
-1. Get the item into 1Password without the value passing through the
-   conversation (see "Store a new secret").
-2. Have the user export it before Claude starts, in the shell wrapper or
-   launch script, with tracing off. Assign first so a failed read stops the
-   script instead of exporting an empty value:
-   ```bash
-   MY_SERVICE_API_KEY="$(op read 'op://<VAULT>/<ITEM>/credential')" || exit 1
-   export MY_SERVICE_API_KEY
-   ```
-3. Reference as `${MY_SERVICE_API_KEY}` in the `.mcp.json` `env` block
-
-That's it — no wrapper scripts are required by this skill. If the env var is
-injected before Claude starts, `.mcp.json` expands `${VAR}` references in
-`env` values.
-
-## When you need this skill
-
-Use this skill for mid-session secret operations:
-
-- Reading a secret not already in the environment (e.g., a database password,
-  API key for a new service)
-- Getting a new secret into the vault without it passing through the
-  conversation
-- Injecting secrets into a config template (`op inject`)
-- Wrapping a command with secrets (`op run`)
-- Troubleshooting `op` auth or connectivity issues
-
-## Workflow
-
-1. Check if the secret is already in the environment with the presence test
-   above. If it prints `set`, use the variable — no need for `op`.
-2. Verify CLI is present: `op --version`.
-3. Try `op whoami` to check auth status. If desktop app integration is enabled
-   and the app is unlocked, this may just work without tmux.
-4. If `op whoami` fails or returns "not signed in", set up a tmux session
-   (see below) and authenticate there.
-5. For multiple accounts: use `--account` or `OP_ACCOUNT`.
-
-## tmux session for persistent auth
-
-Claude Code's shell tool spawns a fresh TTY per command, which can lose `op`
-authentication state between calls. A persistent tmux session solves this by
-keeping a single authenticated shell alive.
-
-Use tmux when:
-- `op whoami` fails outside tmux
-- You need to run multiple `op` commands in sequence
-- Sign-in requires interactive authorization (app prompt)
-
-Example setup:
+`op run` resolves secret references for one subprocess and conceals them in
+that subprocess's output. The reference goes in an environment variable or an
+env file; the value never passes through the shell or the agent:
 
 ```bash
-SOCKET_DIR="${TMPDIR:-/tmp}/claude-op-sockets"
-mkdir -p "$SOCKET_DIR" && chmod 700 "$SOCKET_DIR"
-SOCKET="$SOCKET_DIR/op-session.sock"
-STATUS="$SOCKET_DIR/op-status"
-SESSION="op-auth-$(date +%Y%m%d-%H%M%S)"
-
-tmux -S "$SOCKET" new -d -s "$SESSION" -n shell
-
-# Authenticate. Without app integration `op signin` prints a session token:
-# assign it, check the sign-in worked, then eval it, so the token is never
-# shown and a failed sign-in is not hidden. The pane writes one status line
-# to a file; that line is all that leaves the session.
-rm -f "$STATUS"
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- \
-  "set +x; if s=\"\$(op signin)\"; then eval \"\$s\"; fi; unset s; if op whoami >/dev/null 2>&1; then echo 'op-auth: signed in'; else echo 'op-auth: NOT signed in'; fi >'$STATUS'" Enter
-
-# Read the status line. Repeat if the file is not there yet (the app prompt
-# may still be open).
-sleep 2
-cat "$STATUS"
-
-# Run a secret-bearing command in the session and bring back only its exit
-# status. Its output stays in the pane for the user.
-rm -f "$STATUS"
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- \
-  "op run --env-file=./.env -- <command>; echo \"exit: \$?\" >'$STATUS'" Enter
-sleep 1
-cat "$STATUS"
-
-# Clean up when done
-tmux -S "$SOCKET" kill-session -t "$SESSION"
-rm -f "$STATUS"
+op run --env-file="./app.env" -- <command>
+MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- <command>
 ```
 
-Never run `capture-pane` on this session, and never send it a bare `op read`.
-The pane can hold sign-in prompts and the output of secret-bearing commands;
-the status file is the only channel back.
+- **The env file holds references, not values**, so it can be committed.
+- **Expansion.** The shell expands `$MY_VAR` before `op run` substitutes it.
+  When the command line itself uses the variable, expand it in a subshell:
+  `MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- sh -c '<command> "$MY_VAR"'`.
+- **Masking.** A secret the subprocess prints shows as
+  `<concealed by 1Password>`. `--no-masking` is a deliberate reveal and is
+  for a human only.
+- **Scope.** `op run` gives the value to one process for its lifetime.
+  `export` leaves it in the shell and every child, and 1Password says to
+  "assume that processes on your computer can access the environment of other
+  processes run by the same user". Prefer `op run` to `export`.
 
-## Common operations
+## Check without revealing
 
-Run every secret-bearing command with shell tracing off. Under `set -x`,
-`bash -x` or `xtrace` the shell prints each expanded value, including the
-right-hand side of an assignment, an `export` and an `eval`. Start such a
-command with `set +x`, and never add tracing to a script that reads secrets.
-
-### Read a secret
-Send the value straight to the command that needs it. A bare `op read`
-prints the value into the transcript. `pipefail` makes a failed read fail the
-pipeline instead of feeding the consumer empty input:
-```bash
-set -o pipefail
-op read 'op://<VAULT>/<Item Name>/<field>' | <command-that-reads-stdin>
-```
-
-### Export as environment variable
-Assign first and check the read, then export. A plain
-`export VAR_NAME="$(op read ...)"` succeeds even when the read failed:
-```bash
-if VAR_NAME="$(op read 'op://<VAULT>/<Item Name>/<field>')"; then
-  export VAR_NAME
-else
-  unset VAR_NAME
-  echo "op read failed; VAR_NAME not exported" >&2
-fi
-```
-
-### Store a new secret
-The value must never reach the agent: not in chat, not in a tool call, not
-on a command line the agent writes. Do not ask the user for it.
-
-- **The user holds the value** (a key a service issued). Create the empty
-  item — no assignment, so no secret — and have the user paste the value into
-  its field in the 1Password app. If the command is refused, the user creates
-  the item in the app:
+- **Already in this environment?** Many users pre-inject secrets in a launch
+  script. Expand a fixed word, never the value; this prints `set` or `unset`:
   ```bash
-  op item create --category=api-credential --title="<Service Name>" --vault="<VAULT>"
+  if [ "${VAR_NAME:+set}" = set ]; then echo set; else echo unset; fi
   ```
-- **Any random value will do** (a new password or signing secret). Have
-  1Password generate it, and discard the item summary:
+  Not `printenv VAR_NAME`, `echo "$VAR_NAME"`, `env` or `[ -n "$VAR_NAME" ]`.
+- **Is the item in the vault?** `op item get "<ITEM>" --vault "<VAULT>"`
+  conceals sensitive fields unless `--reveal` is passed. Never pass
+  `--reveal`, and do not add `--format json` (see `references/cli-examples.md`).
+- **Does the reference resolve?** This prints `<concealed by 1Password>` when
+  it does:
   ```bash
-  op item create --category=password --title="<Service Name>" --vault="<VAULT>" --generate-password >/dev/null
+  MY_VAR="op://<VAULT>/<ITEM>/<field>" op run -- printenv MY_VAR
   ```
-- **Verify by name.** The value goes to `grep -q`, which prints nothing:
-  ```bash
-  if op read 'op://<VAULT>/<Service Name>/<field>' | grep -q .; then echo present; else echo "missing or empty"; fi
-  ```
-- **The user pastes a value into the chat anyway.** Do not copy it into any
-  command or file. Say that it is now in the transcript and should be
-  rotated, and have the replacement stored as above.
 
-### Inject into a config template
-Stream the rendered config to its consumer:
-```bash
-set -o pipefail
-op inject -i config.yml.tpl | <command-that-reads-config-on-stdin>
-```
-Never pass `-o` a relative path such as `config.yml`: in a repository that
-writes the resolved secrets into the work tree. When the consumer needs a
-file, use the temporary-directory pattern in `references/cli-examples.md`
-("Secret-bearing files").
+## Store a new secret
 
-### Wrap a command with secrets
-```bash
-op run --env-file="./.env" -- <command>
-```
-Note: `op run` doesn't allocate a TTY. For interactive tools, prefer
-`op read` + export instead.
+Never write an assignment statement that carries a value
+(`'password=<value>'`). 1Password: "Command arguments get logged in your
+command history, and can be visible to other processes on your machine."
+Do not ask the user for the value. One of:
+
+1. **The user fills the item themselves**, in the 1Password app or in an item
+   JSON template they edit (`references/cli-examples.md`, "Store").
+2. **1Password generates the value**, when a new random one is acceptable:
+   `--generate-password[=recipe]` on a Login or Password item.
+
+If the user pastes a value into the chat anyway, do not copy it into any
+command or file. Say that it is now in the transcript and should be rotated,
+and have the replacement stored as above.
+
+## When `op run` does not fit
+
+`op read` and `op inject` put a value on stdout or in a file, so each use
+needs a reason: the consumer cannot take the secret from an environment
+variable. The forms are in `references/cli-examples.md`.
+
+- Never run a bare `op read`; send its output to the consumer.
+- Run these with shell tracing off (`set +x`): under `set -x` the shell
+  prints every expanded value, including in an assignment, `export` or `eval`.
+- A rendered config or key file is deleted when no longer needed (1Password's
+  rule) and is written outside every git work tree (this repository's rule).
+
+## Keys for agent tools and MCP servers
+
+1Password's recommended setup is a 1Password Environment, used through a
+mounted local `.env` file or `op run --environment <environmentID> --
+<command>`. An MCP server that needs a token is launched through `op run`
+(`"command": "op"`) instead of carrying the token in its config file. After
+setup, plaintext keys come out of local `.env` files and shell profiles. The
+forms, limits and links are in `references/environments.md`.
+
+## Authentication
+
+1. Verify the CLI is present: `op --version`.
+2. Check auth: `op whoami`. With desktop app integration on and the app
+   unlocked this usually works as is.
+3. If it fails, sign in inside a persistent tmux session
+   (`references/authentication.md`). Claude Code's shell tool starts a fresh
+   TTY per command, which can drop `op` auth between calls. If tmux is
+   unavailable, ask the user before running `op` commands that will fail.
+4. For a non-interactive run, use a service account scoped to the vaults or
+   Environments it needs, with read access unless it must write
+   (`references/authentication.md`).
+5. For multiple accounts, pass `--account` or set `OP_ACCOUNT`.
+
+**Default vault:** use the vault named in the user's `CLAUDE.md` or project
+config. If none is named, ask. `<VAULT>` is a placeholder throughout.
+
+**SSH agent:** `SSH_AUTH_SOCK` may point at the 1Password SSH agent socket, in
+which case SSH operations work without `op`. See the `ssh-keys` skill.
 
 ## Guardrails
 
 - Never paste secrets into logs, chat, or code.
 - Never run a command whose output is a secret value: no bare `op read`, no
   `printenv`, `echo` or `env` on a secret variable, no `op run --no-masking`,
-  no `--reveal`, no `cat` of a rendered config. A value that reaches the
-  transcript can only be undone by rotating it. When the user asks to see a
-  value, give them the command to run in their own terminal (the human-only
-  section of `references/cli-examples.md`); do not run it.
+  no `--reveal`, no `cat` of a rendered config or a mounted `.env` file. A
+  value that reaches the transcript can only be undone by rotating it. When
+  the user asks to see a value, give them the command to run in their own
+  terminal (the human-only section of `references/cli-examples.md`).
 - Never take a secret value into the conversation or put one on a command
-  line: the user enters it in 1Password themselves, or 1Password generates it
-  ("Store a new secret").
-- Never write a secret into a work tree — prefer `op run`, or `op read` /
-  `op inject` streamed to the consumer. When a consumer needs a key or a
-  rendered config as a file, write it to a private temporary directory outside
-  every git work tree, owner-only, and remove it afterwards
-  (`references/cli-examples.md`, "Secret-bearing files").
-- If you discover plaintext secrets in any file, flag it immediately and offer
-  to migrate them to the configured vault.
-- If a command returns "account is not signed in", authenticate inside tmux
-  and re-try.
-- If tmux is unavailable, ask the user before proceeding — don't attempt `op`
-  commands that will silently fail.
+  line.
+- If plaintext secrets turn up in any file, flag it and offer to move them
+  into the configured vault or an Environment.
+- If a command returns "account is not signed in", authenticate
+  (`references/authentication.md`) and retry.
