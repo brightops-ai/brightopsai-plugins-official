@@ -139,39 +139,68 @@ Two consequences for anything written here, including docs:
   allowlist; don't add a path allowlist and don't use `--no-verify` (a deny
   rule refuses it; see Guardrails below).
 
-Git never clones hooks. A Claude Code session runs
-`./scripts/install-hooks.sh` at start, from the SessionStart hook
+Git never clones hooks. A new Claude Code session runs
+`./scripts/install-hooks.sh` from the SessionStart hook
 `.claude/hooks/install-plugins.sh`. In any other fresh clone assume the local
 pre-commit gate is inactive until that script has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
 
 ### Guardrails
 
-`permissions.deny` in [`.claude/settings.json`](.claude/settings.json) backs
-the rules below for a Claude Code session opened here. A deny rule refuses the
-usual spelling of a command. It is a tripwire, not a security boundary: the
-same program run by path, inside `bash -c` or from a script is not matched, and
-other agents do not read the file.
+`permissions.deny` in [`.claude/settings.json`](.claude/settings.json) holds
+tripwires for a Claude Code session opened here. A deny rule refuses a command
+by its text, so it catches the usual spelling and nothing more. It is not a
+security boundary, and other agents do not read the file. The second column
+names the control that holds each rule when the tripwire is stepped around.
 
-| Rule | Enforced by | Do this instead |
-|---|---|---|
-| No push to `main` | Branch protection: pull request and one approval, administrators exempt (checked 2026-11-22). Deny rules on `git push <remote> main` and `<src>:main`; a bare `git push` from a local `main` is not matched | `git push -u origin <branch>`, then `gh pr create` |
-| No `git push --force` or `-f` | Deny rules; branch protection refuses a force push to `main` | `git push --force-with-lease origin <branch>`, on your own branch only |
-| No `git commit --no-verify` or `-n` | Deny rules; the CI gitleaks scan still runs on the pull request | Fix what the hook flagged, then `git commit` |
-| No agent started with a permission-bypass flag (`claude --dangerously-skip-permissions`, `--permission-mode bypassPermissions`, `codex --yolo`, `gemini --yolo`) | Deny rules only | Start it in its default permission mode |
-| No printing the environment or a token (`env` alone, `printenv`, `gh auth token`, `gh auth status --show-token`) | Deny rules only | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
-| No reading `.env` or `.env.*` at any depth | `Read` deny rules, which also cover `cat`, `head` and similar; a script that opens the file itself is not matched | Ask for the variable name and test it as above |
-| No send, reply, forward, share, trash or delete through the Gmail, Slack, Google Drive and Google Calendar connectors | Deny rules only. They match those connectors under any account suffix (observed 2026-11-22); other connectors are not covered | Use the draft tool, or hand the text to the user |
+| Rule | What holds it | What the tripwire refuses | Do this instead |
+|---|---|---|---|
+| No push to `main` | Branch protection on `main`: pull request and one approval. Administrators are exempt (checked 2026-11-22) | `git push` and `git -C <dir> push` with `main` as its own word; `git push` with `<src>:main` or `refs/heads/main`; `git push` with `--all` or `--mirror` | `git push -u origin <branch>`, then `gh pr create` |
+| No force push | Branch protection refuses a force push to `main`. Nothing holds other branches | `git push` with `--force` or `-f` as its own word | `git push --force-with-lease origin <branch>`, on your own branch only |
+| No commit that skips the secret scan | The pre-commit hook scans what is staged. CI scans the tree on every pull request and on `main`, so a skipped hook is caught before merge | `--no-verify` anywhere after `git commit` or `git -C <dir> commit`; `-n` as its own word after `git commit` | Fix what the hook flagged, then `git commit` |
+| No agent started with a permission-bypass flag | Nothing else | `claude` with `dangerously-skip-permissions` or `bypassPermissions` in its arguments; `codex` with `--yolo` or `--dangerously-bypass-approvals-and-sandbox`; `gemini` with `yolo` anywhere (`--yolo`, `--approval-mode=yolo`) or `-y` as its own word | Start it in its default permission mode |
+| No printing the environment or a token | Nothing else | `env` alone, `env -0`, `env --null`; `printenv` with or without a name; `gh auth token`; `gh auth status` with `--show-token` or `-t` | `[ -n "${VAR:-}" ]` tests one variable; `gh auth status`; `env VAR=value command` still runs |
+| No reading files that hold real environment values | Nothing else | Read, Edit, Write and `cat`-style commands, at any depth, on `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test`, `.env.dev`, `.env.prod` | Keep key names with fake values in `.env.example`, `.env.sample` or `.env.template`, which stay readable and writable |
+| No send, share or delete through a connector | Nothing else | Under any account suffix (observed 2026-11-22): Gmail send, reply, forward, trash, delete draft, delete label; Slack send and schedule message; Google Drive share, trash, request access; Google Calendar create, update, delete, respond | Use the draft tool, or hand the text to the user |
 
-A commit message that contains the text `--no-verify` also trips the rule;
-write the message to a file and use `git commit -F <file>`.
+Known misses, none of them matched:
 
-The same SessionStart hook installs `mattpocock-skills` only when it is
-missing. `claude plugin install` takes no version pin (Claude Code 2.1.330), so
-the hook never updates an installed copy, and it prints the installed version
-to stderr on every start. Update on purpose with
+- Any of the above run by path (`/usr/bin/git`), inside `bash -c` or `sh -c`,
+  from a script, or by another agent.
+- Pushes: a bare `git push` from a local `main`; `+main`; `git -c <key>=<value>
+  push`; `git -C <dir> push` with a refspec, `--all`, `--mirror` or a force
+  flag.
+- Short flags joined to others: `git push -fu`, `git commit -nm`. Also
+  `git -C <dir> commit -n`.
+- Environment: `env -u NAME`, `export -p`, `set`, and any program that reads
+  its own environment.
+- Environment files under other names (`.env.qa`, `.envrc`), and any program
+  that opens the file itself.
+- Connectors other than the four named; Slack canvases and reactions.
+
+Known false positives: a commit message that contains `--no-verify`, or `-n`
+as its own word, is refused; write the message to a file and use
+`git commit -F <file>`. A ref whose name contains `--all` or `--mirror` cannot
+be pushed by that name.
+
+The SessionStart hook runs for a new session only (the `startup` matcher), not
+on resume, `/clear` or compaction. It installs `mattpocock-skills` only when
+`claude plugin list --json` succeeds and shows no install that applies to this
+project; if the listing fails or cannot be parsed, it warns and installs
+nothing. It never updates an installed copy and prints the installed version
+to stderr. A plugin it installs loads in the next session, or after
+`/reload-plugins`.
+
+The plugin cannot be pinned: `claude plugin install` takes no version
+(Claude Code 2.1.330), and a commit `ref` is refused for a reserved
+marketplace name such as `claude-plugins-official`. That marketplace
+auto-updates by default, so `.claude/settings.json` sets `"autoUpdate": false`
+on its entry. That holds for sessions that read this file after the folder is
+trusted. A session in another project on the same machine can still update the
+shared on-disk copy, and this repo then loads the new version; the version line
+on stderr is how that shows. Update on purpose with
 `claude plugin update mattpocock-skills@claude-plugins-official`.
 
 [`.github/CODEOWNERS`](.github/CODEOWNERS) names the reviewer for every path.
-It binds only once branch protection requires code-owner review, which is a
-repository setting.
+A code-owner review is required only if branch protection asks for it, which
+is a repository setting that is off today (checked 2026-11-22).

@@ -1,4 +1,8 @@
-# Default owner for every path. GitHub requests this review on each pull
-# request; it is required only where branch protection asks for code-owner
-# review.
+# Default owner for every path.
+#
+# GitHub reads this file from the pull request's base branch and asks the
+# owner for a review once the pull request is ready for review; a draft waits
+# until then. The owner must have write access to the repository. A code-owner
+# review is required only where branch protection on the base branch asks for
+# it, which is a separate setting.
 * @danielcbright

@@ -98,11 +98,17 @@ the repository root:
 
 That points `core.hooksPath` at `.githooks/` so the gitleaks pre-commit
 scan runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
-A Claude Code session opened in the clone runs the same script at start,
-from the SessionStart hook `.claude/hooks/install-plugins.sh`. That hook
-also installs the `mattpocock-skills` plugin when it is missing. It never
-updates an installed copy, because `claude plugin install` takes no version
-pin, and it prints the installed version to stderr. Update on purpose with
+A new Claude Code session opened in the clone runs the same script, from
+the SessionStart hook `.claude/hooks/install-plugins.sh` (registered for
+the `startup` source, so not on resume, `/clear` or compaction). That hook
+also installs the `mattpocock-skills` plugin, only when
+`claude plugin list --json` shows it is missing; if the listing fails, it
+warns and installs nothing. It never updates an installed copy and prints
+the installed version to stderr. A plugin it installs loads in the next
+session, or after `/reload-plugins`. The plugin cannot be pinned, so
+`.claude/settings.json` turns off auto-update for its marketplace; what
+that does and does not prevent is in [CLAUDE.md](CLAUDE.md) (Guardrails).
+Update on purpose with
 `claude plugin update mattpocock-skills@claude-plugins-official`.
 CI (`.github/workflows/ci.yml`) still scans the checked-out tree on pull
 requests and `main`. Identifier and credential rules are in
