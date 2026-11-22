@@ -107,7 +107,12 @@ could leave the machine:
   Grok cannot read the uploaded file. The answer covers the exact text to be
   pasted; a truncated version gets its own snapshot and scan first.
 
-An approval covers one sha256 and one destination. The skill does not
+An approval covers one sha256 and one destination. Because the active
+account can change after it was approved, the skill re-reads the account and
+the project identifier on the sending tab immediately before each send
+(upload, re-upload, inline paste), ahead of the byte check; a destination
+that differs or cannot be read stops the send and the question is asked
+again. The skill does not
 pre-approve the Playwright upload tool, so the session's own permission rules
 apply to each upload. The inline fallback has to go through a browser tool the
 skill does pre-approve; the explicit answer is the only gate on it. The

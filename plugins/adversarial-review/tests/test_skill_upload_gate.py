@@ -56,8 +56,8 @@ UPLOAD_STEP = "### 6. Navigate to Grok Projects and Upload Document"
 # The steps that stand between the document and grok.com.
 GATE_STEPS = (1, 3, 4, 5, 6, 7, 12)
 GATE_PIN = (
-    "5b251c890d1df11e4e55dd762f19a9ac"
-    "86166f144612ab72e5aaded664db9bae"
+    "4835852b3dada01e9fba9316da32138f"
+    "9a9e8b8d487dac5104dbd16ed0a7f2c3"
 )
 
 # A line that mentions one of these must tell the agent to stop.
@@ -363,7 +363,7 @@ class TestSnapshotRule(SkillTextCase):
         self.assertLess(check, send)
         flat = _flat(step)
         self.assertIn(
-            "As the last command before the upload, with nothing after it but "
+            "as the last command before the upload, with nothing after it but "
             "the upload itself",
             flat,
         )
@@ -426,8 +426,7 @@ class TestDestinationRule(SkillTextCase):
             step,
         )
         self.assertIn(
-            "the page URL must carry the confirmed identifier; if it does "
-            "not, stop",
+            "re-read the signed-in account and the project identifier in its URL",
             _flat(self.step(6)),
         )
         self.assertIn("id `<uuid from its link>`", _flat(self.gate_ref))
@@ -443,6 +442,95 @@ class TestDestinationRule(SkillTextCase):
         self.assertIn("Never guess it.", step)
         self.assertIn(
             'the user answered "Upload" in steps 4 and 5', _flat(self.step(6))
+        )
+
+
+class TestDestinationIsRecheckedBeforeEverySend(SkillTextCase):
+    """The account can change after it was approved; the byte check cannot see it.
+
+    In each of the three send paths the account and project are re-read on
+    the sending tab, and that comes before the byte check, which comes before
+    the send.
+    """
+
+    def test_upload_rechecks_destination_then_bytes_then_sends(self) -> None:
+        step = self.step(6)
+        chooser = step.index("go as far as the open file chooser")
+        recheck = step.index("**Re-check the destination on the tab that will send.**")
+        check = step.index(
+            'snapshot-document.sh" check "<snapshot>" "<sha256>" "<document>"'
+        )
+        send = step.index("upload the **snapshot path** with `browser_file_upload`")
+        order = [chooser, recheck, check, send]
+        self.assertEqual(order, sorted(order))
+        flat = _flat(step)
+        self.assertIn("Take a fresh `browser_snapshot` of that tab", flat)
+        self.assertIn(
+            "re-read the signed-in account and the project identifier in its URL",
+            flat,
+        )
+        self.assertIn(
+            "If either differs from what the user approved in step 5, or "
+            "cannot be read, send nothing and ask the step 5 question again.",
+            flat,
+        )
+
+    def test_inline_paste_rechecks_destination_then_bytes_then_pastes(self) -> None:
+        step = self.step(7)
+        fallback = step.index("**Inline fallback.**")
+        answer = step.index('On an explicit "Paste"', fallback)
+        recheck = step.index("repeat the step 6 destination re-check", fallback)
+        check = step.index("run `check` as the last command before the paste", fallback)
+        paste = step.index("paste only that payload", fallback)
+        order = [answer, recheck, check, paste]
+        self.assertEqual(order, sorted(order))
+
+    def test_reupload_rechecks_destination_then_bytes(self) -> None:
+        step = self.step(12)
+        ask = step.index("ask the step 4 question for the new sha256")
+        follow = step.index("follow step 6")
+        recheck = step.index("the destination re-check", follow)
+        check = step.index("`check` as the last command before the upload", follow)
+        send = step.index("replace the old project source with the new snapshot")
+        order = [ask, follow, recheck, check, send]
+        self.assertEqual(order, sorted(order))
+
+    def test_reference_orders_the_recheck_before_the_byte_check(self) -> None:
+        ref = self.gate_ref
+        section = ref[ref.index("## Destination re-check"):ref.index("## Inline fallback")]
+        flat = _flat(section)
+        snapshot = flat.index("take a fresh `browser_snapshot`")
+        reread = flat.index("Re-read the signed-in account")
+        compare = flat.index("Compare both with what the user approved")
+        go_on = flat.index("go on to the byte `check`, then the send")
+        order = [snapshot, reread, compare, go_on]
+        self.assertEqual(order, sorted(order))
+        self.assertIn(
+            "If either differs, or either cannot be read: send nothing.", flat
+        )
+        self.assertIn(
+            "the upload in step 6, the re-upload in step 12, the inline paste "
+            "in step 7",
+            flat,
+        )
+        paste = _flat(ref[ref.index("## Inline fallback"):ref.index("## Cleanup")])
+        recheck = paste.index("do the destination re-check above on the chat tab")
+        check = paste.index("then run `check` on the payload's snapshot")
+        self.assertLess(recheck, check)
+
+    def test_ui_reference_keeps_the_same_order(self) -> None:
+        nav = _flat((REFS / "grok-ui-navigation.md").read_text(encoding="utf-8"))
+        recheck = nav.index("step 6 destination re-check now")
+        check = nav.index("then the `check`, as the last command before the upload")
+        self.assertLess(recheck, check)
+
+    def test_workspace_snapshot_is_kept_until_its_last_use(self) -> None:
+        nav = _flat((REFS / "grok-ui-navigation.md").read_text(encoding="utf-8"))
+        self.assertNotIn("Remove the snapshot directly after the upload", nav)
+        self.assertIn(
+            "keep this one until its last use (SKILL.md step 11 checks the "
+            "source against it)",
+            nav,
         )
 
 
@@ -473,13 +561,15 @@ class TestFallbackRule(SkillTextCase):
         fallback = step.index("**Inline fallback.**")
         build = step.index("build the exact payload first", fallback)
         ask = step.index("ask with AskUserQuestion", fallback)
+        answer = step.index('On an explicit "Paste"', fallback)
         check = step.index("run `check` as the last command before the paste", fallback)
-        paste = step.index('Paste only on an explicit "Paste"', fallback)
-        self.assertEqual([build, ask, check, paste], sorted([build, ask, check, paste]))
+        paste = step.index("paste only that payload", fallback)
+        order = [build, ask, answer, check, paste]
+        self.assertEqual(order, sorted(order))
         self.assertIn("full or truncated, its size and sha256", flat)
-        self.assertIn("and only that payload", flat)
         self.assertIn(
-            "On any other answer, or if `check` does not report `UNCHANGED`, stop.",
+            "On any other answer, a destination that differs or cannot be "
+            "read, or a `check` result other than `UNCHANGED`, stop.",
             flat,
         )
 

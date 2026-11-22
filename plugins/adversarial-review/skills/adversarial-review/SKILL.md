@@ -35,11 +35,11 @@ allowed-tools:
 
 # Adversarial Review
 
-Send a plan, design, or working document to Grok (grok.com) for adversarial feedback: snapshot and scan it, confirm the upload and the destination with the user, upload the snapshot, submit a review prompt, extract findings, and integrate approved suggestions into the source file.
+Send a plan, design, or working document to Grok (grok.com) for adversarial feedback, then integrate approved suggestions into the source file. Nothing is sent before a clean scan and the user's explicit approval of the bytes and the destination.
 
 ## When to Use This vs. `/code-review`
 
-Use this skill to send a plan, design, or document to Grok for an independent second opinion. Use the built-in `/code-review` skill to review a code diff with Claude itself; it needs no browser.
+For a code diff reviewed by Claude itself, use the built-in `/code-review` skill instead; it needs no browser.
 
 ## References
 
@@ -52,7 +52,7 @@ Use this skill to send a plan, design, or document to Grok for an independent se
 
 ### Prerequisites
 
-Confirm the Playwright browser tools (`mcp__plugin_playwright_playwright__browser_*`) are available. If they are missing, stop: tell the user to run `/plugin install playwright@claude-plugins-official`, then `/reload-plugins` or restart. Do not retry the browser loop without them.
+Confirm the Playwright browser tools (`mcp__plugin_playwright_playwright__browser_*`) are available. If they are missing, stop: tell the user to run `/plugin install playwright@claude-plugins-official`, then `/reload-plugins` or restart.
 
 ### 1. Identify the Document
 
@@ -125,23 +125,24 @@ Then ask with AskUserQuestion, naming exactly that account and project. This que
 
 Follow `references/grok-ui-navigation.md` for the UI steps.
 
-1. Open or create the confirmed project and go as far as the open file chooser. For an existing project, the page URL must carry the confirmed identifier; if it does not, stop.
-2. As the last command before the upload, with nothing after it but the upload itself, check that nothing moved since the approval:
+1. Open or create the confirmed project and go as far as the open file chooser.
+2. **Re-check the destination on the tab that will send.** The account can change after it was approved. Take a fresh `browser_snapshot` of that tab and re-read the signed-in account and the project identifier in its URL (for a project still being created, the name in the dialog). If either differs from what the user approved in step 5, or cannot be read, send nothing and ask the step 5 question again.
+3. Then, as the last command before the upload, with nothing after it but the upload itself, check that the bytes did not move:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/snapshot-document.sh" check "<snapshot>" "<sha256>" "<document>"
    ```
-3. **`UNCHANGED` (exit 0):** in the very next tool call, upload the **snapshot path** with `browser_file_upload`, replacing a stale copy of the same file.
-4. **`CHANGED` (exit 1), or any other exit status:** send nothing. The source was saved after the scan, or the snapshot was altered. Return to step 3 for a new snapshot and scan, then ask the step 4 question again for the new sha256.
+4. **`UNCHANGED` (exit 0):** in the very next tool call, upload the **snapshot path** with `browser_file_upload`.
+5. **`CHANGED` (exit 1), or any other exit status:** send nothing. Return to step 3 for a new snapshot and scan, then ask the step 4 question again for the new sha256.
 
 Do not upload until step 3 exited 0 on this snapshot and the user answered "Upload" in steps 4 and 5. If the upload is denied, stop.
 
 ### 7. Compose and Submit the Review Prompt
 
-Read `references/adversarial-prompt-templates.md` and follow its selection logic and assembly instructions. Variants: Architecture, Implementation, Security, UX/Product, Standard. If the user names a variant, use it. Briefly note which variant was selected and why.
+Read `references/adversarial-prompt-templates.md` and follow its selection logic and assembly instructions. If the user names a variant, use it; note which was selected and why.
 
 Assemble from that file; do not copy template text into the session notes. Do not inline the document; reference the uploaded filename. Set the prompt and click Submit using the `browser_evaluate` patterns in `references/grok-ui-navigation.md`.
 
-**Inline fallback.** If Grok cannot read the uploaded file, the templates allow pasting the document into the prompt, through a pre-approved tool that no permission prompt guards. Follow "Inline fallback" in `references/upload-gate.md`: build the exact payload first, ask with AskUserQuestion naming that payload (full or truncated, its size and sha256) and the account and project, and run `check` as the last command before the paste. Paste only on an explicit "Paste", and only that payload. On any other answer, or if `check` does not report `UNCHANGED`, stop.
+**Inline fallback.** If Grok cannot read the uploaded file, the templates allow pasting the document into the prompt, through a pre-approved tool that no permission prompt guards. Follow "Inline fallback" in `references/upload-gate.md`: build the exact payload first, and ask with AskUserQuestion naming that payload (full or truncated, its size and sha256) and the account and project. On an explicit "Paste", repeat the step 6 destination re-check, then run `check` as the last command before the paste, and paste only that payload. On any other answer, a destination that differs or cannot be read, or a `check` result other than `UNCHANGED`, stop.
 
 ### 8. Wait for Response
 
@@ -157,7 +158,7 @@ If the response is truncated (ends mid-sentence or says "continued..."), type "P
 
 Extract the assistant response per `references/grok-ui-navigation.md`.
 
-Grok outputs findings as JSON first, then markdown. Prefer the JSON array, and weigh vague findings lower when Grok's `self_improvement` note says so.
+Prefer the JSON array over the markdown, and weigh vague findings lower when Grok's `self_improvement` note says so.
 
 ### 11. Triage and Apply Suggestions
 
@@ -175,7 +176,7 @@ After applying edits locally, the project source in Grok is stale. The edited do
 
 1. Repeat step 3 on the edited document: a new snapshot, then a scan that exits 0.
 2. Re-read the signed-in account and the project identifier from the page, then ask the step 4 question for the new sha256, naming that account and project.
-3. On "Upload", follow step 6 — `check` as the last command before the upload — to replace the old project source with the new snapshot, and verify the name.
+3. On "Upload", follow step 6 — the destination re-check, then `check` as the last command before the upload — to replace the old project source with the new snapshot, and verify the name.
 
 On any other answer, leave the old source in Grok and say so in the summary.
 
@@ -188,4 +189,4 @@ Remove every snapshot made in this run (`snapshot-document.sh remove "<snapshot>
 - Wait 2-3 seconds between Playwright actions
 - If the document exceeds 15,000 characters, split into logical sections and review each separately, then perform a holistic review of the full document
 - Never read the document before its snapshot has scanned clean. A scanner hit is a stop, not a warning to click through. With no user to answer, stop before opening Grok.
-- Send only snapshot bytes whose sha256 the user approved, to the account and project the user approved, and only when `check` reported `UNCHANGED` in the command just before the send.
+- Send only snapshot bytes whose sha256 the user approved, to the account and project the user approved, both re-checked just before the send.

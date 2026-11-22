@@ -14,7 +14,7 @@ procedure, and cleanup.
   altered or the source was saved since.
 - **The destination approved is the destination used.** The account and
   project are read from the page and confirmed before anything is created or
-  sent.
+  sent, and read again on the sending tab just before each send.
 
 The scripts enforce the snapshot, the scan and `check`. Asking, and stopping
 on anything but an explicit yes, are instructions to the agent.
@@ -48,6 +48,27 @@ name the account and project as re-read from the page.
 
 **Inline fallback (step 7).** Options "Paste" and "Cancel". See below.
 
+## Destination re-check
+
+An approval names an account and a project. Between that answer and the
+send, the user or the site can switch the active account, and the upload
+then lands somewhere nobody approved while the bytes still check out. So
+every send — the upload in step 6, the re-upload in step 12, the inline
+paste in step 7 — is preceded by this, in this order:
+
+1. On the tab that will send, take a fresh `browser_snapshot`.
+2. Re-read the signed-in account from the profile control, and the project
+   identifier from the page URL (`/project/{uuid}`). For a project still
+   being created there is no identifier yet: read the name in the dialog.
+3. Compare both with what the user approved. Same account and same project:
+   go on to the byte `check`, then the send.
+4. If either differs, or either cannot be read: send nothing. Tell the user
+   what the page shows now and ask the step 5 question again. Only a new
+   explicit answer for that destination allows the send.
+
+A project created in this run gets its identifier when it is created. Note
+it then; later sends compare against it.
+
 ## Inline fallback
 
 Grok sometimes cannot read an uploaded project source. Pasting the content
@@ -76,12 +97,14 @@ answer cover exactly what is sent:
    > `<first 12 digits>`) into the chat at account "<account>", project
    > "<project name>" (id `<uuid>`)? For a truncated version, the exact text
    > is at `<payload-snapshot>`.
-5. **On an explicit "Paste":** run `check` on the payload's snapshot as the
-   last command before the paste, and paste exactly that snapshot's content.
+5. **On an explicit "Paste":** do the destination re-check above on the
+   chat tab, then run `check` on the payload's snapshot as the last command
+   before the paste, and paste exactly that snapshot's content.
    For the full content that is
    `check "<snapshot>" "<sha256>" "<document>"`; for a truncated payload,
    `check "<payload-snapshot>" "<payload sha256>" "<payload-file>"`.
-6. On any other answer, or any `check` result but `UNCHANGED`, stop.
+6. On any other answer, a destination that differs or cannot be read, or
+   any `check` result but `UNCHANGED`, stop.
 
 ## Cleanup
 

@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The destination is named by account and project identifier
   (`/project/{uuid}`), not by project name alone, and the destination
   question is never skipped.
+- The destination is re-checked before every send. The byte check cannot
+  see an account switch, so an upload could land in an account the user did
+  not approve. In the upload, the re-upload after edits and the inline paste,
+  the skill re-reads the signed-in account and the project identifier on the
+  tab that will send, immediately before the byte check; if either differs
+  or cannot be read, it sends nothing and asks again.
+- A snapshot made inside the workspace (when the upload tool cannot read the
+  temporary directory) is kept until its last use and removed by the normal
+  cleanup. The reference used to say to remove it right after the upload,
+  which made the later source check report `CHANGED`.
 - The inline fallback confirms the exact payload: full or truncated, its
   size and sha256. A truncated or summarised payload gets its own snapshot
   and scan.

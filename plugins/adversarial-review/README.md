@@ -19,6 +19,9 @@ An upload cannot be recalled, so the skill asks before it sends anything:
 - **Once the site is open:** the account actually signed in and the project
   (an existing project by its identifier, not its name alone), before a
   project is created or content is sent. This question is never skipped.
+  The account and project are read again on the sending tab just before each
+  send; if either changed or cannot be read, nothing is sent and the question
+  is asked again.
 - **After edits:** the edited document is new content. It is snapshotted,
   scanned and confirmed again before the re-upload.
 - **Inline fallback:** if Grok cannot read the uploaded file, pasting the
