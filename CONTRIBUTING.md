@@ -88,8 +88,10 @@ scripts/evict-plugin-cache.sh <name> <old-version>
 
 The script refuses an empty or malformed plugin name or version and any
 target that does not resolve to that one directory inside the marketplace
-cache. The dry run prints the resolved path and its file count. It honours
-`CLAUDE_CONFIG_DIR`. Do not hand-write an `rm -rf` on the cache instead.
+cache of the config directory. A cache root, plugin directory or version
+directory that is a symlink is refused. The dry run prints the resolved path
+and how many entries are beneath it. It honours `CLAUDE_CONFIG_DIR`. Do not
+hand-write an `rm -rf` on the cache instead.
 
 If a change still does not appear, look in that cache tree before debugging
 the manifest.
@@ -103,15 +105,26 @@ the repository root:
 ./scripts/install-hooks.sh
 ```
 
-That points `core.hooksPath` at `.githooks/` so the gitleaks pre-commit
-scan runs. The hook fails closed: if `gitleaks` is not on `PATH` it blocks
-the commit and prints how to install it (`brew install gitleaks` on macOS;
-on Linux the pinned release CI uses, verified by checksum). A human who
-accepts the risk can set `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` for one commit;
-it applies only when the scanner is missing and never overrides a finding.
+That points `core.hooksPath` at `.githooks/` so the gitleaks scan runs on
+`git commit` (`pre-commit`) and on merge commits (`pre-merge-commit`). The
+script is safe to re-run: when the hooks are already active it writes
+nothing. If `core.hooksPath` already names another directory it changes
+nothing and exits 1; `./scripts/install-hooks.sh --force` replaces that value
+on purpose. It reports the hooks as active only after reading back the
+value git will really use in that worktree.
+
+The hooks fail closed: if `gitleaks` is not on `PATH` they block the commit
+and print how to install it (`brew install gitleaks` on macOS; on Linux the
+pinned release CI uses, verified by checksum). A scan that cannot complete
+(for example a missing or malformed `.gitleaks.toml`) also blocks, and is
+reported as a failed scan, not as a finding. A human who accepts the risk
+can set `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` for one commit; it applies only
+when the scanner is missing and never overrides a finding or a failed scan.
 Agents must not set it, and nobody should reach for `--no-verify`.
-CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
-requests and `main`. Identifier and credential rules are in
+
+`git rebase`, `git cherry-pick` and `git revert` create commits without
+running either hook. CI (`.github/workflows/ci.yml`) scans the checked-out
+tree on pull requests and `main` and is the backstop for those. Identifier and credential rules are in
 [CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).
 Never write a literal maintainer home or workspace path; use
 `<workspace>`, `<project-root>`. Example credentials must look fake
@@ -152,9 +165,10 @@ cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
 ### Repository tooling (`scripts/tests`)
 
 When touching `scripts/check-marketplace.py` or its fixtures, the
-pre-commit hook, `scripts/install-hooks.sh`, `scripts/evict-plugin-cache.sh`,
-`.gitignore`, or the CI workflow. The hook specs commit in a throwaway
-repository and the eviction specs run in a temp `CLAUDE_CONFIG_DIR`:
+hooks in `.githooks/`, `scripts/install-hooks.sh`,
+`scripts/evict-plugin-cache.sh`, `.gitignore`, or the CI workflow. The hook
+and installer specs work in a throwaway repository and the eviction specs
+run in a temp `CLAUDE_CONFIG_DIR`:
 
 ```bash
 python3 -m unittest discover -s scripts/tests -t scripts
@@ -213,7 +227,8 @@ empty temp directory.
 - [ ] `blast-radius-audit` collector unittest passes when that skill's
       `scripts/` changed; any new output path is covered by the leak test
 - [ ] `python3 -m unittest discover -s scripts/tests -t scripts` when the
-      marketplace checker, the pre-commit hook or a `scripts/*.sh` file changed
+      marketplace checker, a hook in `.githooks/` or a `scripts/*.sh` file
+      changed
 - [ ] `evals/run.sh` when `improve-prompt` changed (manual); eval index
       check when cases changed
 - [ ] User data is not stored in the plugin tree (`${CLAUDE_PLUGIN_DATA}`

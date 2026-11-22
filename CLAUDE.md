@@ -124,8 +124,8 @@ and it falls back to asking.
 
 ### Secret scanning
 
-This repo is **public-bound**. A gitleaks pre-commit hook
-(`.githooks/pre-commit`, activated by `./scripts/install-hooks.sh`) enforces
+This repo is **public-bound**. Gitleaks hooks for `git commit` and merge
+commits (`.githooks/`, activated by `./scripts/install-hooks.sh`) enforce
 [`.gitleaks.toml`](.gitleaks.toml), which blocks infrastructure identifiers on
 top of the default secret rules — workspace name, tailnet hosts/IDs/IPs,
 home-directory paths, LAN IPs, AWS account IDs.
@@ -144,6 +144,10 @@ Git never clones hooks, so in a fresh clone assume the local pre-commit
 gate is inactive until `./scripts/install-hooks.sh` has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
 
-The hook fails closed: without `gitleaks` on `PATH` it blocks the commit.
-Install gitleaks (the hook prints how). `ALLOW_UNSCANNED_PUBLIC_COMMIT=1`
-is a human's override for that one case; an agent never sets it.
+The hooks fail closed: without `gitleaks` on `PATH`, or when the scan cannot
+complete, they block the commit. Install gitleaks (the hook prints how).
+`ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is a human's override for the missing-scanner
+case only; an agent never sets it. `git rebase`, `git cherry-pick` and
+`git revert` run no commit hook, so CI is the only scan for commits made that
+way. `install-hooks.sh` never replaces an existing `core.hooksPath` unless run
+with `--force`.

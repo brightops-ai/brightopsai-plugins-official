@@ -17,6 +17,9 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "evict-plugin-cache.sh"
 MARKETPLACE = "brightopsai-plugins-official"
 
+# alpha/1.0.0 as seeded: plugin.json, skills/, skills/demo/, skills/demo/SKILL.md.
+ALPHA_1_0_0 = "4 entries beneath it, 2 of them regular files"
+
 
 def _files(root: Path) -> list[str]:
     return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
@@ -68,14 +71,17 @@ class TestEvictPluginCache(unittest.TestCase):
             check=False,
         )
 
-    def _assert_refused(self, result: subprocess.CompletedProcess[str]) -> None:
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+    def _assert_refused(
+        self, result: subprocess.CompletedProcess[str], status: int = 1
+    ) -> None:
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         self.assertEqual(_files(self.base), self.before, "a refused run deleted files")
 
     def test_refuses_missing_and_empty_arguments(self) -> None:
         for args in ((), ("alpha",), ("", "1.0.0"), ("alpha", ""), ("", ""), ("alpha", "1.0.0", "extra")):
-            with self.subTest(args=args):
-                self._assert_refused(self._run(*args))
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(args=args, dry=dry):
+                    self._assert_refused(self._run(*dry, *args), status=2)
 
     def test_refuses_traversal_and_malformed_arguments(self) -> None:
         cases = (
@@ -87,6 +93,15 @@ class TestEvictPluginCache(unittest.TestCase):
             (str(self.outside), "1.0.0"),
             ("Alpha", "1.0.0"),
             ("alpha", "1.0"),
+            # Not SemVer 2.0.0: leading zeros, empty identifiers.
+            ("alpha", "01.0.0"),
+            ("alpha", "1.02.0"),
+            ("alpha", "1.0.003"),
+            ("alpha", "1.0.0-01"),
+            ("alpha", "1.0.0-"),
+            ("alpha", "1.0.0+"),
+            ("alpha", "1.0.0-rc..1"),
+            ("alpha", "v1.0.0"),
             ("alpha", "latest"),
             ("alpha", "*"),
             ("*", "1.0.0"),
@@ -96,7 +111,7 @@ class TestEvictPluginCache(unittest.TestCase):
         for args in cases:
             with self.subTest(args=args):
                 result = self._run(*args)
-                self._assert_refused(result)
+                self._assert_refused(result, status=2)
                 self.assertIn("Refusing", result.stderr)
 
     def test_dry_run_prints_target_and_count_and_deletes_nothing(self) -> None:
@@ -109,7 +124,7 @@ class TestEvictPluginCache(unittest.TestCase):
             with self.subTest(args=args, env=env):
                 result = self._run(*args, **env)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"would delete {target} (2 files)", result.stdout)
+                self.assertIn(f"would delete {target} ({ALPHA_1_0_0})", result.stdout)
                 self.assertEqual(_files(self.base), self.before)
 
     def test_eviction_removes_only_the_target(self) -> None:
@@ -123,19 +138,68 @@ class TestEvictPluginCache(unittest.TestCase):
         )
         # The warning names the target and the consequence.
         self.assertIn("WARNING", result.stderr)
-        self.assertIn(f"DELETES {target} (2 files)", result.stderr)
+        self.assertIn(f"DELETES {target} ({ALPHA_1_0_0})", result.stderr)
 
-    def test_prerelease_version_is_accepted(self) -> None:
-        path = self.cache / "alpha" / "2.0.0-rc.1" / "plugin.json"
-        path.parent.mkdir(parents=True)
-        path.write_text("x\n", encoding="utf-8")
-        result = self._run("alpha", "2.0.0-rc.1")
+    def test_warning_comes_before_the_delete(self) -> None:
+        # A stub rm announces itself on stderr and then deletes for real, so
+        # the captured stream shows which came first.
+        real_rm = shutil.which("rm")
+        self.assertIsNotNone(real_rm)
+        stubs = self.base / "stubs"
+        stubs.mkdir()
+        (stubs / "rm").write_text(
+            f'#!/bin/sh\necho "STUB-RM $*" >&2\nexec "{real_rm}" "$@"\n', encoding="utf-8"
+        )
+        (stubs / "rm").chmod(0o755)
+        path = str(stubs) + os.pathsep + os.environ["PATH"]
+        target = self.cache / "alpha" / "1.0.0"
+
+        for args in (("--dry-run", "alpha", "1.0.0"), ("../..", "1.0.0"), ("alpha", "9.9.9")):
+            with self.subTest(args=args):
+                self.assertNotIn("STUB-RM", self._run(*args, PATH=path).stderr)
+
+        result = self._run("alpha", "1.0.0", PATH=path)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(path.parent.exists())
-        self.assertEqual(_files(self.base), self.before)
+        self.assertFalse(target.exists())
+        lines = result.stderr.splitlines()
+        warned = [i for i, line in enumerate(lines) if line.startswith("WARNING:") and f"DELETES {target}" in line]
+        deleted = [i for i, line in enumerate(lines) if line == f"STUB-RM -rf -- {target}"]
+        self.assertEqual(len(warned), 1, result.stderr)
+        self.assertEqual(len(deleted), 1, result.stderr)
+        self.assertLess(warned[0], deleted[0], "the warning was printed after the delete")
+
+    def test_count_is_exact_and_covers_everything_removed(self) -> None:
+        # A newline in a file name must not count twice, and symlinks and
+        # directories are removed too, so they are counted and labelled.
+        target = self.cache / "alpha" / "1.0.0"
+        (target / "odd\nname.txt").write_text("x\n", encoding="utf-8")
+        os.symlink("plugin.json", target / "link")
+        (target / "empty-dir").mkdir()
+        result = self._run("--dry-run", "alpha", "1.0.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(7 entries beneath it, 3 of them regular files)", result.stdout)
+
+    def test_semver_prerelease_and_build_versions_are_accepted(self) -> None:
+        for version in ("2.0.0-rc.1", "1.0.0-rc--test", "1.0.0+build.01", "1.0.0-0a.x-y+b-1", "0.0.0"):
+            with self.subTest(version=version):
+                path = self.cache / "alpha" / version / "plugin.json"
+                path.parent.mkdir(parents=True)
+                path.write_text("x\n", encoding="utf-8")
+                result = self._run("alpha", version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(path.parent.exists())
+                self.assertEqual(_files(self.base), self.before)
 
     def test_absent_version_is_a_no_op(self) -> None:
         result = self._run("alpha", "9.9.9")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing to evict", result.stdout)
+        self.assertEqual(_files(self.base), self.before)
+
+    def test_missing_cache_root_is_a_no_op(self) -> None:
+        empty = self.base / "empty-config"
+        empty.mkdir()
+        result = self._run("alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(empty))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("nothing to evict", result.stdout)
         self.assertEqual(_files(self.base), self.before)
@@ -145,7 +209,44 @@ class TestEvictPluginCache(unittest.TestCase):
         result = self._run("alpha", "3.0.0")
         self._assert_refused(result)
         self.assertIn("WARNING", result.stderr)
-        self.assertIn("Refusing", result.stderr)
+        self.assertIn("Unsupported", result.stderr)
+        self.assertIn("nothing was deleted", result.stderr)
+        self.assertNotIn("points at", result.stderr)
+
+    def test_refuses_a_cache_root_that_leads_out_of_the_config_directory(self) -> None:
+        # Each case replaces one directory on the way to the cache root with a
+        # symlink to a look-alike tree outside the config directory.
+        for depth, label in ((0, "marketplace"), (1, "cache"), (2, "plugins")):
+            config = self.base / f"config-{label}"
+            real = self.cache.parents[depth - 1] if depth else self.cache
+            link = config / real.relative_to(self.config)
+            decoy = self.outside / label
+            # The decoy mirrors what the link replaces, down to alpha/1.0.0.
+            victim = decoy / self.cache.relative_to(real) / "alpha" / "1.0.0"
+            victim.mkdir(parents=True)
+            (victim / "precious.txt").write_text("keep\n", encoding="utf-8")
+            link.parent.mkdir(parents=True)
+            os.symlink(decoy, link)
+            self.before = _files(self.base)
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(symlinked=label, dry=dry):
+                    result = self._run(*dry, "alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(config))
+                    self._assert_refused(result)
+                    self.assertIn("WARNING: cache root", result.stderr)
+                    self.assertIn("DELETES", result.stderr)
+                    self.assertIn("Refusing", result.stderr)
+                    self.assertNotIn("would delete", result.stdout)
+                    self.assertTrue((victim / "precious.txt").is_file())
+
+    def test_config_directory_itself_may_be_a_symlink(self) -> None:
+        # ~/.claude kept in a dotfiles checkout is legitimate. The anchor is
+        # the resolved config directory, so this still evicts.
+        link = self.base / "config-link"
+        os.symlink(self.config, link)
+        result = self._run("alpha", "1.0.0", CLAUDE_CONFIG_DIR=str(link))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.cache / "alpha" / "1.0.0").exists())
+        self.assertTrue((self.cache / "alpha" / "1.1.0" / "plugin.json").is_file())
 
     def test_refuses_a_plugin_directory_that_resolves_outside_the_cache(self) -> None:
         elsewhere = self.outside / "gamma" / "1.0.0"

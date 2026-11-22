@@ -20,6 +20,13 @@ rather than numbered.
   `scripts/install-hooks.sh` no longer suggest piping an install script into
   `sh`; they print the pinned release and checksum that CI uses, plus
   `brew install gitleaks`.
+- A scan that cannot complete (missing or malformed `.gitleaks.toml`, broken
+  `gitleaks`) is reported as a failed scan and still blocks; it is no longer
+  described as a finding.
+- `scripts/install-hooks.sh` leaves an existing `core.hooksPath` that points
+  elsewhere alone and exits 1; `--force` replaces it. It writes nothing when
+  the hooks are already active, and reports them active only after reading
+  back the effective value.
 - `.gitignore` ignores `.env`, `.env.*` (except `.env.example`), `*.pem` and
   `*.key`.
 
@@ -32,6 +39,9 @@ rather than numbered.
 
 ### Added
 
+- `.githooks/pre-merge-commit`: runs the same gitleaks gate on the commit an
+  automatic merge creates, which `pre-commit` does not see. `git rebase`,
+  `git cherry-pick` and `git revert` still run no hook; CI is the backstop.
 - `scripts/evict-plugin-cache.sh <plugin> <old-version>`: removes one old
   version from the plugin cache after a version bump. It validates both
   arguments, refuses a target that does not resolve inside the marketplace
