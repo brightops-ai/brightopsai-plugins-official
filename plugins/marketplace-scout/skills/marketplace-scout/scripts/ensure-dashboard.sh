@@ -13,8 +13,9 @@
 #   exit 3  leftover ./dashboard or ./data in cwd; prints an mv instruction
 #   exit 4  `npm ci` failed; the target is as it was before the run, so the
 #           next run tries again
-#   exit 5  the destination appeared while this run was working; nothing was
-#           overwritten or nested inside it. Run again.
+#   exit 5  the destination appeared, or a file this run was about to replace
+#           changed, while this run was working; nothing was overwritten or
+#           nested inside it. Run again.
 #
 # Dependencies install with `npm ci --ignore-scripts`: exactly the versions
 # package-lock.json pins, and no package's install script runs.
@@ -27,7 +28,11 @@
 #   target absent                   stage copy + install, then move into place
 #   target present, node_modules    left untouched (user edits are kept)
 #   target present, none            install only: node_modules is staged and
-#                                   moved in; no other file is touched
+#                                   moved in. package.json and package-lock.json
+#                                   are brought to this release's when they are
+#                                   an earlier release's, unmodified (see
+#                                   SHIPPED_PACKAGE_JSON); no other file is
+#                                   touched
 #
 # SKIP_NPM_INSTALL: if set, skip the npm step (tests set this). A fresh
 # scaffold is then copied without node_modules, and an existing target is left
@@ -149,6 +154,96 @@ lost_race() {
   exit 5
 }
 
+changed_race() {
+  echo "ensure-dashboard.sh: $1 changed while this run was working; it was not replaced. Run again." >&2
+  exit 5
+}
+
+# sha256 of every package.json and package-lock.json a release of this plugin
+# has shipped in assets/dashboard, oldest first. A target that was never
+# installed and still holds one of these, byte for byte, holds no edit of the
+# user's, so it is moved to this release's pinned pair instead of being
+# refused or installed from a superseded lockfile.
+#
+# When either file changes, APPEND the new digest and keep the old ones:
+# dropping one strands every scaffold made by that release.
+# tests/test_dashboard_lockfile.py fails until the current files are listed.
+# Before listing a release, check that a dashboard scaffolded by each earlier
+# one still builds with the new package.json: its source files are kept.
+SHIPPED_PACKAGE_JSON=(
+  a05ee697d8e0fca325b04fa52394107f9cb7c41b6b6fa048f623d82a5a63692a # first dashboard, no zod
+  af4034f20c141a3ee71815d845bbbeedd3680dd9df8b9599513bccae1fda0f13 # dashboard v2 through 1.3.0
+  92ddf9f8456912b1291c0024657fc461dd8cffa699f6c62c0bbe17880c15875f # 1.3.1
+)
+SHIPPED_PACKAGE_LOCK=(
+  a61d5d64d39e7cf607a268013a012382626a83f5d8f210de63df704e23b11a82 # 1.3.0
+  0f932b65f853789be515ace4bfc3eb085ba97d78454b2116a68c6858e87b1bad # 1.3.1
+)
+
+# sha256_of <file>: prints the hex digest. Fails when neither tool exists
+# (coreutils has sha256sum, macOS has shasum), and the caller then treats the
+# file as not recognised.
+sha256_of() {
+  local out
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum <"$1")" || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 <"$1")" || return 1
+  else
+    return 1
+  fi
+  out="${out%% *}"
+  [[ ${#out} -eq 64 ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# file_state <file> <plugin's file> <known digest>...: prints
+#   current           byte-identical to the file this release ships
+#   earlier:<sha256>  byte-identical to one an earlier release shipped
+#   other             anything else: edited, unknown, or no sha256 tool
+file_state() {
+  local file=$1 current=$2 sum known
+  shift 2
+  if [[ -f "$current" ]] && cmp -s "$file" "$current"; then
+    echo current
+    return 0
+  fi
+  if sum="$(sha256_of "$file")"; then
+    for known in "$@"; do
+      if [[ "$sum" == "$known" ]]; then
+        echo "earlier:$sum"
+        return 0
+      fi
+    done
+  fi
+  echo other
+}
+
+# swap_in <src> <dst> <sha256>: put src in place of the regular file dst, only
+# while dst still has the content that was checked. The rename replaces dst
+# whole, so it is not written through if it became a link. As in place(), a
+# dst that became a directory would take src in as an entry: src has a name
+# nothing there can already have, and it is taken back out. Returns 1 when
+# dst was not replaced.
+swap_in() {
+  local src=$1 dst=$2 want=$3 name=${1##*/} have
+  if [[ -L "$dst" || ! -f "$dst" ]]; then
+    return 1
+  fi
+  have="$(sha256_of "$dst")" || return 1
+  if [[ "$have" != "$want" ]]; then
+    return 1
+  fi
+  mv -f "$src" "$dst" 2>/dev/null || true
+  if [[ -e "$dst/$name" || -L "$dst/$name" ]]; then
+    if ! mv "$dst/$name" "$src"; then
+      echo "ensure-dashboard.sh: could not take $dst/$name back out; remove it by hand" >&2
+    fi
+    return 1
+  fi
+  [[ ! -e "$src" && -f "$dst" && ! -L "$dst" ]]
+}
+
 # `npm ci` installs only what package-lock.json pins and fails if it and
 # package.json disagree. --ignore-scripts keeps every dependency's install
 # script from running with the user's environment; the dashboard toolchain
@@ -183,39 +278,83 @@ if [[ -e "$TARGET" ]]; then
     exit 0
   fi
 
-  # Present but never installed: a SKIP_NPM_INSTALL scaffold, or a target an
-  # older version left behind when its install failed. Install only.
-  lock="$TARGET/package-lock.json"
-  if [[ ! -f "$lock" ]]; then
-    # Scaffolded before the lockfile shipped. The plugin's lockfile pins this
-    # target only if its package.json is still the plugin's.
-    if [[ -f "$src/package-lock.json" ]] && cmp -s "$TARGET/package.json" "$src/package.json"; then
-      lock="$src/package-lock.json"
+  # Present but never installed: a SKIP_NPM_INSTALL scaffold, a target whose
+  # node_modules was removed, or one an older version left behind when its
+  # install failed. Install only.
+  manifest_state="$(file_state "$TARGET/package.json" "$src/package.json" "${SHIPPED_PACKAGE_JSON[@]}")"
+  if [[ -f "$TARGET/package-lock.json" ]]; then
+    lock_state="$(file_state "$TARGET/package-lock.json" "$src/package-lock.json" "${SHIPPED_PACKAGE_LOCK[@]}")"
+  else
+    lock_state=absent
+  fi
+
+  # This release's pinned pair applies when the target's package.json is a
+  # release's own and its lockfile is too, or is missing. A file the user
+  # changed is never replaced: the target then installs from what it holds.
+  plugin_pair=0
+  if [[ -f "$src/package-lock.json" && "$manifest_state" != other && "$lock_state" != other ]]; then
+    plugin_pair=1
+  fi
+
+  if [[ "$plugin_pair" -eq 0 && "$lock_state" == absent ]]; then
+    # Scaffolded before the lockfile shipped, and nothing pins it.
+    if [[ "$manifest_state" == other ]] && ! sha256_of "$TARGET/package.json" >/dev/null; then
+      echo "ensure-dashboard.sh: $TARGET has no node_modules and no package-lock.json, and its package.json is not this release's. With no sha256sum or shasum it cannot be checked against earlier releases; refusing to install unpinned dependencies. Move that directory aside to get a fresh scaffold." >&2
     else
       echo "ensure-dashboard.sh: $TARGET has no node_modules and no package-lock.json, and its package.json is not the plugin's; refusing to install unpinned dependencies. Move that directory aside to get a fresh scaffold." >&2
-      exit 1
     fi
+    exit 1
   fi
 
   new_staging
-  cp "$TARGET/package.json" "$WORK/package.json"
-  cp "$lock" "$WORK/package-lock.json"
+  if [[ "$plugin_pair" -eq 1 ]]; then
+    cp "$src/package.json" "$WORK/package.json"
+    cp "$src/package-lock.json" "$WORK/package-lock.json"
+  else
+    cp "$TARGET/package.json" "$WORK/package.json"
+    cp "$TARGET/package-lock.json" "$WORK/package-lock.json"
+  fi
   install_in_staging
 
-  # Write the lockfile only where nothing exists. noclobber opens the path
-  # exclusively, so a file or a link that appeared since the check is not
-  # written through.
-  require_plain "$TARGET/package-lock.json" file
-  if [[ ! -e "$TARGET/package-lock.json" ]]; then
-    if ! (set -o noclobber && cat "$WORK/package-lock.json" >"$TARGET/package-lock.json") 2>/dev/null; then
-      lost_race "$TARGET/package-lock.json"
+  # Nothing in the target has been touched yet. From here it changes in this
+  # order, so that node_modules, the completion signal, arrives last and an
+  # interrupted run is finished by the next one.
+  replaced=""
+  if [[ "$plugin_pair" -eq 1 ]]; then
+    if [[ "$manifest_state" == earlier:* ]]; then
+      require_plain "$TARGET/package.json" file
+      mv "$WORK/package.json" "$INCOMING.package.json"
+      if ! swap_in "$INCOMING.package.json" "$TARGET/package.json" "${manifest_state#earlier:}"; then
+        changed_race "$TARGET/package.json"
+      fi
+      replaced="package.json"
+    fi
+
+    require_plain "$TARGET/package-lock.json" file
+    if [[ "$lock_state" == earlier:* ]]; then
+      mv "$WORK/package-lock.json" "$INCOMING.package-lock.json"
+      if ! swap_in "$INCOMING.package-lock.json" "$TARGET/package-lock.json" "${lock_state#earlier:}"; then
+        changed_race "$TARGET/package-lock.json"
+      fi
+      replaced="${replaced:+$replaced and }package-lock.json"
+    elif [[ "$lock_state" == absent ]]; then
+      # Write the lockfile only where nothing exists. noclobber opens the path
+      # exclusively, so a file or a link that appeared since the check is not
+      # written through.
+      if ! (set -o noclobber && cat "$WORK/package-lock.json" >"$TARGET/package-lock.json") 2>/dev/null; then
+        lost_race "$TARGET/package-lock.json"
+      fi
     fi
   fi
+
   mv "$WORK/node_modules" "$INCOMING"
   if ! place "$INCOMING" "$TARGET/node_modules"; then
     lost_race "$TARGET/node_modules"
   fi
   mkdir -p "${CLAUDE_PLUGIN_DATA}/data/images"
+  if [[ -n "$replaced" ]]; then
+    echo "$replaced in $TARGET came unmodified from an earlier release; replaced with this release's"
+  fi
   echo "dashboard ready at $TARGET (dependencies installed into the existing copy)"
   exit 0
 fi

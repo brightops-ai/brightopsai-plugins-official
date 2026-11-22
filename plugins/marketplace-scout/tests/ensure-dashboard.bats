@@ -30,6 +30,9 @@ setup() {
 # like an install. With NPM_STUB_EXIT set to a non-zero status it leaves a
 # partial node_modules behind and fails with that status, as a real `npm ci`
 # does when it dies half way. NPM_STUB_SLEEP makes it slow enough to interrupt.
+# It keeps a copy of the package.json and package-lock.json it ran beside
+# ($NPM_LOG.manifest, $NPM_LOG.lock). NPM_STUB_APPEND names a file it adds a
+# line to, standing in for a user who edits that file while npm is running.
 stub_npm() {
   local bin="$BATS_TEST_TMPDIR/bin"
   export NPM_LOG="$BATS_TEST_TMPDIR/npm.log"
@@ -41,6 +44,9 @@ stub_npm() {
   printf 'cwd=%s\n' "$PWD"
   if [[ -f package-lock.json ]]; then echo 'lockfile=present'; else echo 'lockfile=absent'; fi
 } >>"$NPM_LOG"
+if [[ -f package.json ]]; then cp package.json "$NPM_LOG.manifest"; fi
+if [[ -f package-lock.json ]]; then cp package-lock.json "$NPM_LOG.lock"; fi
+if [[ -n "${NPM_STUB_APPEND:-}" ]]; then echo 'edited during the install' >>"$NPM_STUB_APPEND"; fi
 if [[ -n "${NPM_STUB_SLEEP:-}" ]]; then sleep "$NPM_STUB_SLEEP"; fi
 mkdir -p node_modules
 if [[ "${NPM_STUB_EXIT:-0}" -ne 0 ]]; then
@@ -225,6 +231,324 @@ assert_no_staging_left() {
   [ ! -e "$dest/node_modules" ]
   [ ! -e "$dest/package-lock.json" ]
   assert_no_staging_left
+}
+
+# --- Targets an earlier release scaffolded and never installed ---------------
+#
+# tests/fixtures holds, byte for byte, the package.json files earlier releases
+# shipped and the 1.3.0 lockfile. They are pinned copies on purpose: copying
+# package.json from the revision under test cannot notice that the plugin's
+# own file has since changed, which is how 1.3.1 first broke this recovery.
+#   shipped-manifest-first.json   first dashboard (no zod)
+#   shipped-manifest-1.3.0.json   dashboard v2 through 1.3.0 (zod ^3.24.3)
+#   shipped-lockfile-1.3.0.json   the lockfile 1.3.0 introduced (zod 3.25.76)
+
+# earlier_target <manifest fixture> [<lockfile fixture>]: a dashboard as an
+# earlier release left it, with a file of the user's and no node_modules.
+earlier_target() {
+  FIXTURES="$PLUGIN_ROOT/tests/fixtures"
+  ASSETS="$CLAUDE_PLUGIN_ROOT/skills/marketplace-scout/assets/dashboard"
+  DEST="$CLAUDE_PLUGIN_DATA/dashboard"
+  mkdir -p "$DEST/src"
+  cp "$FIXTURES/$1" "$DEST/package.json"
+  if [ -n "${2:-}" ]; then
+    cp "$FIXTURES/$2" "$DEST/package-lock.json"
+  fi
+  printf '%s\n' 'user-edit' >"$DEST/src/marker.txt"
+}
+
+# The target holds the plugin's current pair, npm ran against that pair, and
+# the user's file is as it was.
+assert_on_plugin_pair() {
+  cmp -s "$DEST/package.json" "$ASSETS/package.json"
+  cmp -s "$DEST/package-lock.json" "$ASSETS/package-lock.json"
+  cmp -s "$NPM_LOG.manifest" "$ASSETS/package.json"
+  cmp -s "$NPM_LOG.lock" "$ASSETS/package-lock.json"
+  [ -f "$DEST/node_modules/complete" ]
+  [ "$(cat "$DEST/src/marker.txt")" = "user-edit" ]
+  assert_no_staging_left
+}
+
+@test "pre-lockfile target with the package.json 1.3.0 and earlier shipped moves to the plugin's pinned pair" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx "package.json in $DEST came unmodified from an earlier release; replaced with this release's"
+  printf '%s\n' "$output" | grep -qx "dashboard ready at $DEST (dependencies installed into the existing copy)"
+  [ "$(npm_calls)" -eq 1 ]
+  grep -qx 'args=ci --ignore-scripts' "$NPM_LOG"
+  assert_on_plugin_pair
+}
+
+@test "pre-lockfile target with the first dashboard's package.json moves to the plugin's pinned pair" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-first.json
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q "^package.json in $DEST came unmodified from an earlier release"
+  [ "$(npm_calls)" -eq 1 ]
+  assert_on_plugin_pair
+}
+
+@test "pre-lockfile target with an edited copy of an earlier release's package.json is still refused" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  local edited="$BATS_TEST_TMPDIR/edited.json"
+  sed 's/"zod": "^3.24.3"/"zod": "^3.25.0"/' "$FIXTURES/shipped-manifest-1.3.0.json" >"$edited"
+  run cmp -s "$edited" "$FIXTURES/shipped-manifest-1.3.0.json"
+  [ "$status" -ne 0 ]
+  cp "$edited" "$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q "package.json is not the plugin's; refusing to install unpinned dependencies"
+  [ "$(npm_calls)" -eq 0 ]
+  cmp -s "$DEST/package.json" "$edited"
+  [ ! -e "$DEST/package-lock.json" ]
+  [ ! -e "$DEST/node_modules" ]
+  assert_no_staging_left
+}
+
+@test "one added byte is enough for an earlier release's package.json to be refused" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  printf '\n' >>"$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q "refusing to install unpinned dependencies"
+  [ "$(npm_calls)" -eq 0 ]
+  [ ! -e "$DEST/node_modules" ]
+}
+
+@test "never-installed 1.3.0 scaffold moves to the plugin's pinned pair, not its superseded lockfile" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx "package.json and package-lock.json in $DEST came unmodified from an earlier release; replaced with this release's"
+  [ "$(npm_calls)" -eq 1 ]
+  assert_on_plugin_pair
+}
+
+@test "a move that stopped half way (current package.json, 1.3.0 lockfile) is finished" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+  cp "$ASSETS/package.json" "$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx "package-lock.json in $DEST came unmodified from an earlier release; replaced with this release's"
+  assert_on_plugin_pair
+}
+
+@test "a user's own lockfile beside an earlier release's package.json is installed as it is" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  local mine="$BATS_TEST_TMPDIR/mine.json"
+  printf '%s\n' '{"name":"mine","lockfileVersion":3,"packages":{}}' >"$mine"
+  cp "$mine" "$DEST/package-lock.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 1 ]
+  run grep -c "came unmodified" <<<"$output"
+  [ "$output" = "0" ]
+  cmp -s "$DEST/package.json" "$FIXTURES/shipped-manifest-1.3.0.json"
+  cmp -s "$DEST/package-lock.json" "$mine"
+  cmp -s "$NPM_LOG.manifest" "$FIXTURES/shipped-manifest-1.3.0.json"
+  cmp -s "$NPM_LOG.lock" "$mine"
+  [ -f "$DEST/node_modules/complete" ]
+}
+
+@test "an edited package.json beside the 1.3.0 lockfile is installed as it is" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+  local edited="$BATS_TEST_TMPDIR/edited.json"
+  sed 's/"private": true/"private": true, "description": "mine"/' "$FIXTURES/shipped-manifest-1.3.0.json" >"$edited"
+  run cmp -s "$edited" "$FIXTURES/shipped-manifest-1.3.0.json"
+  [ "$status" -ne 0 ]
+  cp "$edited" "$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 1 ]
+  cmp -s "$DEST/package.json" "$edited"
+  cmp -s "$DEST/package-lock.json" "$FIXTURES/shipped-lockfile-1.3.0.json"
+  cmp -s "$NPM_LOG.manifest" "$edited"
+  cmp -s "$NPM_LOG.lock" "$FIXTURES/shipped-lockfile-1.3.0.json"
+  [ -f "$DEST/node_modules/complete" ]
+}
+
+@test "failed install leaves an earlier release's package.json and lockfile as they were, then retries" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+
+  run env NPM_STUB_EXIT=42 "$SCRIPT"
+  [ "$status" -eq 4 ]
+  cmp -s "$DEST/package.json" "$FIXTURES/shipped-manifest-1.3.0.json"
+  cmp -s "$DEST/package-lock.json" "$FIXTURES/shipped-lockfile-1.3.0.json"
+  [ ! -e "$DEST/node_modules" ]
+  [ "$(cat "$DEST/src/marker.txt")" = "user-edit" ]
+  assert_no_staging_left
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 2 ]
+  [ ! -e "$DEST/node_modules/half-installed" ]
+  assert_on_plugin_pair
+}
+
+@test "package.json edited while npm runs is not replaced" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  local expected="$BATS_TEST_TMPDIR/expected.json"
+  cp "$FIXTURES/shipped-manifest-1.3.0.json" "$expected"
+  echo 'edited during the install' >>"$expected"
+
+  run env NPM_STUB_APPEND="$DEST/package.json" "$SCRIPT"
+  [ "$status" -eq 5 ]
+  printf '%s\n' "$output" | grep -q "$DEST/package.json changed while this run was working; it was not replaced"
+  cmp -s "$DEST/package.json" "$expected"
+  [ ! -e "$DEST/package-lock.json" ]
+  [ ! -e "$DEST/node_modules" ]
+  assert_no_staging_left
+}
+
+@test "package-lock.json edited while npm runs is not replaced" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+  local expected="$BATS_TEST_TMPDIR/expected.json"
+  cp "$FIXTURES/shipped-lockfile-1.3.0.json" "$expected"
+  echo 'edited during the install' >>"$expected"
+
+  run env NPM_STUB_APPEND="$DEST/package-lock.json" "$SCRIPT"
+  [ "$status" -eq 5 ]
+  printf '%s\n' "$output" | grep -q "$DEST/package-lock.json changed while this run was working; it was not replaced"
+  cmp -s "$DEST/package-lock.json" "$expected"
+  # node_modules is the completion signal and never arrived, so the target
+  # still counts as not installed.
+  [ ! -e "$DEST/node_modules" ]
+  assert_no_staging_left
+}
+
+# Put an `mv` first on PATH that swaps the file RACE_DST for a directory just
+# before the script moves something onto it.
+stub_dir_swapping_mv() {
+  local bin="$BATS_TEST_TMPDIR/swapbin" real
+  real="$(command -v mv)"
+  mkdir -p "$bin"
+  cat >"$bin/mv" <<STUB
+#!/usr/bin/env bash
+last="\${@: -1}"
+if [[ "\$last" == "\$RACE_DST" && -f "\$RACE_DST" ]]; then
+  rm -f "\$RACE_DST"
+  mkdir -p "\$RACE_DST"
+  echo 'someone-else' >"\$RACE_DST/theirs.txt"
+fi
+exec "$real" "\$@"
+STUB
+  chmod +x "$bin/mv"
+  PATH="$bin:$PATH"
+}
+
+@test "package.json that becomes a directory during the move is not nested into" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  stub_dir_swapping_mv
+  export RACE_DST="$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 5 ]
+  printf '%s\n' "$output" | grep -q "$DEST/package.json changed while this run was working"
+  [ "$(find "$RACE_DST" -mindepth 1 | wc -l | tr -d '[:space:]')" -eq 1 ]
+  [ "$(cat "$RACE_DST/theirs.txt")" = "someone-else" ]
+  [ ! -e "$DEST/node_modules" ]
+  assert_no_staging_left
+}
+
+@test "package.json that is a symlink is refused, not replaced through" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  local outside="$BATS_TEST_TMPDIR/outside.json"
+  cp "$FIXTURES/shipped-manifest-1.3.0.json" "$outside"
+  rm "$DEST/package.json"
+  ln -s "$outside" "$DEST/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q "package.json is a symlink"
+  [ "$(npm_calls)" -eq 0 ]
+  cmp -s "$outside" "$FIXTURES/shipped-manifest-1.3.0.json"
+  [ -L "$DEST/package.json" ]
+}
+
+# only_tools <name>...: a directory holding links to just those commands, to
+# use as the whole PATH of one run.
+only_tools() {
+  local bin="$BATS_TEST_TMPDIR/only" tool
+  mkdir -p "$bin"
+  for tool in "$@"; do
+    ln -s "$(command -v "$tool")" "$bin/$tool"
+  done
+  printf '%s\n' "$bin"
+}
+
+@test "with no sha256 tool an earlier release's package.json is refused, not guessed at" {
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json
+  local bin
+  bin="$(only_tools bash cmp)"
+
+  run env PATH="$bin" "$SCRIPT"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q "With no sha256sum or shasum it cannot be checked against earlier releases; refusing to install unpinned dependencies"
+  cmp -s "$DEST/package.json" "$FIXTURES/shipped-manifest-1.3.0.json"
+  [ ! -e "$DEST/package-lock.json" ]
+  [ ! -e "$DEST/node_modules" ]
+}
+
+@test "sha256sum alone recognises an earlier release's package.json" {
+  command -v sha256sum >/dev/null || skip "no sha256sum on this machine"
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+  local bin
+  bin="$(only_tools bash cmp dirname mkdir mktemp cp mv cat rm npm sha256sum)"
+
+  run env PATH="$bin" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_on_plugin_pair
+}
+
+@test "shasum alone recognises an earlier release's package.json" {
+  command -v shasum >/dev/null || skip "no shasum on this machine"
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  earlier_target shipped-manifest-1.3.0.json shipped-lockfile-1.3.0.json
+  local bin
+  bin="$(only_tools bash cmp dirname mkdir mktemp cp mv cat rm npm shasum)"
+
+  run env PATH="$bin" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_on_plugin_pair
 }
 
 # Put an `mv` first on PATH that creates RACE_DST just before the script moves

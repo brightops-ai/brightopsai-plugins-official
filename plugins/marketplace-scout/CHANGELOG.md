@@ -31,15 +31,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer accepts `Infinity`.
 - zod stays a single copy. `eslint-plugin-react-hooks` and
   `zod-validation-error` (lint only) accept `^3.25.0 || ^4.0.0` and share it.
-- An already scaffolded `${CLAUDE_PLUGIN_DATA}/dashboard` keeps the zod it
-  was installed with, as in 1.3.0; given the above there is nothing to act
-  on. To move it to the new lockfile anyway, copy the plugin's `package.json`
-  and `package-lock.json` over the ones in that directory and run
-  `npm ci --ignore-scripts` there, or move the directory aside and let the
-  next run scaffold a fresh one.
+- An installed `${CLAUDE_PLUGIN_DATA}/dashboard` (one that has
+  `node_modules`) is left as it is and keeps the zod it was installed with,
+  as in 1.3.0; given the above there is nothing to act on. To move it
+  anyway, delete its `node_modules` and run the skill again: see the next
+  section for when that brings in the new versions.
 
 ### Changed
 
+- A dashboard that was scaffolded by an earlier release and never installed
+  is moved to this release's pinned dependencies when `ensure-dashboard.sh`
+  installs into it. That covers a scaffold from before the lockfile shipped
+  whose install failed, a 1.3.0 scaffold made with `SKIP_NPM_INSTALL`, and
+  an installed dashboard whose `node_modules` was deleted. Its `package.json`
+  and `package-lock.json` are replaced with this release's, and the script
+  says so, only when each is byte-identical to a file an earlier release
+  shipped (matched by sha256 against a list in the script), so no edit is
+  lost. No other file in the dashboard is touched. Without this, changing
+  the shipped `package.json` would have made the script refuse every
+  never-installed pre-lockfile scaffold, and a never-installed 1.3.0
+  scaffold would have installed the old lockfile and zod 3.25.76.
+- A `package.json` or `package-lock.json` that was edited is never
+  replaced. With a lockfile of its own the dashboard installs from the two
+  files it holds, as before. With no lockfile it is refused (exit 1), as
+  before.
+- The two files are replaced only after `npm ci` has succeeded in the
+  staging directory, so a failed install (exit 4) leaves them as they were.
+  A file that changed while `npm` was running is not replaced: the run exits
+  5 and the next run decides again. `node_modules` is still moved in last.
+- Recognising an earlier release's file needs `sha256sum` or `shasum`. With
+  neither, such a file counts as edited.
 - The production bundle grows from about 467 kB to 499 kB (126 kB to 138 kB
   gzipped): zod 4 is larger and both schemas are still built at load.
 
@@ -49,7 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the declared range stay at or above 4.6.6, that one zod copy satisfies
   every package that asks for it, that the lockfile root matches
   `package.json`, and that every package resolves from the public npm
-  registry with a sha512 integrity.
+  registry with a sha512 integrity. It also fails when `package.json` or
+  `package-lock.json` changes without its sha256 being appended to the list
+  in `ensure-dashboard.sh`.
+- `tests/fixtures/`: the `package.json` files earlier releases shipped and
+  the 1.3.0 lockfile, byte for byte, so the specs for the cases above do not
+  depend on the revision under test.
 
 ## [1.3.0] - 2026-11-22
 

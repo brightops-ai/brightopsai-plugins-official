@@ -1,12 +1,13 @@
 """Offline checks on the dashboard's package.json and committed package-lock.json.
 
-They read the two files and nothing else: no network, no node_modules. The
-dashboard has no test runner of its own, and `npm audit` needs the registry,
-so this is what holds the zod advisory fix (#93) in CI.
+They read files in the repository and nothing else: no network, no
+node_modules. The dashboard has no test runner of its own, and `npm audit`
+needs the registry, so this is what holds the zod advisory fix (#93) in CI.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unittest
@@ -14,6 +15,8 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = PLUGIN_ROOT / "skills" / "marketplace-scout" / "assets" / "dashboard"
+ENSURE_SCRIPT = PLUGIN_ROOT / "skills" / "marketplace-scout" / "scripts" / "ensure-dashboard.sh"
+FIXTURES = PLUGIN_ROOT / "tests" / "fixtures"
 
 # First release patched for GHSA-mrhx-c7xc-m3w5 (vulnerable range: < 4.6.6).
 # The advisory lists no patched 3.x release.
@@ -150,6 +153,68 @@ class TestDashboardLockfile(unittest.TestCase):
                 f"{path} has no sha512 integrity",
             )
         self.assertGreater(checked, 0)
+
+
+def shipped_digests(array_name: str) -> list[str]:
+    """The sha256 entries of one `NAME=( ... )` array in ensure-dashboard.sh."""
+    script = ENSURE_SCRIPT.read_text(encoding="utf-8")
+    match = re.search(rf"^{array_name}=\(\n(.*?)^\)$", script, re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"{array_name} not found in {ENSURE_SCRIPT.name}")
+    digests = []
+    for line in match.group(1).splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            digests.append(entry)
+    return digests
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class TestShippedDigests(unittest.TestCase):
+    """ensure-dashboard.sh recognises a release's own files by sha256.
+
+    A never-installed target holding one of them is moved to the current
+    pinned pair; anything else counts as the user's and is left alone. The
+    list has to grow with every change to either file.
+    """
+
+    def test_entries_are_distinct_sha256_digests(self) -> None:
+        for name in ("SHIPPED_PACKAGE_JSON", "SHIPPED_PACKAGE_LOCK"):
+            digests = shipped_digests(name)
+            self.assertGreaterEqual(len(digests), 2, name)
+            self.assertEqual(len(digests), len(set(digests)), f"duplicate in {name}")
+            for digest in digests:
+                self.assertRegex(digest, r"\A[0-9a-f]{64}\Z", name)
+
+    def test_current_files_are_listed_last(self) -> None:
+        # Fails when package.json or package-lock.json changes and its digest
+        # was not appended. Append: the earlier entries are what let a
+        # scaffold made by an earlier release move forward.
+        for name, path in (
+            ("SHIPPED_PACKAGE_JSON", DASHBOARD / "package.json"),
+            ("SHIPPED_PACKAGE_LOCK", DASHBOARD / "package-lock.json"),
+        ):
+            self.assertEqual(
+                shipped_digests(name)[-1],
+                sha256_file(path),
+                f"append the sha256 of {path.name} to {name} in {ENSURE_SCRIPT.name}",
+            )
+
+    def test_earlier_releases_stay_listed(self) -> None:
+        # The fixtures are byte-for-byte what earlier releases shipped.
+        for name, fixture in (
+            ("SHIPPED_PACKAGE_JSON", "shipped-manifest-first.json"),
+            ("SHIPPED_PACKAGE_JSON", "shipped-manifest-1.3.0.json"),
+            ("SHIPPED_PACKAGE_LOCK", "shipped-lockfile-1.3.0.json"),
+        ):
+            self.assertIn(
+                sha256_file(FIXTURES / fixture),
+                shipped_digests(name)[:-1],
+                f"{fixture} is no longer recognised as an earlier release's file",
+            )
 
 
 if __name__ == "__main__":
