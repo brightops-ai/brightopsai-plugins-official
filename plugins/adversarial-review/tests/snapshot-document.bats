@@ -6,6 +6,7 @@
 #   remove  deletes one snapshot file, then its directory only if empty
 
 setup() {
+  load '../../../scripts/test-support/sandbox-guard'
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SNAP="$PLUGIN_ROOT/skills/adversarial-review/scripts/snapshot-document.sh"
   export TMPDIR="$BATS_TEST_TMPDIR/tmp"

@@ -63,9 +63,21 @@ each. Add the skill under a category subdirectory and list its path in the plugi
 
 ## Testing
 
-Tests must never write into the real `~/.claude`; sandbox `CLAUDE_PLUGIN_DATA`
-and pass explicit directories. One test leaked into the real plugin data
-directory during development, which is silent and only found by looking.
+The test harness refuses to run outside a temp directory. Every suite loads
+the sandbox guard in `scripts/test-support/` before its first test. The guard
+points `HOME` at a fresh temp directory, defaults `CLAUDE_CONFIG_DIR`,
+`CLAUDE_PLUGIN_DATA` and the spawn-session overrides beside it, and fails with
+`WARNING: … Refusing.` when one of them resolves anywhere else. It exists
+because one test leaked into the real plugin data directory during
+development, which is silent and only found by looking.
+
+Run the suites with the commands in [CONTRIBUTING.md](CONTRIBUTING.md). When a
+refusal names a variable the shell exports, prefix the command with
+`env -u <NAME>`. A new bats file loads the guard as the first line of
+`setup()` (and of `setup_file()`); a new Python test directory installs it
+from `__init__.py`.
+`scripts/tests/test_sandbox_guard.py` fails when either is missing. What the
+guard does not catch is listed in CONTRIBUTING.md (Tests).
 
 Commands (dream unittest, the `blast-radius-audit` collector unittest, bats
 `--unit` and full, `scripts/tests`, evals as manual), packaging gates (`python3 scripts/check-marketplace.py`,

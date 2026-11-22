@@ -145,8 +145,82 @@ Never write a literal maintainer home or workspace path; use
 
 ## Tests
 
-Never write into the real `~/.claude` or the real plugin data directory.
-Sandbox `CLAUDE_PLUGIN_DATA` and pass explicit temp directories.
+The test harness refuses to run outside a temp directory. The rule "never
+write into the real `~/.claude` or the real plugin data directory" is held by
+the sandbox guard in `scripts/test-support/`, not by each test remembering an
+override.
+
+### The sandbox guard
+
+Every bats file loads `sandbox-guard.bash` as the first line of `setup()`
+(and of `setup_file()` when it has one), and every Python tests package
+installs `sandbox_guard.py` from its `__init__.py`, so the guard runs before
+any test. Importing any `tests` package therefore changes the whole process:
+it rewrites `os.environ` and wraps `unittest.TestCase.run`. The guard:
+
+- replaces `HOME` with a fresh directory under the temp directory;
+- gives `CLAUDE_CONFIG_DIR`, `CLAUDE_PLUGIN_DATA`, `SPAWN_SESSIONS_DIR`,
+  `SPAWN_PROJECTS_DIR` and `SPAWN_CONFIG_FILE` a default beside it when they
+  are unset, so a test that forgets one lands in the sandbox;
+- refuses to run when one of them is exported and is not a clean absolute
+  path that resolves under a temp directory, or is no longer set and under
+  one when a test starts:
+
+```
+WARNING: CLAUDE_PLUGIN_DATA is unset; this test would WRITE into the real plugin data directory. Refusing.
+```
+
+- refuses a `CLAUDE_CODE_PROJECT_DIR_NAME` that is a path (a slash, a
+  backslash, `..` or `.`) and leaves a plain or unset one alone: the dream
+  library joins that name onto the config directory as written.
+
+"Clean" means no control character and no relative or `~` form: a value is
+taken as written, never expanded. "A temp directory" is `TMPDIR` (which must
+exist), `/tmp`, and on macOS the per-user directory `mktemp -d` uses. A
+`TMPDIR` elsewhere under the home directory is fine. One that contains the
+home directory, or is or is inside `~/.claude`, is refused, because a path
+under it proves nothing.
+
+The safe command is the documented one below, run with none of those
+variables exported. If a shell exports one (a non-default
+`CLAUDE_CONFIG_DIR`, for example), unset it for the run:
+
+```bash
+env -u CLAUDE_CONFIG_DIR -u CLAUDE_PLUGIN_DATA <the test command>
+```
+
+A value that already resolves under the temp directory is kept, which is how
+CI passes its own `CLAUDE_CONFIG_DIR`.
+
+When adding tests:
+
+- A new bats file starts `setup()` with
+  `load '../../../scripts/test-support/sandbox-guard'` (adjust the `../` to
+  reach the repository root). A `setup_file()` starts with the same line.
+- A new Python test directory copies `__init__.py` from an existing one and
+  fixes the `parents[N]` depth.
+- A script that reads a new path variable gets that variable added to both
+  guard files.
+
+`scripts/tests/test_sandbox_guard.py` fails when a bats file or a Python
+test directory does not load the guard, and runs each suite against a decoy
+path to prove it refuses.
+
+What the guard does not catch:
+
+- A test that hands a child process its own environment (`env=` in Python,
+  a `NAME=value command` prefix in bats). That value is not checked.
+- A bats spec that points a guarded variable at a real path after the guard
+  loaded. `claude_sandbox_assert` re-runs the check.
+- A Python test that points a guarded variable at a real path and restores it
+  before returning. The check runs before each test, not during one.
+- A Python test file run by path (`python3 tests/test_x.py`), which skips the
+  package `__init__.py`. Run it through `unittest discover` or as a module.
+- `CLAUDE_PLUGIN_ROOT`, which the scripts only read from.
+- Anything the code under test reads without going through one of these
+  variables. `lib/dream/claude_env.py` reads the repository's own
+  `.claude/settings.json` and `.claude/settings.local.json` and the
+  managed-policy settings file; an environment guard cannot redirect those.
 
 ### dream (Python unittest, stdlib only)
 
@@ -179,7 +253,10 @@ cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
 
 When touching `scripts/check-marketplace.py` or its fixtures, the
 hooks in `.githooks/`, `scripts/install-hooks.sh`,
-`scripts/evict-plugin-cache.sh`, `.gitignore`, or the CI workflow. The hook
+`scripts/evict-plugin-cache.sh`, `scripts/test-support/`, `.gitignore`, or
+the CI workflow. Also when adding a bats file or a Python test directory
+anywhere in the repository: the sandbox guard specs check that it loads the
+guard, and run the bats half only when `bats` is on `PATH`. The hook
 and installer specs work in a throwaway repository and the eviction specs
 run in a temp `CLAUDE_CONFIG_DIR`:
 

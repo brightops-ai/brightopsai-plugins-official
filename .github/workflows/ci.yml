@@ -43,11 +43,11 @@ jobs:
           python-version: "3.12"
 
       - name: Isolate Claude config directory
-        # The `runner` context is not available in job-level `env`, so the
-        # directory is exported to later steps through GITHUB_ENV instead.
-        run: |
-          mkdir -p "$RUNNER_TEMP/claude-config"
-          echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
+        # Exported to later steps through GITHUB_ENV. The directory is made
+        # under the system temp directory, not RUNNER_TEMP: the test suites
+        # refuse a CLAUDE_CONFIG_DIR that resolves anywhere else (see
+        # scripts/test-support/).
+        run: echo "CLAUDE_CONFIG_DIR=$(mktemp -d)" >> "$GITHUB_ENV"
 
       - name: Install Claude Code CLI
         # Pin to 2.x at or above the locally installed CLI (2.1.261).

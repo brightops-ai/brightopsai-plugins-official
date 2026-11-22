@@ -57,6 +57,17 @@ rather than numbered.
 
 ### Added
 
+- `scripts/test-support/`: a sandbox guard that every test suite loads before
+  its first test (`sandbox-guard.bash` for bats, `sandbox_guard.py` for the
+  Python suites). It points `HOME` at a fresh temp directory, defaults
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_PLUGIN_DATA` and the spawn-session path
+  overrides beside it, and refuses to run a test, with a `WARNING: … Refusing.`
+  line, when one of them is not a clean absolute path resolving under a temp
+  directory, or when `CLAUDE_CODE_PROJECT_DIR_NAME` is a path. The rule "tests
+  never write into the real `~/.claude`" was prose until now.
+  `scripts/tests/test_sandbox_guard.py` fails when a bats file or a Python
+  test directory does not load the guard. CI now creates its
+  `CLAUDE_CONFIG_DIR` under the system temp directory so the suites accept it.
 - `.githooks/pre-merge-commit`: runs the same gitleaks gate on the commit an
   automatic merge creates, which `pre-commit` does not see. `git rebase`,
   `git cherry-pick` and `git revert` still run no hook; CI is the backstop.
