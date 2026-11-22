@@ -69,10 +69,17 @@ Changes take effect immediately — no restart needed. Verify with `ssh-add -l`.
 
 ## Add a key to GitHub (auth + signing)
 
+Run with shell tracing off (`set +x`): a trace prints the token. Assign
+first so a failed read stops here instead of exporting an empty token:
+
 ```bash
-export GH_TOKEN="$(op read 'op://<VAULT>/GitHub Token/token')"
-gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>" --type authentication
-gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>-signing" --type signing
+if GH_TOKEN="$(op read 'op://<VAULT>/GitHub Token/token')"; then
+  export GH_TOKEN
+  gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>" --type authentication
+  gh ssh-key add ~/.ssh/<KEY-NAME>.pub --title "<KEY-NAME>-signing" --type signing
+else
+  echo "op read failed; key not added to GitHub" >&2
+fi
 ```
 
 ## Git commit signing

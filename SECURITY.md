@@ -29,10 +29,14 @@ is uninstalled from every scope.
 
 The `1password` skill reads vault values at runtime with `op` (`op read`,
 `op run`, `op inject`). It tells the agent not to paste secrets into logs,
-chat, or code, and not to write secret values into tracked files. New items
-go into a vault with `op item create`; the user supplies the value. `op inject`
-can render a local config from a template — that output is the user's file,
-not something this marketplace tracks.
+chat, or code, not to run a command that prints a secret value, and not to
+write secret values into a work tree. A new secret does not pass through the
+agent: the user enters the value into the item themselves, or 1Password
+generates it, and the agent only creates the empty item and checks by name
+that the item and field exist. `op inject` output is streamed to its consumer;
+when a file is required, the skill has it written to a private temporary
+directory outside every git work tree and removed afterwards. These are
+instructions to the agent, not a technical boundary.
 
 The `ssh-keys` skill keeps private SSH keys in 1Password. The 1Password SSH
 agent (`SSH_AUTH_SOCK`) signs; private keys are never written to disk. Public
