@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Exposure: launchctl setenv passes the token as a process argument once per login, so process
+  inspection and endpoint monitoring can see it during that call, and the launchd environment
+  hands the token to every app opened after login.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.op-token-login-env</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>t=$(/usr/bin/security find-generic-password -a "$USER" -s op_service_account -w) &amp;&amp; [ -n "$t" ] &amp;&amp; /bin/launchctl setenv OP_SERVICE_ACCOUNT_TOKEN "$t"</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
