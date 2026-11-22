@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -204,8 +205,8 @@ class TestInstallHooks(unittest.TestCase):
         self.assertNotIn(ACTIVE, result.stdout + result.stderr)
 
     def test_activation_is_reported_only_when_effective(self) -> None:
-        # --force writes the repository config, but a worktree-level value
-        # still wins. The installer must report what git will really use.
+        # A worktree-level value outranks the repository config --force
+        # writes. The installer must report what git will really use.
         self._git("config", "extensions.worktreeConfig", "true")
         self._git("config", "--worktree", "core.hooksPath", "other-hooks")
         result = self._install("--force")
@@ -216,6 +217,161 @@ class TestInstallHooks(unittest.TestCase):
         self.assertIn("Not active", result.stderr)
         self.assertNotIn(ACTIVE, result.stdout + result.stderr)
         self.assertNotIn(LIVE, result.stdout + result.stderr)
+
+    def test_force_changes_nothing_under_a_linked_worktree_override(self) -> None:
+        # The repository config is shared by every worktree. Writing it for a
+        # worktree whose own value still wins would change the others and
+        # leave this one as it was.
+        worktree = self.base / "wt"
+        self._git("worktree", "add", "-q", str(worktree), "-b", "wt")
+        self._git("config", "extensions.worktreeConfig", "true")
+        self._git("config", "--worktree", "core.hooksPath", "other-hooks", cwd=worktree)
+        shared = self.repo / ".git" / "config"
+        before = shared.read_bytes()
+
+        result = self._install("--force", cwd=worktree)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(shared.read_bytes(), before, "--force rewrote the shared config")
+        self.assertIsNone(self._value("--local"))
+        self.assertIsNone(self._value(), "the main worktree's hooks path changed")
+        self.assertEqual(self._value(cwd=worktree), "other-hooks")
+        self.assertIn("effective value in this worktree is 'other-hooks'", result.stderr)
+        self.assertIn("config.worktree", result.stderr)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertIn("git config --worktree --unset-all core.hooksPath", result.stderr)
+        self.assertNotIn("replacing core.hooksPath", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_force_changes_nothing_under_an_environment_override(self) -> None:
+        env = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "env-hooks",
+        }
+        self.assertEqual(self._value(**env), "env-hooks", "this git ignores GIT_CONFIG_COUNT")
+        result = self._install("--force", **env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIsNone(self._value("--local"))
+        self.assertIn("effective value in this worktree is 'env-hooks'", result.stderr)
+        self.assertIn("the command line or the environment", result.stderr)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_read_back_catches_an_override_git_cannot_name(self) -> None:
+        # git before 2.26 has no --show-scope, so the check before the write
+        # learns nothing. The read-back after it is then the only thing that
+        # stops a false "active".
+        (self.bin / "git").write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            '  [ "$arg" = "--show-scope" ] && { echo "error: unknown option" >&2; exit 129; }\n'
+            "done\n"
+            f'exec "{self.git}" "$@"\n',
+            encoding="utf-8",
+        )
+        self._git("config", "extensions.worktreeConfig", "true")
+        self._git("config", "--worktree", "core.hooksPath", "other-hooks")
+        result = self._install("--force")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self._value(), "other-hooks")
+        self.assertIn("the repository config now says core.hooksPath=.githooks", result.stderr)
+        self.assertIn("effective value in this worktree is 'other-hooks'", result.stderr)
+        self.assertIn("Not active", result.stderr)
+        self.assertNotIn(ACTIVE, result.stdout + result.stderr)
+
+    def test_force_replaces_several_local_values(self) -> None:
+        for value in (".husky", "other-hooks"):
+            self._git("config", "--add", "core.hooksPath", value)
+        self.assertEqual(
+            self._git("config", "--local", "--get-all", "core.hooksPath").split(),
+            [".husky", "other-hooks"],
+        )
+        refused = self._install()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("core.hooksPath is already 'other-hooks'", refused.stderr)
+
+        result = self._install("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self._git("config", "--local", "--get-all", "core.hooksPath").split(), [".githooks"]
+        )
+        self.assertIn(ACTIVE, result.stdout)
+
+    # -- a refusal changes nothing ----------------------------------------
+
+    def _modes(self) -> dict[str, int]:
+        return {
+            hook.name: stat.S_IMODE(hook.stat().st_mode)
+            for hook in sorted((self.repo / ".githooks").iterdir())
+        }
+
+    def test_a_refusal_leaves_the_hook_modes_alone(self) -> None:
+        for hook in (self.repo / ".githooks").iterdir():
+            hook.chmod(0o644)
+        before = self._modes()
+        self.assertEqual(set(before.values()), {0o644})
+
+        self._git("config", "core.hooksPath", ".husky")
+        result = self._install()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertEqual(self._modes(), before, "a refused run changed file modes")
+
+        self._git("config", "--unset-all", "core.hooksPath")
+        self._git("config", "extensions.worktreeConfig", "true")
+        self._git("config", "--worktree", "core.hooksPath", "other-hooks")
+        result = self._install("--force")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Nothing was changed", result.stderr)
+        self.assertEqual(self._modes(), before, "a refused --force run changed file modes")
+
+    # -- the hook files themselves ----------------------------------------
+
+    def test_missing_hook_files_are_not_reported_active(self) -> None:
+        self._gitleaks_stub('[ "$1" = "version" ] && echo 9.9.9\n')
+        names = ("pre-commit", "pre-merge-commit")
+        for label, removed in (("pre-commit", names[:1]), ("pre-merge-commit", names[1:]), ("both", names)):
+            for preset in (False, True):
+                with self.subTest(missing=label, hooks_path_already_set=preset):
+                    shutil.rmtree(self.repo / ".githooks")
+                    shutil.copytree(HOOKS, self.repo / ".githooks")
+                    for name in removed:
+                        (self.repo / ".githooks" / name).unlink()
+                    if self._value("--local") is not None:
+                        self._git("config", "--unset-all", "core.hooksPath")
+                    if preset:
+                        self._git("config", "core.hooksPath", ".githooks")
+                    result = self._install()
+                    said = result.stdout + result.stderr
+                    self.assertEqual(result.returncode, 1, said)
+                    self.assertNotIn(ACTIVE, said)
+                    self.assertNotIn(LIVE, said)
+                    self.assertIn("WARNING: missing hook file(s):", result.stderr)
+                    for name in removed:
+                        self.assertIn(f".githooks/{name}", result.stderr)
+                    self.assertIn("SKIP", result.stderr)
+                    self.assertIn("Not active", result.stderr)
+                    self.assertEqual(self._value("--local"), ".githooks" if preset else None)
+
+    def test_a_hook_that_stays_non_executable_is_not_reported_active(self) -> None:
+        # chmod that changes nothing stands in for a tree where modes cannot
+        # be set (a read-only checkout, a filesystem without them).
+        self._gitleaks_stub('[ "$1" = "version" ] && echo 9.9.9\n')
+        (self.bin / "chmod").unlink()
+        (self.bin / "chmod").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(self.bin / "chmod", 0o755)
+        (self.repo / ".githooks" / "pre-commit").chmod(0o644)
+        result = self._install()
+        said = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, said)
+        self.assertNotIn(ACTIVE, said)
+        self.assertNotIn(LIVE, said)
+        self.assertIn("not executable", result.stderr)
+        self.assertIn(".githooks/pre-commit", result.stderr)
+        self.assertNotIn(".githooks/pre-merge-commit", result.stderr)
+        self.assertIn("SKIP", result.stderr)
+        self.assertIsNone(self._value("--local"))
 
     # -- what it says about gitleaks --------------------------------------
 
@@ -246,7 +402,12 @@ class TestInstallHooks(unittest.TestCase):
 
     def test_says_what_no_hook_covers(self) -> None:
         result = self._install()
-        self.assertIn("rebase, cherry-pick and revert run no commit hook", result.stdout)
+        self.assertIn(
+            "rebase runs no commit hook, and cherry-pick and revert run none unless "
+            "they stop on a conflict",
+            result.stdout,
+        )
+        self.assertNotIn("rebase, cherry-pick and revert run no commit hook", result.stdout)
         self.assertIn("CI", result.stdout)
         self.assertNotIn("every commit", result.stdout + result.stderr)
 

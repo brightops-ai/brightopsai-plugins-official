@@ -12,7 +12,13 @@
 #
 # It never silently displaces someone else's hooks: if core.hooksPath already
 # names another directory it changes nothing, says so and exits 1. --force
-# replaces that value on purpose.
+# replaces that value on purpose, in the repository config. A value set at a
+# level that outranks the repository config (worktree-level config, the command
+# line, the environment) is not --force's to replace: it changes nothing and
+# exits 1.
+#
+# It reports the hooks active only when both hook files exist and are
+# executable and git's effective core.hooksPath is this worktree's .githooks.
 #
 # Usage:  ./scripts/install-hooks.sh [--force]
 #
@@ -46,16 +52,27 @@ if [ ! -d .githooks ]; then
   exit 1
 fi
 
-# Tracked-file modes survive a clone, but a hook that lost its exec bit fails
-# silently as "no hook" rather than as an error, so assert rather than assume.
-chmod +x .githooks/* 2>/dev/null || true
-
 wanted=".githooks"
+
+# The hooks the scan depends on. A core.hooksPath that names a directory
+# without them is accepted by git and runs nothing.
+required_hooks="pre-commit pre-merge-commit"
 
 # The value git actually uses in this worktree, from whichever config file
 # wins (worktree, repository, global or system). Empty when unset.
 effective_hooks_path() {
   git config --type=path --get core.hooksPath || true
+}
+
+# Where that value comes from: worktree, local, global, system or command (the
+# command line or the environment). Empty when the key is unset, or when git
+# is older than 2.26 and cannot say; the read-back below covers that case.
+effective_hooks_scope() {
+  local line
+  line="$(git config --show-scope --get core.hooksPath 2>/dev/null)" || return 0
+  # "<scope><TAB><value>": keep what precedes the first whitespace, using
+  # builtins only.
+  printf '%s\n' "${line%%[[:space:]]*}"
 }
 
 # True when a core.hooksPath value names this worktree's .githooks directory,
@@ -64,6 +81,9 @@ is_ours() {
   [ "$1" = "$wanted" ] && return 0
   [ -d "$1" ] && [ "$(cd "$1" && pwd -P)" = "$(cd "$wanted" && pwd -P)" ]
 }
+
+# Every check that can end in a refusal runs before anything is written:
+# "nothing was changed" has to be true of the file modes as well as the config.
 
 current="$(effective_hooks_path)"
 
@@ -83,15 +103,95 @@ this repo's .githooks on purpose:
 MSG
     exit 1
   fi
+
+  # --force writes the repository config, which every worktree shares. A value
+  # from a level that outranks it would still win afterwards, so writing would
+  # change the other worktrees and leave this one exactly as it is.
+  scope="$(effective_hooks_scope)"
+  case "$scope" in
+    worktree | command)
+      if [ "$scope" = "worktree" ]; then
+        where="this worktree's own config (config.worktree)"
+        remedy="git config --worktree --unset-all core.hooksPath"
+      else
+        where="the command line or the environment (git -c, GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS)"
+        remedy="unset the variable, or drop the -c option, that sets core.hooksPath"
+      fi
+      cat >&2 <<MSG
+
+install-hooks: WARNING: --force replaces core.hooksPath in the repository
+config, but the effective value in this worktree is '$current'
+and it comes from $where,
+which outranks the repository config; commits here SKIP the gitleaks hooks.
+Not active. Refusing. Nothing was changed.
+
+See where it is set:
+
+  git config --show-origin --show-scope --get-all core.hooksPath
+
+Remove it on purpose, then run this script again:
+
+  $remedy
+
+MSG
+      exit 1
+      ;;
+  esac
+fi
+
+missing=""
+for hook in $required_hooks; do
+  [ -f "$wanted/$hook" ] || missing="$missing $wanted/$hook"
+done
+if [ -n "$missing" ]; then
+  cat >&2 <<MSG
+
+install-hooks: WARNING: missing hook file(s):$missing. Git runs nothing for a
+hook that is not there, so commits here SKIP the gitleaks scan it would have
+run. Not active. Nothing was changed.
+
+Restore them from the repository, then run this script again:
+
+  git checkout -- $wanted
+
+MSG
+  exit 1
+fi
+
+# Tracked-file modes survive a clone, but a hook that lost its exec bit fails
+# silently as "no hook" rather than as an error, so assert rather than assume.
+chmod +x "$wanted"/* 2>/dev/null || true
+
+not_executable=""
+for hook in $required_hooks; do
+  [ -x "$wanted/$hook" ] || not_executable="$not_executable $wanted/$hook"
+done
+if [ -n "$not_executable" ]; then
+  cat >&2 <<MSG
+
+install-hooks: WARNING: not executable and could not be made so:$not_executable.
+Git treats a hook without the exec bit as no hook, so commits here SKIP the
+gitleaks scan. Not active. core.hooksPath was not changed.
+
+  chmod +x$not_executable
+
+MSG
+  exit 1
+fi
+
+if [ -n "$current" ] && ! is_ours "$current"; then
   echo "install-hooks: --force: replacing core.hooksPath '$current' with '$wanted' in the repository config." >&2
 fi
 
 if [ -z "$current" ] || ! is_ours "$current"; then
-  git config core.hooksPath "$wanted"
+  # --replace-all: the key may hold several values in the repository config,
+  # and a plain set refuses to overwrite more than one.
+  git config --local --replace-all core.hooksPath "$wanted"
 fi
 
-# Read back what git will really use. A worktree-level value outranks the
-# repository config just written, so the write alone proves nothing.
+# Read back what git will really use. The scope check above needs git 2.26;
+# on an older git a higher-precedence value is only visible here, after the
+# write, so the write alone proves nothing.
 effective="$(effective_hooks_path)"
 
 if [ -z "$effective" ] || ! is_ours "$effective"; then
@@ -148,7 +248,10 @@ hooks BLOCK every `git commit` and merge commit until it works. Reinstall it.
 MSG
 fi
 
-# Not covered by any hook: `git rebase`, `git cherry-pick` and `git revert`
-# create commits without running pre-commit. CI scans the tree on pull requests
-# and main (.github/workflows/ci.yml) and is the backstop for those.
-echo "install-hooks: rebase, cherry-pick and revert run no commit hook; CI's tree scan is the backstop."
+# Not covered by any hook: `git rebase`, and `git cherry-pick` and `git revert`
+# when they apply without a conflict, create commits without running
+# pre-commit. After a conflict, `git cherry-pick --continue` and
+# `git revert --continue` do run it; `git rebase --continue` does not (observed
+# with git 2.56.1; scripts/tests/test_commit_hook_coverage.py). CI scans the
+# tree on pull requests and main (.github/workflows/ci.yml) and is the backstop.
+echo "install-hooks: rebase runs no commit hook, and cherry-pick and revert run none unless they stop on a conflict; CI's tree scan is the backstop."
