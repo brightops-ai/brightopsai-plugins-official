@@ -70,7 +70,10 @@ confidential material.
 A pre-commit gitleaks hook in `.githooks/pre-commit`, activated by
 `./scripts/install-hooks.sh` (`core.hooksPath`), scans staged changes.
 Git does not clone hooks, so a fresh clone has no local scan until that
-script runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
+script runs. The hook fails closed: if `gitleaks` is not on `PATH`, it blocks
+the commit and prints install instructions. `ALLOW_UNSCANNED_PUBLIC_COMMIT=1`
+is the explicit override for a human who accepts an unscanned commit; it
+applies only when the scanner is missing and never overrides a finding.
 
 CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
 requests and pushes to `main` with `gitleaks detect --no-git` and

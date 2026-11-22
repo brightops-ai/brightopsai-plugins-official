@@ -11,6 +11,18 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Changed
+
+- `.githooks/pre-commit` fails closed: without `gitleaks` on `PATH` the commit
+  is blocked instead of going through unscanned.
+  `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is the explicit override for a human who
+  accepts the risk; it never overrides a finding. The hook and
+  `scripts/install-hooks.sh` no longer suggest piping an install script into
+  `sh`; they print the pinned release and checksum that CI uses, plus
+  `brew install gitleaks`.
+- `.gitignore` ignores `.env`, `.env.*` (except `.env.example`), `*.pem` and
+  `*.key`.
+
 ### Deprecated
 
 - `agent-teams` is deprecated and will be removed from the marketplace in
@@ -20,6 +32,11 @@ rather than numbered.
 
 ### Added
 
+- `scripts/evict-plugin-cache.sh <plugin> <old-version>`: removes one old
+  version from the plugin cache after a version bump. It validates both
+  arguments, refuses a target that does not resolve inside the marketplace
+  cache, and has a `--dry-run`. It replaces the hand-filled `rm -rf` in
+  `CONTRIBUTING.md`.
 - GitHub Actions workflow `.github/workflows/ci.yml`: plugin validate,
   marketplace check, unit tests, shellcheck, gitleaks tree scan, and eval
   index completeness on pull requests and `main`. Behavioural evals stay
@@ -33,7 +50,7 @@ rather than numbered.
   fake example credentials, `${CLAUDE_PLUGIN_DATA}`, 1Password/`op` handling,
   Facebook Marketplace terms responsibility, grok.com upload plus pre-upload
   secret scan, the gitleaks pre-commit gate (inactive until
-  `./scripts/install-hooks.sh`, skipped if `gitleaks` is missing), and CI
+  `./scripts/install-hooks.sh`, blocking if `gitleaks` is missing), and CI
   tree scan on pull requests and `main`.
 
 ## [2026-09-05] - Plugin READMEs

@@ -34,14 +34,19 @@ if command -v gitleaks >/dev/null 2>&1; then
 else
   cat >&2 <<'MSG'
 
-install-hooks: WARNING — gitleaks is not on PATH.
+install-hooks: WARNING: gitleaks is not on PATH; the pre-commit hook BLOCKS
+every commit until it is installed.
 
-The hook is installed but will skip its scan (and say so) until you install it:
+  macOS:
+    brew install gitleaks
 
-  Linux:  curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b ~/.local/bin
-  macOS:  brew install gitleaks
+  Linux x86_64 (the pinned release CI uses, verified by checksum):
+    curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c - \
+      && tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks \
+      && mkdir -p ~/.local/bin && install -m 0755 gitleaks ~/.local/bin/gitleaks
 
-CI still scans the checked-out tree on pull requests and main
+CI also scans the checked-out tree on pull requests and main
 (.github/workflows/ci.yml). This hook is the local pre-commit gate.
 
 MSG

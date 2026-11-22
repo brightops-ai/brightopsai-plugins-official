@@ -57,7 +57,9 @@ each. Add the skill under a category subdirectory and list its path in the plugi
   the same change. A marketplace-level change (added or removed plugin, install
   command, shared tooling) gets an entry in the root `CHANGELOG.md`. The README
   plugin table is a checked mirror; marketplace entries omit `version`. Cache
-  eviction and the rest of the bump procedure: [CONTRIBUTING.md](CONTRIBUTING.md)
+  eviction (`scripts/evict-plugin-cache.sh <name> <old-version>`, never a
+  hand-written `rm -rf`) and the rest of the bump procedure:
+  [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Testing
 
@@ -141,3 +143,7 @@ Two consequences for anything written here, including docs:
 Git never clones hooks, so in a fresh clone assume the local pre-commit
 gate is inactive until `./scripts/install-hooks.sh` has run. CI still
 scans the tree on pull requests and `main` (`.github/workflows/ci.yml`).
+
+The hook fails closed: without `gitleaks` on `PATH` it blocks the commit.
+Install gitleaks (the hook prints how). `ALLOW_UNSCANNED_PUBLIC_COMMIT=1`
+is a human's override for that one case; an agent never sets it.

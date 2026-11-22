@@ -18,18 +18,50 @@
 # (.github/workflows/ci.yml, `gitleaks detect --no-git`). This hook is the
 # local gate: it runs on staged changes before a commit lands.
 #
-# Bypass, if you genuinely must:  git commit --no-verify
+# Fails closed: without gitleaks on PATH the commit is blocked, not waved
+# through. ALLOW_UNSCANNED_PUBLIC_COMMIT=1 lets a human who accepts the risk
+# commit anyway. It covers only the missing-scanner case and never overrides a
+# finding.
+#
+# The pinned version and checksum below must match the Gitleaks step in
+# .github/workflows/ci.yml; scripts/tests/test_secret_scan_gate.py checks it.
 
 set -e
 
 if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "pre-commit: gitleaks not found on PATH — skipping the secret scan." >&2
-  echo "            Install it, or commit with --no-verify if you accept the risk." >&2
-  echo "            Linux: curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b ~/.local/bin" >&2
-  echo "            macOS: brew install gitleaks" >&2
-  echo "            CI will still scan the tree on pull requests and main" >&2
-  echo "            (.github/workflows/ci.yml)." >&2
-  exit 0
+  if [ "${ALLOW_UNSCANNED_PUBLIC_COMMIT:-}" = "1" ]; then
+    cat >&2 <<'MSG'
+pre-commit: WARNING: gitleaks is not on PATH and ALLOW_UNSCANNED_PUBLIC_COMMIT=1
+            is set; this COMMITS staged changes to a PUBLIC repository UNSCANNED.
+            Proceeding because you asked. CI still scans the tree on pull
+            requests and main (.github/workflows/ci.yml).
+MSG
+    exit 0
+  fi
+  cat >&2 <<'MSG'
+
+pre-commit: BLOCKED.
+
+WARNING: gitleaks is not on PATH; this COMMITS staged changes to a PUBLIC
+repository unscanned. Refusing.
+
+Install gitleaks, then commit again.
+
+  macOS:
+    brew install gitleaks
+
+  Linux x86_64 (the pinned release CI uses, verified by checksum):
+    curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c - \
+      && tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks \
+      && mkdir -p ~/.local/bin && install -m 0755 gitleaks ~/.local/bin/gitleaks
+
+A human who accepts the risk of an unscanned commit can set
+ALLOW_UNSCANNED_PUBLIC_COMMIT=1 for that one commit. An agent must not set it
+on its own: install gitleaks, or stop and ask.
+
+MSG
+  exit 1
 fi
 
 echo "pre-commit: scanning staged changes for secrets and infrastructure identifiers..."
@@ -38,6 +70,9 @@ if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
   cat >&2 <<'MSG'
 
 pre-commit: BLOCKED.
+
+WARNING: the gitleaks scan of the staged changes did not pass; this COMMITS
+flagged content to a PUBLIC repository. Refusing.
 
 Something staged matches a secret pattern or one of this repo's
 infrastructure-identifier rules (workspace name, tailnet host or ID, tailnet

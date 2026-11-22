@@ -78,11 +78,18 @@ After editing an installed checkout, run `/reload-plugins` in Claude Code.
 The plugin cache is version-keyed under
 `~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<version>/`.
 Edits to files without a version bump are never picked up. After bumping
-`plugin.json`, remove the old version directory:
+`plugin.json`, remove the old version directory with the eviction script.
+Preview first, then run it for real:
 
 ```bash
-rm -rf ~/.claude/plugins/cache/brightopsai-plugins-official/<name>/<old-version>
+scripts/evict-plugin-cache.sh --dry-run <name> <old-version>
+scripts/evict-plugin-cache.sh <name> <old-version>
 ```
+
+The script refuses an empty or malformed plugin name or version and any
+target that does not resolve to that one directory inside the marketplace
+cache. The dry run prints the resolved path and its file count. It honours
+`CLAUDE_CONFIG_DIR`. Do not hand-write an `rm -rf` on the cache instead.
 
 If a change still does not appear, look in that cache tree before debugging
 the manifest.
@@ -97,8 +104,13 @@ the repository root:
 ```
 
 That points `core.hooksPath` at `.githooks/` so the gitleaks pre-commit
-scan runs. If `gitleaks` is missing, the hook skips the scan and exits 0.
-CI (`.github/workflows/ci.yml`) still scans the checked-out tree on pull
+scan runs. The hook fails closed: if `gitleaks` is not on `PATH` it blocks
+the commit and prints how to install it (`brew install gitleaks` on macOS;
+on Linux the pinned release CI uses, verified by checksum). A human who
+accepts the risk can set `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` for one commit;
+it applies only when the scanner is missing and never overrides a finding.
+Agents must not set it, and nobody should reach for `--no-verify`.
+CI (`.github/workflows/ci.yml`) also scans the checked-out tree on pull
 requests and `main`. Identifier and credential rules are in
 [CLAUDE.md](CLAUDE.md) (Secret scanning) and [SECURITY.md](SECURITY.md).
 Never write a literal maintainer home or workspace path; use
@@ -137,9 +149,12 @@ output. It never reads the real home directory. Needs `git`.
 cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
 ```
 
-### Marketplace checker (`scripts/tests`)
+### Repository tooling (`scripts/tests`)
 
-When touching `scripts/check-marketplace.py` or its fixtures:
+When touching `scripts/check-marketplace.py` or its fixtures, the
+pre-commit hook, `scripts/install-hooks.sh`, `scripts/evict-plugin-cache.sh`,
+`.gitignore`, or the CI workflow. The hook specs commit in a throwaway
+repository and the eviction specs run in a temp `CLAUDE_CONFIG_DIR`:
 
 ```bash
 python3 -m unittest discover -s scripts/tests -t scripts
@@ -198,7 +213,7 @@ empty temp directory.
 - [ ] `blast-radius-audit` collector unittest passes when that skill's
       `scripts/` changed; any new output path is covered by the leak test
 - [ ] `python3 -m unittest discover -s scripts/tests -t scripts` when the
-      marketplace checker changed
+      marketplace checker, the pre-commit hook or a `scripts/*.sh` file changed
 - [ ] `evals/run.sh` when `improve-prompt` changed (manual); eval index
       check when cases changed
 - [ ] User data is not stored in the plugin tree (`${CLAUDE_PLUGIN_DATA}`
