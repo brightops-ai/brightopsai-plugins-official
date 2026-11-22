@@ -22,8 +22,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npm run build` and `npm run dev` were checked on macOS arm64 with Node 26.
   The only locked package that declares one is the optional `fsevents`, which
   ships a prebuilt binary.
-- An already scaffolded `${CLAUDE_PLUGIN_DATA}/dashboard` is left as it is;
-  the lockfile applies to new scaffolds.
+- An already scaffolded `${CLAUDE_PLUGIN_DATA}/dashboard` that has
+  `node_modules` is left as it is; the lockfile applies to new scaffolds.
+
+### Fixed
+
+- A failed install no longer poisons the target. `ensure-dashboard.sh` used
+  to create the target before installing and then accept any existing target,
+  so one failed `npm` run made every later run report success with nothing
+  installed. The scaffold and the install now happen in a sibling staging
+  directory and are renamed into place only after both succeed. A failed or
+  interrupted run exits 4 (interrupts: 130 or 143), leaves the target as it
+  was, and removes its staging directory; the next run tries again.
+- A target without `node_modules` is now completed on a later run instead of
+  being reported as present. This is what an ordinary run does after a
+  scaffold made with `SKIP_NPM_INSTALL`: it installs the dependencies into
+  that target and touches no other file. A complete target is never
+  reinstalled or overwritten.
+- A target scaffolded before the lockfile shipped, with no `node_modules`,
+  gets the plugin's lockfile only if its `package.json` is still the
+  plugin's; otherwise the script exits 1 and does not install unpinned.
 
 ## [1.2.0] - 2026-09-05
 

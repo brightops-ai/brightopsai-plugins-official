@@ -25,7 +25,10 @@ setup() {
 }
 
 # Put a recording `npm` first on PATH. It never touches the network: it logs
-# its arguments, its cwd, and whether the lockfile is beside it.
+# its arguments, its cwd, and whether the lockfile is beside it, then behaves
+# like an install. With NPM_STUB_EXIT set to a non-zero status it leaves a
+# partial node_modules behind and fails with that status, as a real `npm ci`
+# does when it dies half way. NPM_STUB_SLEEP makes it slow enough to interrupt.
 stub_npm() {
   local bin="$BATS_TEST_TMPDIR/bin"
   export NPM_LOG="$BATS_TEST_TMPDIR/npm.log"
@@ -37,9 +40,26 @@ stub_npm() {
   printf 'cwd=%s\n' "$PWD"
   if [[ -f package-lock.json ]]; then echo 'lockfile=present'; else echo 'lockfile=absent'; fi
 } >>"$NPM_LOG"
+if [[ -n "${NPM_STUB_SLEEP:-}" ]]; then sleep "$NPM_STUB_SLEEP"; fi
+mkdir -p node_modules
+if [[ "${NPM_STUB_EXIT:-0}" -ne 0 ]]; then
+  echo 'partial' >node_modules/half-installed
+  exit "$NPM_STUB_EXIT"
+fi
+echo 'installed' >node_modules/complete
 STUB
   chmod +x "$bin/npm"
   PATH="$bin:$PATH"
+}
+
+npm_calls() {
+  if [[ -f "$NPM_LOG" ]]; then grep -c '^args=' "$NPM_LOG"; else echo 0; fi
+}
+
+# No staging directory may outlive a run, whatever its outcome.
+assert_no_staging_left() {
+  run find "$CLAUDE_PLUGIN_DATA" -maxdepth 1 -name '.dashboard-staging.*'
+  [ -z "$output" ]
 }
 
 @test "fresh scaffold copies assets under CLAUDE_PLUGIN_DATA and skips node_modules" {
@@ -55,17 +75,155 @@ STUB
   [[ "$output" == *"$dest"* ]]
 }
 
-@test "installs with npm ci --ignore-scripts in the target, lockfile beside package.json" {
+@test "installs with npm ci --ignore-scripts in staging, lockfile beside package.json" {
   stub_npm
   unset SKIP_NPM_INSTALL
 
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  [ "$(grep -c '^args=' "$NPM_LOG")" -eq 1 ]
+  [ "$(npm_calls)" -eq 1 ]
   grep -qx 'args=ci --ignore-scripts' "$NPM_LOG"
-  grep -qx "cwd=$CLAUDE_PLUGIN_DATA/dashboard" "$NPM_LOG"
   grep -qx 'lockfile=present' "$NPM_LOG"
+  # npm runs in a staging directory beside the target, never in the target.
+  grep -q "^cwd=.*/\.dashboard-staging\.[^/]*/dashboard\$" "$NPM_LOG"
+  ! grep -qx "cwd=$CLAUDE_PLUGIN_DATA/dashboard" "$NPM_LOG"
+
+  [ -f "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/complete" ]
+  [ -f "$CLAUDE_PLUGIN_DATA/dashboard/package-lock.json" ]
+  [[ "$output" == *"dashboard ready at $CLAUDE_PLUGIN_DATA/dashboard"* ]]
+  assert_no_staging_left
+}
+
+@test "failed install leaves no target, and the next run installs" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+
+  run env NPM_STUB_EXIT=42 "$SCRIPT"
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"npm ci failed"* ]]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard" ]
+  assert_no_staging_left
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 2 ]
+  [ -f "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/complete" ]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/half-installed" ]
+  assert_no_staging_left
+}
+
+@test "interrupted install leaves no target and no staging directory" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  export NPM_STUB_SLEEP=2
+
+  "$SCRIPT" >/dev/null 2>&1 3>&- &
+  local pid=$! tries=0 rc=0
+  until [[ -f "$NPM_LOG" ]] || [[ "$tries" -ge 50 ]]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  [ -f "$NPM_LOG" ]
+
+  kill -TERM "$pid"
+  wait "$pid" || rc=$?
+  [ "$rc" -eq 143 ]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard" ]
+  assert_no_staging_left
+}
+
+@test "complete target is not reinstalled and keeps user edits" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' 'user-edit' >"$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not overwriting"* ]]
+  [ "$(npm_calls)" -eq 1 ]
+  [ "$(cat "$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt")" = "user-edit" ]
+}
+
+@test "run after a skipped install installs into the existing target only" {
+  stub_npm
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dependencies not installed"* ]]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard/node_modules" ]
+  printf '%s\n' 'user-edit' >"$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt"
+
+  # Still skipped: reported, nothing installed.
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not overwriting"* ]]
+  [[ "$output" == *"dependencies are not installed"* ]]
+  [ "$(npm_calls)" -eq 0 ]
+
+  unset SKIP_NPM_INSTALL
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 1 ]
+  grep -qx 'lockfile=present' "$NPM_LOG"
+  [ -f "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/complete" ]
+  [ "$(cat "$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt")" = "user-edit" ]
+  assert_no_staging_left
+}
+
+@test "failed install into an existing target changes nothing, then retries" {
+  stub_npm
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf '%s\n' 'user-edit' >"$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt"
+  unset SKIP_NPM_INSTALL
+
+  run env NPM_STUB_EXIT=42 "$SCRIPT"
+  [ "$status" -eq 4 ]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard/node_modules" ]
+  [ "$(cat "$CLAUDE_PLUGIN_DATA/dashboard/src/marker.txt")" = "user-edit" ]
+  assert_no_staging_left
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(npm_calls)" -eq 2 ]
+  [ -f "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/complete" ]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard/node_modules/half-installed" ]
+}
+
+@test "pre-lockfile target with the plugin's package.json gets the plugin lockfile" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  local dest="$CLAUDE_PLUGIN_DATA/dashboard"
+  mkdir -p "$dest/src"
+  cp "$CLAUDE_PLUGIN_ROOT/skills/marketplace-scout/assets/dashboard/package.json" "$dest/package.json"
+  printf '%s\n' 'user-edit' >"$dest/src/marker.txt"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'lockfile=present' "$NPM_LOG"
+  [ -f "$dest/package-lock.json" ]
+  [ -f "$dest/node_modules/complete" ]
+  [ "$(cat "$dest/src/marker.txt")" = "user-edit" ]
+}
+
+@test "pre-lockfile target with an edited package.json is refused, not installed unpinned" {
+  stub_npm
+  unset SKIP_NPM_INSTALL
+  local dest="$CLAUDE_PLUGIN_DATA/dashboard"
+  mkdir -p "$dest"
+  printf '%s\n' '{"name":"edited","version":"9.9.9"}' >"$dest/package.json"
+
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to install unpinned dependencies"* ]]
+  [ "$(npm_calls)" -eq 0 ]
+  [ ! -e "$dest/node_modules" ]
+  [ ! -e "$dest/package-lock.json" ]
+  assert_no_staging_left
 }
 
 @test "SKIP_NPM_INSTALL scaffolds without calling npm" {
@@ -74,7 +232,9 @@ STUB
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$CLAUDE_PLUGIN_DATA/dashboard/package-lock.json" ]
+  [ ! -e "$CLAUDE_PLUGIN_DATA/dashboard/node_modules" ]
   [ ! -e "$NPM_LOG" ]
+  assert_no_staging_left
 }
 
 @test "missing package-lock.json exits 1 and scaffolds nothing" {

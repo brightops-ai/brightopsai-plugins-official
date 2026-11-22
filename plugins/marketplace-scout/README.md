@@ -44,7 +44,8 @@ The skill is model-invocable. Pass a product or category as the argument.
   Marketplace page shows a login form
 - Node.js (20.19+ or 22.12+) and `npm`. First use installs the dashboard's
   dependencies with `npm ci --ignore-scripts`: the versions pinned in the
-  shipped `package-lock.json`, with no package install scripts run. After
+  shipped `package-lock.json`, with no package install scripts run. A failed
+  install leaves no dashboard behind, so running again retries it. After
   that, `npm run dev` serves the dashboard (default port 5173)
 
 ## Data
