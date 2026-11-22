@@ -431,6 +431,16 @@ class TargetedFixtureTests(unittest.TestCase):
         text = 'A=1\nKEY="-----BEGIN-----\ncedarline5=\nbirchvalue6=x\n-----END-----"\nB=2\n'
         self.assertEqual([(line, key) for line, key, _ in self.mod.env_assignments(text)], [(1, "A"), (2, "KEY"), (6, "B")])
 
+    def test_unquoted_encoded_lines_are_not_keys(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+        text = ("PRIVATE_KEY=-----BEGIN FAKE-----\n" + body + "\nq1W2e3R4t5Y6u7I8o9P0aSdF=\nAbCd1234EfGh==\n"
+                "-----END FAKE-----\nNODE_ENV=test\nmixedCase=1\napiKey=x\n")
+        keys = [key for _, key, _ in self.mod.env_assignments(text)]
+        self.assertEqual(keys, ["PRIVATE_KEY", "NODE_ENV", "mixedCase", "apiKey"])
+        for word, expected in (("DATABASE_URL", True), ("database_url", True), ("apiKey", True), ("PGHOST", True),
+                               ("q1W2e3R4t5Y6u7I8o9P0aSdF", False), ("AbCd1234EfGh", False), ("x" * 65, False)):
+            self.assertEqual(self.mod.plausible_key(word), expected, word)
+
     def test_keys_mode_prints_names_and_never_values(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

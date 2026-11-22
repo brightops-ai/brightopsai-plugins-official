@@ -140,6 +140,17 @@ Manual, always, and say so plainly: **rotate the key.** Untracking does not
 remove it from history, from clones, or from any CI log. Rewriting history is
 also manual and optional; rotation is not.
 
+Where the keys should live instead is the user's call, but name the option
+that removes the problem rather than relocating it: a secrets manager that
+injects a value into one process at run time, so that neither a file in the
+repo, nor a shell profile, nor an agent's config holds it. Follow the
+manager's own documentation for the mechanics; do not improvise commands that
+handle secret values. For 1Password that is secret references with `op run`,
+or a 1Password Environment mounted as a local `.env` file
+(<https://www.1password.dev/get-started/secure-ai-access>); its documented
+principle is that an agent's tools act on a secret without the agent ever
+seeing it.
+
 ## 3. Guarded recursive delete
 
 ```bash

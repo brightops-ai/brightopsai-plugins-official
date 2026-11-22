@@ -356,6 +356,19 @@ def netrc_machines(text: str) -> list[str] | None:
     return machines
 
 
+def plausible_key(key: str) -> bool:
+    """False for a "key" that reads like a line of encoded data rather than a variable name.
+
+    An unquoted multi-line value (a PEM body pasted into a .env) leaves lines
+    such as `MIIEvQIBADANBgkq=` that parse as assignments. Variable names are
+    snake case or one case; Base64 mixes cases and digits with no underscore.
+    """
+    if len(key) > 64 or looks_random(key):
+        return False
+    mixed = any(c.isupper() for c in key) and any(c.islower() for c in key)
+    return "_" in key or not mixed or (len(key) <= 24 and not any(c.isdigit() for c in key))
+
+
 def env_assignments(text: str) -> list[tuple[int, str, str]]:
     """(line, key, value) for each assignment in dotenv text.
 
@@ -376,6 +389,8 @@ def env_assignments(text: str) -> list[tuple[int, str, str]]:
         if not match or line.lstrip().startswith("#"):
             continue
         key, value = match.group(1)[:80], match.group(2).strip()
+        if not plausible_key(key):
+            continue  # a line of data, not an assignment; neither side of it is shown
         if value[:1] in ("'", '"', "`") and not closes(value[1:], value[0]):
             quote = value[0]
             found.append((lineno, key, MULTILINE))
