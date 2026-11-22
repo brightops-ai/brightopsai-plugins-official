@@ -5,10 +5,14 @@
 #
 # Usage: ensure-dashboard.sh [target]
 #   exit 0  dashboard present or freshly scaffolded; prints the path
+#   exit 1  dashboard assets or their package-lock.json missing from the plugin
 #   exit 2  CLAUDE_PLUGIN_DATA or CLAUDE_PLUGIN_ROOT unset
 #   exit 3  leftover ./dashboard or ./data in cwd; prints an mv instruction
 #
-# SKIP_NPM_INSTALL: if set, skip `npm install` (tests set this).
+# Dependencies install with `npm ci --ignore-scripts`: exactly the versions
+# package-lock.json pins, and no package's install script runs.
+#
+# SKIP_NPM_INSTALL: if set, skip the npm step (tests set this).
 
 set -euo pipefail
 
@@ -47,6 +51,12 @@ if [[ ! -d "$src" ]]; then
   echo "ensure-dashboard.sh: missing dashboard assets at $src" >&2
   exit 1
 fi
+# Checked before anything is created: the lockfile is what pins the install,
+# and a target scaffolded without it would be reported as present next run.
+if [[ ! -f "$src/package-lock.json" ]]; then
+  echo "ensure-dashboard.sh: missing $src/package-lock.json; refusing to install unpinned dependencies" >&2
+  exit 1
+fi
 
 mkdir -p "$TARGET"
 for item in "$src"/*; do
@@ -59,8 +69,12 @@ for item in "$src"/*; do
 done
 mkdir -p "${CLAUDE_PLUGIN_DATA}/data/images"
 
+# The copy loop above carries package-lock.json into the target beside
+# package.json. `npm ci` installs only what it pins and fails if the two
+# disagree. --ignore-scripts keeps every dependency's install script from
+# running with the user's environment; the dashboard toolchain needs none.
 if [[ -z "${SKIP_NPM_INSTALL+x}" ]]; then
-  (cd "$TARGET" && npm install)
+  (cd "$TARGET" && npm ci --ignore-scripts)
 fi
 
 echo "dashboard ready at $TARGET"

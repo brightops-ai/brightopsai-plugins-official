@@ -42,7 +42,10 @@ The skill is model-invocable. Pass a product or category as the argument.
   the session, stop and install as above rather than retrying the loop.
 - A Facebook account, logged in manually in the Playwright browser when the
   Marketplace page shows a login form
-- Node.js and `npm`, for `npm run dev` on the dashboard (default port 5173)
+- Node.js (20.19+ or 22.12+) and `npm`. First use installs the dashboard's
+  dependencies with `npm ci --ignore-scripts`: the versions pinned in the
+  shipped `package-lock.json`, with no package install scripts run. After
+  that, `npm run dev` serves the dashboard (default port 5173)
 
 ## Data
 

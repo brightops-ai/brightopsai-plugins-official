@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-22
+
+### Security
+
+- Ship `package-lock.json` beside the dashboard's `package.json` and install
+  with `npm ci --ignore-scripts` instead of `npm install` (#81). A first run
+  now installs exactly the pinned, integrity-checked versions and runs no
+  dependency's install script with the user's environment. Before, every new
+  install resolved the caret ranges to the newest matching releases.
+- `ensure-dashboard.sh` exits 1 before creating anything when the plugin's
+  dashboard assets have no `package-lock.json`.
+- No install script is allowed or needed: `npm ci --ignore-scripts`,
+  `npm run build` and `npm run dev` were checked on macOS arm64 with Node 26.
+  The only locked package that declares one is the optional `fsevents`, which
+  ships a prebuilt binary.
+- An already scaffolded `${CLAUDE_PLUGIN_DATA}/dashboard` is left as it is;
+  the lockfile applies to new scaffolds.
+
 ## [1.2.0] - 2026-09-05
 
 ### Changed
