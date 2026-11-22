@@ -2,7 +2,7 @@
 name: spawn-session
 description: Start a named Claude Code session in tmux, verify it, and hand it a starter brief.
 disable-model-invocation: true
-argument-hint: "<name> [--dir <dir>] [--prompt <text>|--prompt-file <path>] [--bypass] [--trust-folder] [--resume] [--dry-run]"
+argument-hint: "<name> [--dir <dir>] [--prompt <text>|--prompt-file <path>] [--bypass | --trust-folder] [--resume] [--dry-run]"
 ---
 
 # Spawn a session
@@ -27,12 +27,12 @@ Common options:
 |---|---|
 | `--dir <dir>` | Where to launch. Defaults to the current directory. |
 | `--prompt <text>` / `--prompt-file <path>` | The brief. `-` reads standard input. |
-| `--bypass` | Launch with permissions bypassed. Default is `acceptEdits`. |
-| `--trust-folder` | Pre-authorise the workspace if it is not trusted yet. |
+| `--bypass` | Launch with permissions bypassed. Default is `acceptEdits`. Warns on stderr. Refused with `--trust-folder`. |
+| `--trust-folder` | Pre-authorise the workspace if it is not trusted yet. Inside a repository that is the whole repository, and a warning says so. |
 | `--resume` | Pick up a session that already exists instead of creating one. |
 | `--pre-launch <cmd>` | Shell command run in the pane before the CLI starts. |
-| `--dry-run` | Report the plan; launch nothing, write nothing. |
-| `--porcelain` | Tab-separated key/value output instead of prose. |
+| `--dry-run` | Report the plan and the warnings; launch nothing, write nothing. |
+| `--porcelain` | Tab-separated key/value output on stdout instead of prose. Warnings stay on stderr. |
 | `--socket <name>` | Address a named tmux server rather than the default. |
 
 Read the exit code, not the prose:
@@ -40,10 +40,37 @@ Read the exit code, not the prose:
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | Confirmed, and briefed if a brief was given | Nothing |
-| 2 | Usage error, or a refusal | Fix the invocation |
+| 2 | Usage error, or a refusal, including `--bypass` with `--trust-folder` | Fix the invocation |
 | 3 | Running, but not reachable from the web client | Usable locally; note it |
 | 4 | Never became usable — never started, or held at a dialog | Apply the reported remedy, then `--resume` |
 | 5 | Running and unconfirmed — no answer in time | Leave it alone; look at it |
+
+## Bypass and trust
+
+A line on stderr starting `WARNING:` states what the command is about to do
+and to what. Read it before acting on the result, and repeat it to the user
+rather than summarising it away. `--bypass` prints one on every launch: the
+session runs with all permission prompts off, and nobody approves its
+commands. Preview with `--dry-run`, which prints the same warning and launches
+nothing. Use `--bypass` only when the user asked for an unattended session.
+
+`--bypass` and `--trust-folder` are refused together (exit 2). Trusting a
+workspace and removing supervision are separate decisions, taken in separate
+invocations:
+
+1. Record trust: run once with `--trust-folder` and without `--bypass`, or have
+   the user start the CLI in the directory by hand and accept the prompt.
+2. Run again with `--bypass` and without `--trust-folder`.
+
+Step 1 with `--trust-folder` launches an `acceptEdits` session that keeps its
+name, so give the `--bypass` launch a different one.
+
+`--bypass` is also refused when workspace trust cannot be checked, which
+happens when `python3` is missing. Launch without `--bypass`, or have
+`python3` installed.
+
+The exact warning lines, when each is printed, and what the refusal does and
+does not guarantee: `references/protocol.md`.
 
 ## How it works, and why it is worth knowing
 
@@ -93,8 +120,9 @@ At 30 seconds the launcher reports what it can see rather than waiting in
 silence, and at the ceiling it distinguishes two different situations:
 
 - **Blocked (exit 4).** A known startup dialog is holding the session. The
-  report names it and the configuration entry that settles it. Resolve that,
-  then re-run with `--resume` to deliver the brief into the same session.
+  report names it and what settles it. Resolve that, then re-run with
+  `--resume` to deliver the brief into the same session. Re-running without
+  `--resume` is refused: the name is taken.
 - **Unconfirmed (exit 5).** No answer, nothing recognisable in the way. The
   session is left running and untouched — it may simply be slow. Look at it
   before doing anything: `tmux attach -t "=<name>"`.
@@ -106,11 +134,11 @@ away.
 ## References
 
 - `references/protocol.md` — the handshake format, how the reply is located,
-  and the full exit-code contract
+  the warnings printed on stderr, and the full exit-code contract
 - `references/blockers.md` — the startup dialogs, why none is ever answered
   automatically, and how to extend the table
 
 ## Requirements
 
-`tmux`, and the Claude Code CLI on the path. `--trust-folder` additionally
-needs `python3`; nothing else does.
+`tmux`, and the Claude Code CLI on the path. `--trust-folder` and `--bypass`
+additionally need `python3`; nothing else does.
