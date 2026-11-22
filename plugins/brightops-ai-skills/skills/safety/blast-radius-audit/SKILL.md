@@ -76,7 +76,8 @@ network; `--only 1,3` limits the run to those checks.
 It is read-only, starts no program but `git` (and `gh` with `--github`, GET
 requests to github.com only), and prints *leads* grouped by check. A lead is a
 location, a type and a note built from names and fixed text; the matching
-line is never printed, so read it at the cited location. Each check opens with
+line is never printed, so read it at the cited location (unless the file is
+one contract rule 2 says not to open). Each check opens with
 an `examined:` line, so a check that found nothing reads differently from one
 that did not run, and `UNKNOWN` or `NOT INSPECTED` means exactly that. Leads
 are pattern matches and include fixtures, documentation and comments;

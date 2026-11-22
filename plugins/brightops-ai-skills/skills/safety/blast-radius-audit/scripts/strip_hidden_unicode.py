@@ -15,14 +15,16 @@ is unchanged: same bytes, same line endings, and it is rewritten in place, so
 its permissions, ownership and extended attributes stay as they were. A copy
 of the original sits beside it until the rewrite has succeeded.
 
-Exit status: 0 on success, 2 when the file cannot be handled (not found,
-outside the working directory, reached through a link, not UTF-8).
+Exit status: 0 on success, 2 when the file cannot be handled (not found, an
+absolute path or one containing `..`, reached through a link, hard-linked
+elsewhere, not UTF-8).
 Standard library only; runs on Python 3.9+.
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -43,20 +45,32 @@ def hidden_positions(text: str) -> list[tuple[int, int, int]]:
     return found
 
 
-def refusal(path: str) -> str:
-    """Why this path may not be rewritten, or an empty string."""
-    root = os.path.realpath(os.getcwd())
-    relative = os.path.relpath(os.path.abspath(path), os.path.abspath(os.getcwd()))
-    if relative.startswith(os.pardir + os.sep) or relative == os.pardir or os.path.isabs(relative):
-        return "is outside the working directory; run this from the repository root"
-    current = root
-    for part in relative.split(os.sep):
+def checked_path(path: str) -> tuple[str, str]:
+    """(the real path to operate on, "") or ("", why this path may not be rewritten).
+
+    The path is walked one component at a time from the working directory, so
+    what is checked is what is opened. `..` is refused outright: collapsing it
+    as text hides a link that the filesystem would still follow.
+    """
+    if os.path.isabs(path):
+        return "", "is an absolute path; give a path relative to the repository root"
+    parts = [part for part in path.split(os.sep) if part not in ("", os.curdir)]
+    if not parts or os.pardir in parts:
+        return "", "contains '..' or names no file; give a plain path under the repository root"
+    current = os.path.realpath(os.getcwd())
+    for part in parts:
         current = os.path.join(current, part)
         if os.path.islink(current):
-            return "is reached through a link; links are not followed"
-    if not os.path.isfile(current):
-        return "is not a regular file"
-    return ""
+            return "", "is reached through a link; links are not followed"
+    try:
+        info = os.lstat(current)
+    except OSError:
+        return "", "does not exist"
+    if not stat.S_ISREG(info.st_mode):
+        return "", "is not a regular file"
+    if info.st_nlink > 1:
+        return "", "has other hard links, so rewriting it in place would change those files too"
+    return current, ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,10 +82,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     path = paths[0]
     shown = "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in path)
-    problem = refusal(path)
+    real, problem = checked_path(path)
     if problem:
         sys.stderr.write(f"{shown}: {problem}; nothing changed\n")
         return 2
+    path = real  # from here on, only the path that was checked is used
     with open(path, "rb") as handle:
         raw = handle.read()
     try:

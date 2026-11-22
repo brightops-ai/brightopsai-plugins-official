@@ -13,7 +13,9 @@ Prints leads for the eleven checks. What it guarantees, and how:
   the value of a fixed list of context selectors (`AWS_PROFILE`, `NODE_ENV`,
   ...) when it is a plain name or path; the host, port and database name of a
   database URL; and the leading command words of a permission rule. For a
-  command line, the program is named and its arguments are counted.
+  command line, the program is named, plus the one argument whose position
+  fixes its meaning (the script after an interpreter, the package after an
+  npx-style launcher); every other argument is counted, not shown.
 * It never writes, deletes or modifies a file.
 * The only programs it starts are `git` (read-only subcommands, in a fixed
   environment with tracing, filesystem-monitor helpers and on-demand fetching
@@ -198,7 +200,7 @@ SELECTOR_VALUE = re.compile(r"^[A-Za-z0-9_.:/~@-]{1,100}$")
 PROGRAM = re.compile(r"^[\w.+-]{1,40}$")
 SCRIPT_ARG = re.compile(r"^(?:\$\{?[A-Z_]{1,40}\}?/?)?[\w./-]{1,160}\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|ps1)$")
 PACKAGE_ARG = re.compile(r"^(?:@[a-z0-9._-]{1,60}/)?[A-Za-z0-9._-]{1,80}(?:(?:@|==)[\w.\-^~*]{1,40})?$")
-STATE_OR_VARS = re.compile(r"\.tfstate(?:\.|$)|\.tfvars(?:\.json)?$")
+STATE_OR_VARS = re.compile(r"(?i)\.tfstate(?:\.|$)|\.tfvars(?:\.json)?$")
 HOST_SAFE = re.compile(r"^(?:[A-Za-z0-9._\-${}]{1,253}|[0-9A-Fa-f:.]{2,45})$")
 SETTING_WORDS = {
     "true", "false", "never", "always", "on-request", "on-failure", "untrusted", "danger-full-access",
@@ -247,13 +249,13 @@ PATH_GLOB = re.compile(r"^[\w./*~-]{1,80}$")
 MULTILINE = "\0multi-line value"
 
 
-def _tokens(command: object) -> list[str]:
+def _tokens(command: object) -> list[str] | None:
     if isinstance(command, (list, tuple)):
         return [str(t) for t in command]
     try:
         return shlex.split(str(command))
     except ValueError:
-        return str(command).split()
+        return None  # unbalanced quotes: any split would mislabel part of a value as the program
 
 
 def command_summary(command: object) -> str:
@@ -266,6 +268,8 @@ def command_summary(command: object) -> str:
     rest are counted.
     """
     tokens = _tokens(command)
+    if tokens is None:
+        return "runs a command that could not be parsed (not shown)"
     while tokens and re.match(r"^[A-Za-z_]\w*=", tokens[0]):
         tokens = tokens[1:]
     if not tokens:
@@ -372,30 +376,37 @@ def plausible_key(key: str) -> bool:
 def env_assignments(text: str) -> list[tuple[int, str, str]]:
     """(line, key, value) for each assignment in dotenv text.
 
-    A quoted value can span lines (a PEM key). Its continuation lines are
-    skipped rather than mistaken for assignments, and the value comes back as
-    the MULTILINE marker.
+    A value can span lines: quoted (a PEM key in quotes) or not (a PEM body
+    pasted bare). Continuation lines are skipped rather than mistaken for
+    assignments, and a quoted multi-line value comes back as MULTILINE.
     """
     def closes(rest: str, quote: str) -> bool:
         return re.search(r"(?<!\\)" + re.escape(quote), rest) is not None
 
-    found, quote = [], ""
+    found, quote, in_pem = [], "", False
     for lineno, line in enumerate(text.splitlines(), 1):
         if quote:
             if closes(line, quote):
                 quote = ""
             continue
+        if in_pem:
+            in_pem = "-----END" not in line
+            continue
         match = ENV_LINE.match(line)
         if not match or line.lstrip().startswith("#"):
             continue
         key, value = match.group(1)[:80], match.group(2).strip()
-        if not plausible_key(key):
-            continue  # a line of data, not an assignment; neither side of it is shown
+        if value == "=" or not plausible_key(key):
+            continue  # Base64 padding or a line of data, not an assignment; neither side is shown
         if value[:1] in ("'", '"', "`") and not closes(value[1:], value[0]):
             quote = value[0]
             found.append((lineno, key, MULTILINE))
-        else:
-            found.append((lineno, key, value.strip("\"'")))
+            continue
+        if "-----BEGIN" in value and "-----END" not in value:
+            in_pem = True
+            found.append((lineno, key, MULTILINE))
+            continue
+        found.append((lineno, key, value.strip("\"'")))
     return found
 
 
@@ -425,7 +436,11 @@ def key_listing(path: Path, repo: Path | None = None) -> list[str]:
         try:
             data = json.loads(text)
         except ValueError:
-            return ["not valid JSON: key names unavailable"]
+            stripped = re.sub(r",(\s*[}\]])", r"\1", re.sub(r"^\s*//.*$", "", text, flags=re.M))
+            try:
+                data = json.loads(stripped)
+            except ValueError:
+                return ["not valid JSON: key names unavailable"]
         rows: list[str] = []
 
         def walk(node: object, trail: str) -> None:
@@ -606,6 +621,30 @@ def sanitize_db_url(url: str) -> tuple[str, str]:
     return shown, classify_host(",".join(hosts))
 
 
+def safe_url_host(url: str) -> str:
+    """The host a URL names, or <withheld> when it cannot be told apart from the credentials.
+
+    An unescaped '/', '?' or '#' inside the userinfo moves the real host into
+    the path, query or fragment and leaves part of the credential where the
+    host should be. Any '@' after the authority means exactly that.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname or ""
+    except ValueError:
+        return "<withheld>"
+    if "@" in parts.path + parts.query + parts.fragment or url.count("@") > 1:
+        return "<withheld>"
+    return host if HOST_SAFE.match(host) and not looks_random(host) else "<withheld>"
+
+
+def host_from_value(raw: str) -> str:
+    """The host in a bare `[user:pass@]host[:port]` value, or an empty string."""
+    host = raw.strip().strip("\"'").rsplit("@", 1)[-1]
+    host = host[1:].split("]")[0] if host.startswith("[") else host.split(":")[0]
+    return host if HOST_SAFE.match(host) and not looks_random(host) else ""
+
+
 def value_hints(value: str) -> list[str]:
     """Describe a value without quoting it."""
     if value == "":
@@ -619,12 +658,7 @@ def value_hints(value: str) -> list[str]:
         shown, klass = sanitize_db_url(match.group(1))
         hints.append(f"-> {shown} [{klass}]")
     elif re.match(r"^[a-z][a-z0-9+.-]*://[^/\s@]+@", value, re.I):
-        try:
-            host = urlsplit(value).hostname or ""
-        except ValueError:
-            host = ""
-        host = host if HOST_SAFE.match(host) and not looks_random(host) else "<withheld>"
-        hints.append(f"URL with embedded credentials -> host {host}")
+        hints.append(f"URL with embedded credentials -> host {safe_url_host(value)}")
     return hints
 
 
@@ -725,7 +759,7 @@ LINE_PATTERNS = [
 
 DB_HOST_KEY = re.compile(
     r"(?i)\b((?:db|database|pg|postgres|mysql|mongo|redis|sql)[a-z_]*host)[\"']?\s*[:=]\s*[\"']?"
-    r"([A-Za-z0-9_.\-${}:]+)"
+    r"([^\s\"',;]+)"
 )
 
 RULE_FILE_NAMES = {
@@ -894,28 +928,43 @@ def hidden_codepoint(cp: int, previous: int) -> bool:
 def hidden_columns(line: str) -> list[tuple[int, int]]:
     """(column, code point) of each hidden character in one line.
 
-    A subdivision flag is U+1F3F4 followed by tag characters and a cancel tag;
-    those tags are part of a visible emoji and are left alone.
+    A subdivision flag is U+1F3F4, then two to six tag letters or digits, then
+    the cancel tag. Only that exact shape is left alone; tag characters in any
+    other arrangement can spell out text nobody sees, and are reported.
     """
-    found, previous, in_flag = [], 0, False
-    for column, char in enumerate(line, 1):
-        code = ord(char)
-        is_tag = 0xE0020 <= code <= 0xE007F
-        if in_flag and is_tag:
-            in_flag = code != 0xE007F
-        else:
-            in_flag = code == 0x1F3F4
-            if code > 0x7F and hidden_codepoint(code, previous):
-                found.append((column, code))
+    found, previous, index = [], 0, 0
+    while index < len(line):
+        code = ord(line[index])
+        if code == 0x1F3F4:
+            end = index + 1
+            while end < len(line) and (0xE0030 <= ord(line[end]) <= 0xE0039 or 0xE0061 <= ord(line[end]) <= 0xE007A):
+                end += 1
+            if 2 <= end - index - 1 <= 6 and end < len(line) and ord(line[end]) == 0xE007F:
+                previous, index = 0xE007F, end + 1
+                continue
+        if code > 0x7F and hidden_codepoint(code, previous):
+            found.append((index + 1, code))
         previous = code
+        index += 1
     return found
+
+
+TOML_STRING = re.compile(r"\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'")
+TOML_KEY = r"(?:[A-Za-z0-9_-]+|\"[^\"]*\"|'[^']*')"
+TOML_PAIR = re.compile(r"^(" + TOML_KEY + r"(?:\s*\.\s*" + TOML_KEY + r")*)\s*=\s*(.*)$")
+
+
+def _toml_blank_strings(text: str) -> str:
+    """The text with every quoted string emptied, so brackets and `=` inside values do not count."""
+    return TOML_STRING.sub('""', text)
 
 
 def parse_toml_tables(text: str) -> dict[str, dict[str, object]]:
     """Minimal TOML reader: table headers and single-line or bracketed values.
 
     Python 3.9 has no tomllib, and one code path on every interpreter beats
-    two. Enough for Codex-style config; not a general TOML parser.
+    two. Enough for Codex-style config; not a general TOML parser. Whatever
+    sits inside a quoted string is a value and is never read as structure.
     """
     tables: dict[str, dict[str, object]] = {"": {}}
     current = ""
@@ -930,28 +979,29 @@ def parse_toml_tables(text: str) -> dict[str, dict[str, object]]:
             continue
         if pending_key is not None:
             pending += " " + line
-            if pending.count("[") <= pending.count("]"):
+            blank = _toml_blank_strings(pending)
+            if blank.count("[") <= blank.count("]"):
                 tables[current][pending_key] = _toml_value(pending)
                 pending_key, pending = None, ""
             continue
         if not line or line.startswith("#"):
             continue
-        header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]\s*(?:#.*)?$", line)
-        if header and "=" not in line.split("]")[0]:
-            current = header.group(1)
-            tables.setdefault(current, {})
-            continue
-        pair = re.match(r"^([A-Za-z0-9_.\-\"']+)\s*=\s*(.*)$", line)
+        pair = TOML_PAIR.match(line)
         if not pair:
+            header = re.match(r"^\[\[?\s*(.+?)\s*\]?\]\s*(?:#.*)?$", line)
+            if header:
+                current = header.group(1)
+                tables.setdefault(current, {})
             continue
         key, value = pair.group(1).strip("\"'"), pair.group(2)
-        opener = value[:3] if value[:3] in ('"""', "'''") else ""
+        opener = value[:3] if value[:3] in ('"""', "\'\'\'") else ""
         if opener:
             tables[current][key] = ""
             if opener not in value[3:]:
                 closing = opener
             continue
-        if value.startswith("[") and value.count("[") > value.count("]"):
+        blank = _toml_blank_strings(value)
+        if value.startswith("[") and blank.count("[") > blank.count("]"):
             pending_key, pending = key, value
             continue
         tables[current][key] = _toml_value(value)
@@ -965,10 +1015,17 @@ def _toml_value(value: str) -> object:
     except ValueError:
         pass
     if value.startswith("{"):
-        return {name: "" for name in re.findall(r"([A-Za-z0-9_\-]+)\s*=", value)}
+        # An inline table. Keys are taken only from outside quoted strings, and
+        # the values are kept so a literal secret can be recognised (never shown).
+        table = {}
+        for found in re.finditer(r"(" + TOML_KEY + r")\s*=\s*(" + TOML_STRING.pattern + r"|[^,}]*)",
+                                 value.strip()[1:].rsplit("}", 1)[0]):
+            table[found.group(1).strip("\"'")] = found.group(2).strip().strip("\"'")
+        return table
     if value.startswith("["):
-        return [a or b for a, b in re.findall(r"\"([^\"]*)\"|'([^']*)'", value)]
-    return value.split("#")[0].strip().strip("\"'")
+        return [a[1:-1] for a in TOML_STRING.findall(value)]
+    scalar = re.match(r"\s*(" + TOML_STRING.pattern + r"|[^#]*)", value)  # drops a trailing comment
+    return scalar.group(1).strip().strip("\"'") if scalar else ""
 
 
 def unpinned_reasons(command: str, args: list[str]) -> list[str]:
@@ -1152,6 +1209,8 @@ class Collector:
             resolved = path.resolve()
             if through_repo:
                 resolved.relative_to(self.repo)
+            if STATE_OR_VARS.search(resolved.name):
+                return None  # a link with an innocent name must not get a state file read
             info = os.stat(resolved)
         except (OSError, ValueError):
             return None
@@ -1235,8 +1294,9 @@ class Collector:
                         self.add(2, "live-payment-key", f"{name}:{lineno}", f"{key}: {hint} ({status})")
                 host = DB_HOST_KEY.match(f"{key}={value}")
                 if host and not DB_URL.search(value):
+                    named = host_from_value(host.group(2))
                     self.add(1, "db-target", f"{name}:{lineno}",
-                             f"{key} -> host {safe_name(host.group(2))} [{classify_host(host.group(2))}] "
+                             f"{key} -> host {named or '<withheld>'} [{classify_host(named) if named else 'unknown'}] "
                              f"(file role: {role}; {status})")
                 if SECRET_NAME.search(key) and not PLACEHOLDER.match(value) and not REFERENCE.match(value):
                     literal_secrets.append(f"{key}@{lineno}")
@@ -1281,9 +1341,10 @@ class Collector:
                         self.add(1, "db-target", loc, f"{shown} [{klass}] {tag}".rstrip())
                     host = DB_HOST_KEY.search(line)
                     if host and not is_doc and not DB_URL.search(line):
-                        klass = classify_host(host.group(2))
+                        named = host_from_value(host.group(2))
+                        klass = classify_host(named) if named else "unknown"
                         if klass in ("non-local", "private-network"):
-                            self.add(1, "db-target", loc, f"{host.group(1)} -> host {safe_name(host.group(2))} [{klass}]")
+                            self.add(1, "db-target", loc, f"{host.group(1)} -> host {named} [{klass}]")
                 rm = RM_RECURSIVE.search(line)
                 if rm:
                     target = rm.group(1)
@@ -1379,6 +1440,10 @@ class Collector:
         seen = directory.is_dir()
         for variable, filename in (("AWS_SHARED_CREDENTIALS_FILE", "credentials"), ("AWS_CONFIG_FILE", "config")):
             override = self.environ.get(variable)
+            if override and not Path(override).is_absolute():
+                self.add(2, "credential-file", f"env:{variable}", "names a relative path, which resolves against "
+                         "whatever directory a command runs in: NOT INSPECTED")
+                continue
             path = Path(override) if override else directory / filename
             text = self.text(path)
             if text is None:
@@ -1523,14 +1588,9 @@ class Collector:
                 self.add(2, "credential-file", self.show(home / rel), f"gh hosts: {safe_names(names) or 'none'}; {stored}")
         gitcreds = self.text(home / ".git-credentials")
         if gitcreds is not None:
-            hosts = set()
-            for line in gitcreds.split():
-                try:
-                    hosts.add(urlsplit(line).hostname or "?")
-                except ValueError:
-                    hosts.add("?")
+            hosts = sorted({safe_url_host(line) for line in gitcreds.split()})
             self.add(2, "credential-file", "~/.git-credentials",
-                     f"PLAINTEXT git passwords for: {safe_names(sorted(hosts))}")
+                     f"PLAINTEXT git passwords for: {', '.join(hosts[:20])}")
         stripe = self.text(home / ".config" / "stripe" / "config.toml")
         if stripe is not None:
             live = "LIVE-MODE KEY PRESENT" if re.search(r"^\s*live_mode_api_key\s*=\s*\S", stripe, re.M) else "no live-mode key"
@@ -1801,6 +1861,10 @@ class Collector:
         self.github_requests += 1
         code, out, err = self._run(["gh", "auth", "status", "--hostname", "github.com", "--active", "--no-refresh"])
         block = (out + err).splitlines()
+        if code != 0 or not any("Logged in" in line for line in block):
+            self.add(6, "not-checked", "gh auth", "gh is not signed in to github.com (or its status could not be "
+                     "read): token scopes and branch protection are UNKNOWN")
+            return
         account = next((m.group(1) for line in block for m in [re.search(r"account\s+([\w-]{1,60})", line)] if m), "?")
         scopes = sorted(set(re.findall(r"'([\w:]{1,40})'", " ".join(line for line in block if "scopes" in line))))
         # gh prints the token masked ("gho_****"); its prefix names the type. The token itself is never fetched.
@@ -1994,13 +2058,9 @@ class Collector:
         url = spec.get("url") or spec.get("serverUrl") or spec.get("httpUrl")
         host = ""
         if isinstance(url, str):
-            try:
-                parts = urlsplit(url)
-                host = parts.hostname or ""
-                scheme = parts.scheme if parts.scheme in ("http", "https", "ws", "wss") else "?"
-            except ValueError:
-                host, scheme = "", "?"
-            host = host if HOST_SAFE.match(host) and not looks_random(host) else "<withheld>"
+            scheme = url.split("://", 1)[0].lower() if "://" in url else "?"
+            scheme = scheme if scheme in ("http", "https", "ws", "wss") else "?"
+            host = safe_url_host(url)
             traits.append(f"remote: {scheme}://{host}")
         literal = []
         for block_name in ("env", "headers"):
@@ -2039,6 +2099,9 @@ class Collector:
         for path in (self.repo / ".codex" / "config.toml", self.home / ".codex" / "config.toml"):
             text = self.text(path)
             if text is None:
+                if os.path.lexists(path):
+                    self.add(8, "config-not-parsed", self.show(path), "present but not read: unreadable, or a link "
+                             "that leads out of the repository. NOT INSPECTED")
                 continue
             tables = parse_toml_tables(text)
             for header, values in tables.items():
@@ -2142,10 +2205,14 @@ class Collector:
                     continue
             except ValueError:
                 pass  # a user-level skills directory; links there are the user's own
-            names, scripted, linked = [], 0, 0
+            names, scripted, linked, escaped = [], 0, 0, 0
+            in_repo = root.is_relative_to(self.repo)
             for skill_md in sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/*/SKILL.md")) + sorted(root.glob("*/*/*/SKILL.md")):
                 directory = skill_md.parent
                 if any(part.startswith(".") for part in directory.relative_to(root).parts):
+                    continue
+                if in_repo and not directory.resolve().is_relative_to(self.repo):
+                    escaped += 1  # reached through a link that leaves the repository: not named, not probed
                     continue
                 names.append(directory.name)
                 scripted += (directory / "scripts").is_dir()
@@ -2154,6 +2221,9 @@ class Collector:
             if names:
                 self.add(8, "skills", self.show(root),
                          f"{len(names)} skills ({scripted} bundle scripts, {linked} are symlinks): {safe_names(names, 30)}")
+            if escaped:
+                self.add(8, "skills", self.show(root), f"{escaped} entries are reached through a link out of the "
+                         "repository: NOT INSPECTED")
 
     def _install_scripts(self) -> None:
         lifecycle = ("preinstall", "install", "postinstall", "prepare", "prepublish", "prepack")

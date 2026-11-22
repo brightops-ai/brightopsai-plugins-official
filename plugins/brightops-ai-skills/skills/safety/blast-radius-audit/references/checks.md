@@ -407,14 +407,15 @@ one would run them.
 **By hand:**
 
 - Run `bash -c 'type -t rm'` (and `zsh -c 'whence -w rm'` where zsh is the
-  login shell). Use these forms, which print one word (`file`, `alias`,
-  `function`); plain `type rm` prints a function's body. This is the one
+  login shell). Use these forms: bash prints one word (`file`, `alias`,
+  `function`) and zsh prints `rm: command`, `rm: alias` or `rm: function`.
+  Plain `type rm` prints a function's body. This is the one
   command in the audit that starts a shell, and a shell runs its
   non-interactive startup files (`BASH_ENV`, `.zshenv`): the same files that
   already run for every command an agent executes on this machine, so nothing
   new is exercised, but it is not a read. Skip it if the user asked for a
   strictly read-only audit and rely on the collector's classification
-  instead. If it reports `file` while a `shell-safety-net` lead exists, the
+  instead. If it reports `file` or `command` while a `shell-safety-net` lead exists, the
   safety net does not exist for an agent: an alias in `.zshrc` or `.bashrc`
   is loaded by interactive shells only.
 - A broad allow rule (`Bash`, `Bash(rm *)`, `Bash(git push *)`) is a standing
