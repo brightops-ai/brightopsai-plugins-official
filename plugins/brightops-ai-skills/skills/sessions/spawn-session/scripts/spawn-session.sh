@@ -37,10 +37,14 @@ INSPECT_AFTER="${SPAWN_INSPECT_AFTER:-30}"
 CONFIG_FILE="${SPAWN_CONFIG_FILE:-$HOME/.claude.json}"
 TRUST_TOOL="$SCRIPT_DIR/lib/trust-config.py"
 BLOCKER_TABLE="$SCRIPT_DIR/startup-blockers.tsv"
+READY_TABLE="$SCRIPT_DIR/ready-prompts.tsv"
 
 # The CLI release this skill's dialog patterns were verified against. Advisory
 # only — see version_verdict.
 PINNED_CLI_VERSION="2.1.259"
+# The CLI release the prompt patterns in the ready table were taken from. A
+# separate fact from the pin above, and advisory in the same way.
+READY_CLI_VERSION="2.1.330"
 CLI_BIN="${SPAWN_CLI_BIN:-claude}"
 
 # Exit codes. Each names a distinct outcome a caller may need to act on
@@ -53,6 +57,9 @@ readonly EXIT_UNCONFIRMED=5
 
 NAME=""
 DIR=""
+DIR_PHYSICAL=""
+GIT_ROOT=""
+EXACT=""
 POSTURE=""
 PRE_LAUNCH=""
 PROMPT=""
@@ -62,6 +69,8 @@ BRIEF_DELIVERED=0
 TRUST_FOLDER=0
 TRUST_GRANTED=""
 BLOCKER=""
+HANDSHAKE_WITHHELD=0
+NOTED=0
 RESUME=0
 SOCKET=""
 DRY_RUN=0
@@ -73,7 +82,9 @@ usage() {
   cat <<'USAGE'
 usage: spawn-session.sh <name> [options]
 
-  -C, --dir <dir>        directory to launch in (default: current directory)
+  -C, --dir <dir>        directory to launch in (default: current directory);
+                         refused when its path holds a newline or any other
+                         control character
   -p, --prompt <text>    starter brief, delivered once the session is confirmed
   -f, --prompt-file <p>  starter brief read from a file ('-' for standard input)
   -b, --bypass           launch with permissions bypassed (default: acceptEdits);
@@ -267,12 +278,46 @@ git_root_of() {
   git -C "$1" rev-parse --show-toplevel 2>/dev/null || true
 }
 
+# logical_dir <dir>
+#
+# Echoes the directory as an absolute path, symbolic links kept as named.
+logical_dir() {
+  # CDPATH is cleared so a relative name is looked up here and nowhere else;
+  # with it set, cd may go somewhere else and print where it went.
+  (CDPATH="" && cd -- "$1" 2>/dev/null && pwd)
+}
+
 # physical_dir <dir>
 #
 # Echoes the directory with symbolic links resolved, which is the form the
 # repository root is reported in.
 physical_dir() {
-  (cd "$1" && pwd -P)
+  (CDPATH="" && cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+# exact <command...>
+#
+# Runs the command and sets EXACT to the line it printed, less the one newline
+# that ends it. Fails, with EXACT empty, if the command fails.
+#
+# Every path here is read through this rather than a bare command
+# substitution. A substitution drops all trailing newlines, so a directory
+# whose name ends in one comes back as a different, shorter path: its sibling.
+# The sentinel keeps them, and the check that refuses such a directory can
+# then see what it is refusing.
+exact() {
+  EXACT="$("$@" && printf x)" || { EXACT=""; return 1; }
+  EXACT="${EXACT%x}"
+  EXACT="${EXACT%$'\n'}"
+}
+
+# refuse_control_in <subject> <path>
+#
+# Refuses, as usage, a path holding a control character. Called before the
+# path is used for anything: a trust lookup, a trust record, the multiplexer.
+refuse_control_in() {
+  has_control "$2" || return 0
+  die "$1 has a control character in its path, written out here as text: '$2'. Refused: a path with one in it is not carried intact. A newline at the end is dropped when the path is resolved, which names a different directory for the session to start in and for trust to be recorded against. Rename the directory, or launch somewhere else."
 }
 
 # have_trust_tool
@@ -350,6 +395,54 @@ find_blocker() {
   blocker_for "$table" "$pane"
 }
 
+# pane_gate <session>
+#
+# Echoes ready, blocked or waiting: whether the pane, as it looks now, can be
+# sent input. See input_gate. A table that cannot be read contributes no rows,
+# so a missing ready table means "never ready", not "always ready".
+pane_gate() {
+  local pane blockers="" ready=""
+  pane="$(tm capture-pane -p -J -t "=$1:" 2>/dev/null || true)"
+  [[ -r "$BLOCKER_TABLE" ]] && blockers="$(cat "$BLOCKER_TABLE")"
+  [[ -r "$READY_TABLE" ]] && ready="$(cat "$READY_TABLE")"
+  input_gate "$blockers" "$ready" "$pane"
+}
+
+# drift_note <patterns> <cli-version> <how-they-relate>
+#
+# Echoes the advisory for a CLI other than the one a table's patterns come
+# from, or nothing.
+drift_note() {
+  local installed verdict
+  installed="$(installed_cli_version)"
+  verdict="$(version_verdict "$installed" "$2")"
+  if [[ "$verdict" == "drift" ]]; then
+    echo "           (CLI $installed differs from $2, which these"
+    echo "            $1 were $3 — wording may have moved)"
+  fi
+}
+
+# still_waiting_note <waited> <sent>
+#
+# Says something once, at the inspection mark, rather than sitting silent to
+# the ceiling: a first turn can legitimately be slow, and a caller needs to
+# tell "still starting" from "stuck" without waiting for the timeout.
+still_waiting_note() {
+  local waited="$1" sent="$2" early
+  (( NOTED )) && return 0
+  (( waited >= INSPECT_AFTER )) || return 0
+  NOTED=1
+
+  early="$(find_blocker "$NAME" || true)"
+  if [[ -n "$early" ]]; then
+    echo "spawn-session: '$NAME' is held at a startup dialog (${early%%$'\t'*}); still waiting" >&2
+  elif (( sent )); then
+    echo "spawn-session: '$NAME' has not answered after ${waited}s, nothing obviously blocking it; still waiting" >&2
+  else
+    echo "spawn-session: '$NAME' has not shown its input prompt after ${waited}s, and no known dialog; nothing has been sent to it; still waiting" >&2
+  fi
+}
+
 # report_blocker <blocker-row>
 #
 # Explains what is holding the session, and what settles it. Never acts on it:
@@ -361,14 +454,7 @@ report_blocker() {
   echo "  blocked  $id"
   echo "           $what"
   echo "           $remedy"
-
-  local installed verdict
-  installed="$(installed_cli_version)"
-  verdict="$(version_verdict "$installed" "$PINNED_CLI_VERSION")"
-  if [[ "$verdict" == "drift" ]]; then
-    echo "           (CLI $installed differs from $PINNED_CLI_VERSION, which these"
-    echo "            dialog patterns were verified against — wording may have moved)"
-  fi
+  drift_note "dialog patterns" "$PINNED_CLI_VERSION" "verified against"
 }
 
 report() {
@@ -383,6 +469,9 @@ report() {
     printf 'pid\t%s\n' "$pid"
     [[ -n "$identity" ]] && printf 'identity\t%s\n' "$identity"
     printf 'brief\t%s\n' "$( (( BRIEF_DELIVERED )) && echo delivered || echo none )"
+    # Only on a run that stopped before the handshake: with this pair present,
+    # nothing at all was sent to the session.
+    (( HANDSHAKE_WITHHELD )) && printf 'handshake\tnot_sent\n'
     [[ -n "$url" ]] && printf 'url\t%s\n' "$url"
     return 0
   fi
@@ -405,10 +494,21 @@ report() {
     launched)
       echo "  launched (not verified)" ;;
     unconfirmed)
-      echo "  identity unconfirmed — the session did not answer in time."
-      echo "           It is still running and has been left alone." ;;
+      if (( HANDSHAKE_WITHHELD )); then
+        echo "  identity unconfirmed — the input prompt never appeared, so the"
+        echo "           handshake was not sent. Nothing has been sent to the session."
+        echo "           It is still running and has been left alone. Look at it"
+        echo "           (tmux attach -t \"=$NAME\"), then re-run with --resume."
+        echo "           If it is at its prompt, this CLI words its status line in a"
+        echo "           way scripts/ready-prompts.tsv does not list yet."
+        drift_note "prompt patterns" "$READY_CLI_VERSION" "taken from"
+      else
+        echo "  identity unconfirmed — the session did not answer in time."
+        echo "           It is still running and has been left alone."
+      fi ;;
     blocked)
       echo "  the session never got as far as reading its input."
+      (( HANDSHAKE_WITHHELD )) && echo "  nothing was sent to it."
       report_blocker "$BLOCKER" ;;
   esac
 
@@ -454,9 +554,26 @@ main() {
       ;;
   esac
 
+  # The directory, settled before it is used for anything. Checked as given
+  # and again as resolved: the argument can be clean while the directory it
+  # names is not, reached by a relative path or through a symbolic link.
   DIR="${DIR:-$PWD}"
+  refuse_control_in "the directory" "$DIR"
   [[ -d "$DIR" ]] || die "no such directory: $DIR"
-  DIR="$(cd "$DIR" && pwd)"
+  exact logical_dir "$DIR" || die "cannot enter directory: $DIR"
+  DIR="$EXACT"
+  refuse_control_in "the directory" "$DIR"
+  exact physical_dir "$DIR" || die "cannot resolve directory: $DIR"
+  DIR_PHYSICAL="$EXACT"
+  refuse_control_in "the location the directory resolves to" "$DIR_PHYSICAL"
+  # The repository root is what trust is recorded under, so it is read the
+  # same way and held to the same rule. Only needed where trust can be
+  # looked at.
+  if have_trust_tool; then
+    exact git_root_of "$DIR" || true
+    GIT_ROOT="$EXACT"
+    refuse_control_in "the repository that holds the directory" "$GIT_ROOT"
+  fi
 
   local launch_line
   launch_line="$(spawn_launch_command "$NAME" "$POSTURE" "$PRE_LAUNCH")"
@@ -480,12 +597,12 @@ main() {
     # the CLI's configuration would not be a dry run.
     if have_trust_tool; then
       local dry_root dry_key
-      dry_root="$(git_root_of "$DIR")"
+      dry_root="$GIT_ROOT"
       dry_key="$(trust_key "$DIR" "$dry_root")"
       if config_trusts "$CONFIG_FILE" "$dry_key"; then
         echo "  workspace already trusted ($dry_key)"
       elif (( TRUST_FOLDER )) && trust_grantable "$dry_key" "$HOME"; then
-        if trust_is_wider "$(physical_dir "$DIR")" "$dry_root"; then
+        if trust_is_wider "$DIR_PHYSICAL" "$dry_root"; then
           trust_scope_warning "$DIR" "$dry_root" dry-run >&2
         fi
         echo "  would record workspace trust for $dry_key"
@@ -542,7 +659,7 @@ main() {
   # simulating input, so the choice is made explicitly, in advance, by a flag.
   if have_trust_tool; then
     local git_root key
-    git_root="$(git_root_of "$DIR")"
+    git_root="$GIT_ROOT"
     key="$(trust_key "$DIR" "$git_root")"
     if ! config_trusts "$CONFIG_FILE" "$key"; then
       if (( TRUST_FOLDER )); then
@@ -551,7 +668,7 @@ main() {
         # Said before the write, not after: the grant covers more than the
         # directory that was named, and that is the last moment a caller
         # reading this can still stop it.
-        if trust_is_wider "$(physical_dir "$DIR")" "$git_root"; then
+        if trust_is_wider "$DIR_PHYSICAL" "$git_root"; then
           trust_scope_warning "$DIR" "$git_root" >&2
         fi
         grant_trust "$CONFIG_FILE" "$key" || die "could not record workspace trust"
@@ -620,44 +737,55 @@ main() {
     die "no CLI process appeared in '$NAME' within ${TIMEOUT}s" "$EXIT_NO_PROCESS"
   fi
 
+  # ── readiness ─────────────────────────────────────────────────────────
+  #
+  # Look before sending. A process existing says nothing about what it is
+  # showing: a session held at a startup dialog has a live process too, and
+  # anything pasted and submitted then is typed at the dialog. So nothing is
+  # sent until the pane shows the input prompt and no known dialog, and if
+  # that never happens the run ends having sent nothing.
+  local sid="" gate="waiting"
+  while (( waited < TIMEOUT )); do
+    [[ -n "$sid" ]] || sid="$(session_id_for "$pid")"
+    gate="$(pane_gate "$NAME")"
+    [[ "$gate" == "ready" ]] && break
+    still_waiting_note "$waited" 0
+    sleep 1
+    (( waited += 1 ))
+  done
+
+  if [[ "$gate" != "ready" ]]; then
+    HANDSHAKE_WITHHELD=1
+    # A known dialog is a diagnosis with a remedy; anything else is an
+    # unknown, reported as one. Either way the session is left as it is.
+    BLOCKER="$(find_blocker "$NAME" || true)"
+    if [[ -n "$BLOCKER" ]]; then
+      report "blocked" "$pid" "$(bridge_id_for "$pid")" ""
+      exit "$EXIT_NO_PROCESS"
+    fi
+    report "unconfirmed" "$pid" "$(bridge_id_for "$pid")" ""
+    exit "$EXIT_UNCONFIRMED"
+  fi
+
   # ── identity ──────────────────────────────────────────────────────────
   #
   # Ask the session who it is before sending it anything else. Until this
   # answers, the handshake is the only thing that has been delivered — so a
   # handshake that reached the wrong pane costs a stray line, where a brief
   # would have landed in someone else's conversation.
-  local sid=""
-  while (( waited < TIMEOUT )); do
-    sid="$(session_id_for "$pid")"
-    [[ -n "$sid" ]] && break
-    sleep 1
-    (( waited += 1 ))
-  done
-
   local nonce
   nonce="$(spawn_nonce)"
   deliver_text "$(handshake_text "$nonce")"
 
-  local transcript="" ack="" noted=0
+  local transcript="" ack=""
   while (( waited < TIMEOUT )); do
+    [[ -n "$sid" ]] || sid="$(session_id_for "$pid")"
     [[ -n "$transcript" ]] || transcript="$(transcript_for "$sid")"
     if [[ -n "$transcript" ]]; then
       ack="$(ack_line_in "$transcript" "$nonce")"
       [[ -n "$ack" ]] && break
     fi
-    # Say something at the inspection mark rather than sitting silent to the
-    # ceiling: a first turn can legitimately be slow, and a caller needs to
-    # tell "still starting" from "stuck" without waiting for the timeout.
-    if (( ! noted )) && (( waited >= INSPECT_AFTER )); then
-      local early
-      early="$(find_blocker "$NAME" || true)"
-      if [[ -n "$early" ]]; then
-        echo "spawn-session: '$NAME' is held at a startup dialog (${early%%$'\t'*}); still waiting" >&2
-      else
-        echo "spawn-session: '$NAME' has not answered after ${waited}s, nothing obviously blocking it; still waiting" >&2
-      fi
-      noted=1
-    fi
+    still_waiting_note "$waited" 1
     sleep 1
     (( waited += 1 ))
   done

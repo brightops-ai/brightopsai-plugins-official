@@ -49,6 +49,29 @@ setting that was never the problem.
 Order matters. The first matching row wins, so more specific dialogs belong
 above more general ones.
 
+A pane showing any row of this table is sent nothing. The launcher checks the
+pane before the handshake, not after it, so the diagnosis is made with no
+input having reached the dialog.
+
+## The prompt table
+
+`scripts/ready-prompts.tsv` is the other half of that check: the text the CLI
+draws only while its input prompt is on screen. Two columns, `id` and a
+literal `pattern`. The handshake is sent once the pane shows a row of this
+table and no row of the dialog table.
+
+Every row is the status line under the input box: the permission mode the
+session is in (`accept edits on`, `bypass permissions on`), or the shortcuts
+hint. A startup dialog is drawn before that line exists. The prompt glyph is
+deliberately not a row, because the same glyph marks the focused option in a
+dialog.
+
+The rows were taken from the status-line strings in CLI 2.1.330 and have not
+yet been confirmed against a live pane. If a session is plainly at its prompt
+and the launcher reports that the prompt never appeared, the wording has
+moved: capture the pane (`tmux capture-pane -p -t "=<name>:"`) and add a row.
+A pattern must not match the launch command the pane echoes, or a dialog.
+
 ## Adding a row
 
 1. Reproduce the dialog and capture the terminal.

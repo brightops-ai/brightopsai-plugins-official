@@ -23,8 +23,11 @@
 #   FAKE_POSTURE=<word>   answer with this posture
 #   FAKE_RECORD=<file>    append every line received to this file
 #   FAKE_BRACKETED=0      do not enable bracketed paste
-#   FAKE_PANE_TEXT=<text> print this to the pane, then behave as if silent
-#                         (models a session held at a startup dialog)
+#   FAKE_PANE_TEXT=<text> print this to the pane instead of the input prompt,
+#                         then behave as if silent (models a session held at a
+#                         startup dialog)
+#   FAKE_NO_PROMPT=1      never draw the input prompt (a session that started
+#                         and shows nothing the launcher recognises)
 #
 # Requires SPAWN_SESSIONS_DIR and SPAWN_PROJECTS_DIR, which the spec passes in
 # through the launcher's own pre-launch hook.
@@ -68,8 +71,19 @@ if [[ -n "$record" ]]; then
   : > "$record"
 fi
 
+# What the pane shows. The launcher sends nothing until it sees the input
+# prompt's status line, so a session that is ready draws one, as the real
+# interface does once startup is over. A session held at a dialog draws the
+# dialog and no status line.
+status_line=""
 if [[ -n "${FAKE_PANE_TEXT:-}" ]]; then
   printf '%s\n' "$FAKE_PANE_TEXT"
+elif [[ "${FAKE_NO_PROMPT:-0}" != "1" ]]; then
+  status_line="  accept edits on (shift+tab to cycle)"
+  if [[ "${FAKE_POSTURE:-acceptEdits}" == "bypass" ]]; then
+    status_line="  bypass permissions on (shift+tab to cycle)"
+  fi
+  printf '%s\n' "$status_line"
 fi
 
 report_cwd="${FAKE_REPORT_CWD:-$PWD}"
@@ -78,6 +92,13 @@ posture="${FAKE_POSTURE:-acceptEdits}"
 while IFS= read -r line; do
   if [[ -n "$record" ]]; then
     printf '%s\n' "$line" >> "$record"
+  fi
+
+  # The real interface keeps its status line at the foot of the screen. Here
+  # the terminal echoes what is typed and scrolls, so the line is drawn again
+  # after each line of input or a later look at the pane would not find it.
+  if [[ -n "$status_line" ]]; then
+    printf '%s\n' "$status_line"
   fi
 
   [[ "${FAKE_SILENT:-0}" == "1" ]] && continue

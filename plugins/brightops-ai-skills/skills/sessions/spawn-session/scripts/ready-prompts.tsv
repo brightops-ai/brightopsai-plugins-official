@@ -1,0 +1,35 @@
+# Text the CLI draws only while its input prompt is on screen.
+#
+# The launcher sends nothing to a session until the pane shows one of these
+# and none of the dialogs in startup-blockers.tsv. That makes readiness a
+# positive finding. "No known dialog" alone would also describe a pane that is
+# still starting, or one showing a dialog that table has no row for, and input
+# sent then is typed at whatever comes up next.
+#
+# Every row is the status line under the input box: the permission mode the
+# session is in, or the shortcuts hint. A startup dialog is drawn before that
+# line exists, which is what makes the line evidence that startup is over. The
+# prompt glyph itself is deliberately not a row: the same glyph marks the
+# focused option in a dialog.
+#
+# Columns, tab-separated:
+#   id       short name
+#   pattern  a literal string that appears in the pane while the prompt shows
+#
+# Patterns are matched literally. Blank lines and lines starting with # are
+# ignored. Keep a pattern specific enough that it cannot appear in the launch
+# command the pane echoes ("--permission-mode acceptEdits" must not match) or
+# in a startup dialog.
+#
+# Taken from the status-line strings in CLI 2.1.330, where the line reads
+# "<mode> on (shift+tab to cycle)". Not yet confirmed against a live pane.
+# When a session is at its prompt and the launcher still reports that the
+# prompt never appeared, the wording has moved: add a row here.
+
+accept-edits	accept edits on
+bypass	bypass permissions on
+plan	plan mode on
+auto	auto mode on
+dont-ask	don't ask on
+manual	manual mode on
+shortcuts	? for shortcuts

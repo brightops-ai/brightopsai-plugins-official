@@ -285,6 +285,30 @@ visible() {
   printf '%s\n' "$text"
 }
 
+# has_control <text>
+#
+# Returns 0 if the text holds a control character: anything `visible` would
+# have to render.
+#
+# A directory is refused on this before it is used for anything. A path is
+# carried through command substitutions, which drop every trailing newline, so
+# a directory named `repo` plus a newline comes back as its sibling `repo`:
+# trust is recorded for a directory nobody named, and the session starts
+# there. It is also written into tab-separated output, and read back from the
+# session's reply as one space-free word. A control character breaks each of
+# those differently, and quietly.
+#
+# Decided by comparing the text with its rendering rather than by a bracket
+# range: a range is matched by the locale's collation order, and bytes 1 and
+# 127 are bash's own internal escapes, which older releases mishandle inside
+# a pattern. The rendering replaces a newline before anything is printed, so
+# the substitution here has no trailing newline left to drop.
+has_control() {
+  local shown
+  shown="$(visible "$1")"
+  [[ "$shown" != "${1//\\/\\\\}" ]]
+}
+
 # bypass_warning <session_name> <dir> [dry-run]
 #
 # Echoes the warning for a launch with permissions bypassed. In a dry run the
@@ -371,6 +395,59 @@ blocker_for() {
   done <<< "$table"
 
   return 1
+}
+
+# ── deciding whether a session can be sent input ────────────────────────────
+
+# prompt_shown <table_text> <pane_text>
+#
+# Echoes the id of the first table entry whose pattern appears in the pane, or
+# nothing. The table lists the text the CLI draws only while its input prompt
+# is on screen; one line per entry, "id<TAB>pattern", matched literally for
+# the reason given at blocker_for.
+prompt_shown() {
+  local table="$1" pane="$2"
+  local line id pattern
+
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+
+    IFS=$'\t' read -r id pattern <<< "$line"
+    [[ -n "$pattern" ]] || continue
+
+    if [[ "$pane" == *"$pattern"* ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done <<< "$table"
+
+  return 1
+}
+
+# input_gate <blocker_table> <ready_table> <pane_text>
+#
+# Decides, from what the pane shows, whether anything may be sent to it:
+#
+#   blocked   a known startup dialog is showing
+#   ready     the input prompt is showing, and no known dialog
+#   waiting   neither: empty, still starting, or something not recognised
+#
+# Only `ready` permits input, and it is a positive finding. The absence of a
+# known dialog is not enough: a pane that is still starting, or showing a
+# dialog this table has no row for, looks exactly like "nothing in the way",
+# and whatever is sent then is typed at whatever comes up next. A dialog wins
+# over a prompt because a dialog drawn over an earlier screen can leave the
+# prompt's text visible beside it.
+input_gate() {
+  local blockers="$1" ready="$2" pane="$3"
+
+  if blocker_for "$blockers" "$pane" >/dev/null; then
+    echo "blocked"
+  elif prompt_shown "$ready" "$pane" >/dev/null; then
+    echo "ready"
+  else
+    echo "waiting"
+  fi
 }
 
 # version_verdict <installed> <pinned>

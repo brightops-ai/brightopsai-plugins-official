@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-22
+
+### Fixed
+
+- `spawn-session`: the handshake was pasted and submitted before the pane was
+  looked at, so a session held at a startup dialog received input. The
+  launcher now sends nothing until the pane shows the CLI's input prompt and
+  no known startup dialog. A session held at a dialog is diagnosed (exit 4)
+  with no paste and no keypress sent to it.
+- `spawn-session`: a directory whose name ended in a newline resolved to its
+  sibling, which was then trusted by `--trust-folder` and used as the working
+  directory. A directory whose path holds a newline or any other control
+  character is now refused as usage (exit 2), before the trust configuration
+  is read or written, in a dry run too.
+
+### Changed
+
+- `spawn-session`: when the input prompt never appears within `--timeout` and
+  no known dialog is showing, the run ends with exit 5 and reports that the
+  handshake was not sent. It previously sent the handshake regardless.
+  `--porcelain` adds the pair `handshake<TAB>not_sent` whenever a run ends
+  before the handshake.
+- `spawn-session`: a launch in a directory with a control character in its
+  path used to go ahead, with the name rendered as text in the warning. It is
+  now refused; rename the directory or launch elsewhere.
+- `spawn-session`: the input prompt is recognised by the status-line text
+  listed in `scripts/ready-prompts.tsv`, taken from CLI 2.1.330 and not yet
+  confirmed against a live session. If a session at its prompt is reported
+  as never having shown it, add a row there.
+
 ## [1.5.0] - 2026-11-22
 
 ### Changed
