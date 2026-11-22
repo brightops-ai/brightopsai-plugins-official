@@ -23,6 +23,7 @@
 | **[marketplace-scout](plugins/marketplace-scout)** | 1.3.1 | Search Facebook Marketplace for products, analyze listings with market research, grade them A+ through F, save to CSV, and serve an interactive dashboard. Supports deal-finding and resale arbitrage. |
 | **[adversarial-review](plugins/adversarial-review)** | 1.5.0 | Use Grok (`grok.com`) as an adversarial reviewer to stress-test plans, designs, and working documents via Playwright browser automation. |
 | **[brightops-ai-skills](plugins/brightops-ai-skills)** | 1.5.0 | BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, spawning verified Claude Code sessions with a starter brief, and auditing a repo and dev setup for agent blast radius. |
+| **[t3-code](plugins/t3-code)** | 0.1.0 | Operate the T3 Code desktop app from inside its own agent threads: restart it without losing other threads' work, and give every session 1Password secrets through a service account and op:// references. |
 
 Install commands, namespaced invoke names, prerequisites, data directories, and
 uninstall behaviour are in each plugin's `README.md` (linked under Plugin
@@ -92,6 +93,12 @@ verified session spawn, and a blast-radius safety audit of a repo and dev
 setup. Invoke by namespaced name, for example
 `/brightops-ai-skills:improve-prompt`. Dream scheduling needs Claude Code
 v2.1.196+. See [plugins/brightops-ai-skills/README.md](plugins/brightops-ai-skills/README.md).
+
+### t3-code
+
+Restart the T3 Code desktop app from inside a thread without losing other
+threads' work, and give every session 1Password secrets (macOS only).
+See [plugins/t3-code/README.md](plugins/t3-code/README.md).
 
 ## Contributing
 
