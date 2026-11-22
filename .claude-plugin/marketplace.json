@@ -77,7 +77,7 @@
     {
       "name": "brightops-ai-skills",
       "source": "./plugins/brightops-ai-skills",
-      "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, and spawning verified Claude Code sessions with a starter brief.",
+      "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, spawning verified Claude Code sessions with a starter brief, and auditing a repo and dev setup for agent blast radius.",
       "category": "productivity",
       "tags": [
         "skills",
@@ -89,7 +89,9 @@
         "consolidation",
         "tmux",
         "sessions",
-        "orchestration"
+        "orchestration",
+        "safety",
+        "audit"
       ]
     }
   ]
