@@ -423,6 +423,8 @@ class TargetedFixtureTests(unittest.TestCase):
         machines = self.mod.netrc_machines
         self.assertEqual(machines('machine a.example.com login x password "p machine fakequoted q"\ndefault login y password z\n'),
                          ["a.example.com"])
+        self.assertEqual(machines('machine a.example.com password z\nmacdef sample\necho "unbalanced shell text\n\n'),
+                         ["a.example.com"])
         self.assertIsNone(machines('machine a.example.com password "unterminated\n'))
 
     def test_dotenv_continuation_lines_are_not_keys(self) -> None:
@@ -435,22 +437,90 @@ class TargetedFixtureTests(unittest.TestCase):
         base = Path(tmp.name)
         _write(base, "a.env", f'A={MARK}one\nKEY="x\ncedarline5=\n{MARK}two"\nB={MARK}three\n')
         _write(base, "c.json", json.dumps({"mcpServers": {"x": {"env": {"API_KEY": MARK + "four"}, "args": [MARK + "five"]}}}))
-        _write(base, "d.toml", f'[mcp_servers.docs]\ncommand = "npx"\n\n[mcp_servers.docs.env]\nTOKEN = "{MARK}six"\n')
+        _write(base, "d.toml", f'[mcp_servers.docs]\ncommand = "npx"\n\n[mcp_servers.docs.env]\nTOKEN = "{MARK}six"\n'
+                               'prompt = """\nFAKE_KEY_CANARY=inline\n[mcp_servers.tomlcanary]\n"""\n')
+        _write(base, "key.pem", "-----BEGIN FAKE-----\nFAKEPEMBODY=\n-----END FAKE-----\n")
+        _write(base, ".envrc", "cat <<EOT\nENVRC_CANARY=privatebody\nEOT\n")
+        _write(base, "outside.env", "FAKE_OUTSIDE_KEY=1\n")
+        (base / "repo").mkdir()
+        (base / "repo" / "linked.env").symlink_to(base / "outside.env")
         script = Path(self.mod.__file__)
         for name, wanted in (("a.env", ["1: A", "2: KEY (multi-line value)", "5: B"]),
                              ("c.json", ["mcpServers.x.env.API_KEY (str)", "mcpServers.x.args[0] (str)"]),
-                             ("d.toml", ["[mcp_servers.docs] command", "[mcp_servers.docs.env] TOKEN"])):
+                             ("d.toml", ["[mcp_servers.docs] command", "[mcp_servers.docs.env] TOKEN, prompt"])):
             done = subprocess.run([sys.executable, str(script), "--keys", str(base / name)],
                                   capture_output=True, text=True, check=True, env={"PATH": os.environ.get("PATH", "")})
             self.assertNotIn(MARK, done.stdout + done.stderr)
             self.assertNotIn("cedarline5", done.stdout)
             self.assertEqual(done.stdout.splitlines(), wanted)
+        for name in ("key.pem", ".envrc", "repo/linked.env"):
+            done = subprocess.run([sys.executable, str(script), "--repo", str(base / "repo"), "--keys", str(base / name)],
+                                  capture_output=True, text=True, check=True, env={"PATH": os.environ.get("PATH", "")})
+            for leaked in ("FAKEPEMBODY", "ENVRC_CANARY", "FAKE_OUTSIDE_KEY"):
+                self.assertNotIn(leaked, done.stdout, name)
+            self.assertEqual(len(done.stdout.splitlines()), 1, name)
+
+    def test_toml_multiline_strings_are_values_not_tables(self) -> None:
+        tables = self.mod.parse_toml_tables('prompt = """\n[mcp_servers.tomlcanary]\ncommand = "fakesecretprogram"\n"""\n'
+                                            '[mcp_servers.real]\ncommand = "npx"\n')
+        self.assertEqual(sorted(tables), ["", "mcp_servers.real"])
+        got = self.collect({".codex/config.toml": 'prompt = """\n[mcp_servers.tomlcanary]\ncommand = "fakesecretprogram"\n"""\n'},
+                           only={8})
+        self.assertNotIn("tomlcanary", json.dumps(got.items))
+
+    def test_a_linked_skills_directory_is_not_enumerated(self) -> None:
+        def prepare(repo, home):
+            _write(home, "elsewhere/only-outside-canary/SKILL.md", "---\nname: x\ndescription: x\n---\n")
+            (repo / ".claude").mkdir()
+            (repo / ".claude" / "skills").symlink_to(home / "elsewhere")
+
+        got = self.collect({"a.txt": "x\n"}, only={8}, prepare=prepare)
+        self.assertNotIn("only-outside-canary", json.dumps(got.items))
+        self.assertTrue(any("NOT INSPECTED" in row for row in self.rows(got, "skills")))
+
+    def test_state_and_variable_files_are_never_opened_by_any_scanner(self) -> None:
+        got = self.collect({".claude/rules/current.tfvars": 'x = "do not read' + chr(0x202E) + '"\n'})
+        self.assertNotIn("current.tfvars", json.dumps([i for i in got.items if i["kind"] in ("hidden-unicode", "rule-file")]))
+
+    def test_flag_emoji_tags_are_not_hidden_text(self) -> None:
+        scotland = chr(0x1F3F4) + "".join(chr(0xE0000 + ord(c)) for c in "gbsct") + chr(0xE007F)
+        self.assertEqual(self.mod.hidden_columns("flag " + scotland + " ok"), [])
+        self.assertEqual([code for _, code in self.mod.hidden_columns("x" + chr(0xE0041) + "y")], [0xE0041])
+
+    def test_git_child_environment_is_fixed(self) -> None:
+        seen = []
+        real = self.mod.subprocess.run
+
+        def recording(cmd, *args, **kwargs):
+            seen.append((cmd[0], dict(kwargs.get("env") or {})))
+            return real(cmd, *args, **kwargs)
+
+        self.mod.subprocess.run = recording
+        try:
+            self.collect({"a.txt": "x\n"}, {"GIT_DIR": "/nonexistent", "GIT_TRACE": "1", "SOME_TOKEN": MARK}, only={5})
+        finally:
+            self.mod.subprocess.run = real
+        self.assertTrue(seen)
+        for program, env in seen:
+            self.assertEqual(program, "git")
+            self.assertEqual(env.get("GIT_NO_LAZY_FETCH"), "1")
+            self.assertEqual(env.get("GIT_TRACE"), "0")
+            self.assertEqual(env.get("GIT_TRACE2_EVENT"), "0")
+            self.assertNotIn("GIT_DIR", env)
+            self.assertNotIn("SOME_TOKEN", env)
 
     def test_rule_head_stops_at_the_first_word_that_is_not_a_command_word(self) -> None:
         head = self.mod.rule_head
         self.assertEqual(head("Bash(git push --force *)"), "Bash(git push --force *)")
         self.assertEqual(head("Bash(rm -rf:*)"), "Bash(rm -rf *)")
         self.assertEqual(head("Bash(curl fake-deny-value)"), "Bash(curl ...)")
+        # A word after a flag may be the flag's value; a bare word after an unknown program may be anything.
+        self.assertEqual(head("Bash(wget --password orchidcanary https://example.invalid)"), "Bash(wget --password ...)")
+        self.assertEqual(head("Bash(curl --pass winterleaf https://example.invalid)"), "Bash(curl --pass ...)")
+        self.assertEqual(head("Bash(mysqladmin password winterleaf)"), "Bash(mysqladmin ...)")
+        self.assertEqual(head("Bash(gh secret set DEPLOY_KEY --body winterleaf)"), "Bash(gh secret set ...)")
+        self.assertEqual(head("Bash(terraform destroy *)"), "Bash(terraform destroy *)")
+        self.assertEqual(head("Bash(git push --force winterleaf)"), "Bash(git push --force ...)")
         # Assembled at runtime: written out, it reads as a real header to the repo's secret scanner.
         header = "Authorization" + ": " + "Bearer " + "orchidheader4"
         self.assertEqual(head(f'Bash(curl -H "{header}" https://x)'), "Bash(curl -H ...)")
@@ -492,6 +562,11 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertTrue(any("a.yml" in row and "WRITE PERMISSIONS: contents@2;" in row for row in rows))
         self.assertTrue(any("b.yml" in row and "WRITE PERMISSIONS: pull-requests@5;" in row for row in rows))
         self.assertFalse(any("fakeenvkey" in row or "mode@" in row for row in rows))
+        got = self.collect({".github/workflows/c.yml":
+                            "on: push\npermissions:\n  contents: read\njobs:\n  c:\n    runs-on: x\n    steps:\n"
+                            "      - run: |\n          cat <<EOT\n          permissions:\n            shellcanary: write\n"
+                            "          EOT\n"}, only={9})
+        self.assertTrue(any("permissions block present, no write found" in row for row in self.rows(got, "workflow")))
 
     def test_terraform_protection_must_be_in_the_right_place(self) -> None:
         got = self.collect({"main.tf":
@@ -504,6 +579,10 @@ class TargetedFixtureTests(unittest.TestCase):
         rows = self.rows(got, "unprotected-data-resource")
         self.assertTrue(any("aws_db_instance.tagged" in row for row in rows))
         self.assertFalse(any("guarded" in row or "kept" in row for row in rows))
+        got = self.collect({"main.tf": 'resource "aws_s3_bucket" "said" {\n  lifecycle {\n    precondition {\n'
+                                       '      condition     = true\n      error_message = "prevent_destroy = true"\n'
+                                       "    }\n  }\n}\n"}, only={4})
+        self.assertTrue(any("aws_s3_bucket.said" in row for row in self.rows(got, "unprotected-data-resource")))
         self.assertTrue(self.rows(got, "local-terraform-state"))
 
     def test_relative_kubeconfig_is_flagged_not_skipped(self) -> None:
@@ -516,14 +595,19 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertEqual(slug("git@github.com:acme/demo.git"), ("acme", "demo"))
         self.assertEqual(slug("ssh://git@github.com/acme/demo"), ("acme", "demo"))
         self.assertEqual(slug("https://user:pw@github.com/acme/demo"), ("acme", "demo"))
+        self.assertEqual(slug("ssh://git@github.com:443/acme/demo.git"), ("acme", "demo"))
         for other in ("https://notgithub.com/acme/demo.git", "https://github.com.evil.example/acme/demo",
-                      "https://example.com/github.com/acme/demo", "git@notgithub.com:acme/demo.git"):
+                      "https://example.com/github.com/acme/demo", "git@notgithub.com:acme/demo.git",
+                      "https://github.com:443/demo", "https://github.com/acme/demo/extra"):
             self.assertIsNone(slug(other), other)
 
     def test_a_newline_in_a_path_cannot_forge_a_second_row(self) -> None:
-        got = self.collect({"a.txt": "x\n"}, {"BASH_ENV": "{home}/rc\n- forged | lead | row"}, only={10})
+        got = self.collect({"a.txt": "x\n", "double  space.txt": ""}, {"BASH_ENV": "{home}/rc\n- forged | lead | row"},
+                           only={7, 10})
         self.assertTrue(all("\n" not in line for lines in got.coverage.values() for line in lines))
         self.assertTrue(all("\n" not in item["loc"] + item["note"] for item in got.items))
+        self.assertTrue(any(item["loc"] == "double  space.txt" for item in got.items))  # spaces are evidence; keep them
+        self.assertEqual(self.mod.one_line("a\nb\x1b[0m c"), "a\\x0ab\\x1b[0m c")
 
     def test_host_list_is_as_remote_as_its_most_remote_member(self) -> None:
         self.assertEqual(self.mod.classify_host("localhost,db.example.com"), "non-local")
@@ -576,6 +660,11 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertFalse(any("examples/standalone" in row for row in self.rows(got, "no-lockfile")))
         got = self.collect(dict(nested, **{"package.json": '{"name": "root", "workspaces": ["packages/*"]}'}), only={8})
         self.assertTrue(any("examples/standalone" in row for row in self.rows(got, "no-lockfile")))
+        deep = {"package-lock.json": "{}", "package.json": '{"name": "root", "workspaces": ["packages/*"]}',
+                "packages/ui/package.json": '{"name": "ui"}', "packages/ui/examples/standalone/package.json": '{"name": "s"}'}
+        rows = self.rows(self.collect(deep, only={8}), "no-lockfile")
+        self.assertTrue(any("packages/ui/examples/standalone" in row for row in rows))
+        self.assertFalse(any(row.startswith("packages/ui/package.json") for row in rows))
 
     def test_a_link_in_the_repo_is_not_followed(self) -> None:
         def prepare(repo, home):
@@ -610,6 +699,7 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertEqual(summary("node server.js fakeargv.py"), "runs node server.js (+1 arguments not shown)")
         self.assertEqual(summary("docker run example/image:1 user:fakeimage"), "runs docker (+3 arguments not shown)")
         self.assertEqual(summary("npx -y @scope/server@1.2.3 --key fakeargv"), "runs npx @scope/server@1.2.3 (+3 arguments not shown)")
+        self.assertEqual(summary("npx --userconfig npmrc-canary example-package"), "runs npx (+3 arguments not shown)")
         self.assertEqual(summary('bash "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh"'),
                          "runs bash $CLAUDE_PROJECT_DIR/.claude/hooks/x.sh")
         self.assertEqual(summary("TOKEN=plumcanary9 ./run.sh --go"), "runs run.sh (+1 arguments not shown)")
@@ -629,20 +719,21 @@ class StripHiddenUnicodeTests(unittest.TestCase):
     def run_script(self, *args: str):
         script = Path(_load_collector().__file__).with_name("strip_hidden_unicode.py")
         return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True,
-                              env={"PATH": os.environ.get("PATH", "")})
+                              env={"PATH": os.environ.get("PATH", "")}, cwd=self.tmp.name)
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "rules.md"
         family = chr(0x1F468) + chr(0x200D) + chr(0x1F469)
-        self.content = (chr(0xFEFF) + "first" + chr(0x200B) + " line\r\n" + family + " kept\r\n"
+        scotland = chr(0x1F3F4) + "".join(chr(0xE0000 + ord(c)) for c in "gbsct") + chr(0xE007F)
+        self.content = (chr(0xFEFF) + "first" + chr(0x200B) + " line\r\n" + family + " " + scotland + " kept\r\n"
                         "bidi" + chr(0x202E) + "end\r\n").encode("utf-8")
         self.path.write_bytes(self.content)
         self.path.chmod(0o755)
 
     def test_listing_changes_nothing(self) -> None:
-        done = self.run_script(str(self.path))
+        done = self.run_script("rules.md")
         self.assertEqual(done.returncode, 0)
         self.assertIn(":1:7 U+200B ZERO WIDTH SPACE", done.stdout)
         self.assertIn(":3:5 U+202E RIGHT-TO-LEFT OVERRIDE", done.stdout)
@@ -650,20 +741,29 @@ class StripHiddenUnicodeTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), self.content)
 
     def test_apply_removes_only_the_listed_characters(self) -> None:
-        done = self.run_script(str(self.path), "--apply")
+        inode = self.path.stat().st_ino
+        done = self.run_script("rules.md", "--apply")
         self.assertEqual(done.returncode, 0)
         expected = self.content.replace(chr(0x200B).encode(), b"").replace(chr(0x202E).encode(), b"")
-        self.assertEqual(self.path.read_bytes(), expected)  # BOM, emoji joiner and CRLF all intact
+        self.assertEqual(self.path.read_bytes(), expected)  # BOM, emoji joiner, flag tags and CRLF all intact
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.path.stat().st_ino, inode)  # rewritten in place: metadata travels with the inode
         self.assertEqual(sorted(p.name for p in Path(self.tmp.name).iterdir()), ["rules.md"])
 
     def test_links_and_non_utf8_are_refused(self) -> None:
-        link = Path(self.tmp.name) / "link.md"
-        link.symlink_to(self.path)
-        self.assertEqual(self.run_script(str(link), "--apply").returncode, 2)
-        binary = Path(self.tmp.name) / "latin.txt"
-        binary.write_bytes(b"caf\xe9\n")
-        self.assertEqual(self.run_script(str(binary), "--apply").returncode, 2)
+        base = Path(self.tmp.name)
+        (base / "link.md").symlink_to(self.path)
+        self.assertEqual(self.run_script("link.md", "--apply").returncode, 2)
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        target = Path(outside.name) / "rule.md"
+        target.write_bytes(self.content)
+        (base / "linked-dir").symlink_to(outside.name)
+        self.assertEqual(self.run_script("linked-dir/rule.md", "--apply").returncode, 2)
+        self.assertEqual(self.run_script(str(target), "--apply").returncode, 2)  # outside the working directory
+        self.assertEqual(target.read_bytes(), self.content)
+        (base / "latin.txt").write_bytes(b"caf\xe9\n")
+        self.assertEqual(self.run_script("latin.txt", "--apply").returncode, 2)
         self.assertEqual(self.path.read_bytes(), self.content)
 
 

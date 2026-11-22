@@ -40,6 +40,10 @@ python3 <skill-dir>/scripts/collect.py --keys .env.test     # 3: DATABASE_URL
 python3 <skill-dir>/scripts/collect.py --keys .mcp.json     # mcpServers.x.env.API_KEY (str)
 ```
 
+It accepts dotenv, JSON and TOML files and refuses everything else (a shell
+script such as `.envrc`, a PEM file, a link) rather than guess. For a refused
+file, report that it exists and was not examined.
+
 Do not pipe such a file through `cat`, `head`, `grep`, `cut` or a JSON
 pretty-printer, and do not open it with a file-read tool. That includes
 tracked project config such as `.mcp.json` and `.claude/settings.json`: an
@@ -402,15 +406,17 @@ one would run them.
 
 **By hand:**
 
-- Run `bash -c 'type rm'` (and `zsh -c 'type rm'` where zsh is the login
-  shell). This is the one command in the audit that starts a shell, and a
-  shell runs its non-interactive startup files (`BASH_ENV`, `.zshenv`): the
-  same files that already run for every command an agent executes on this
-  machine, so nothing new is exercised, but it is not a read. Skip it if the
-  user asked for a strictly read-only audit and rely on the collector's
-  classification instead. If it reports the plain binary while a
-  `shell-safety-net` lead exists, the safety net does not exist for an agent:
-  an alias in `.zshrc` or `.bashrc` is loaded by interactive shells only.
+- Run `bash -c 'type -t rm'` (and `zsh -c 'whence -w rm'` where zsh is the
+  login shell). Use these forms, which print one word (`file`, `alias`,
+  `function`); plain `type rm` prints a function's body. This is the one
+  command in the audit that starts a shell, and a shell runs its
+  non-interactive startup files (`BASH_ENV`, `.zshenv`): the same files that
+  already run for every command an agent executes on this machine, so nothing
+  new is exercised, but it is not a read. Skip it if the user asked for a
+  strictly read-only audit and rely on the collector's classification
+  instead. If it reports `file` while a `shell-safety-net` lead exists, the
+  safety net does not exist for an agent: an alias in `.zshrc` or `.bashrc`
+  is loaded by interactive shells only.
 - A broad allow rule (`Bash`, `Bash(rm *)`, `Bash(git push *)`) is a standing
   auto-approval; read it as one.
 - Is there a sandbox, and does it confine writes to the project directory?

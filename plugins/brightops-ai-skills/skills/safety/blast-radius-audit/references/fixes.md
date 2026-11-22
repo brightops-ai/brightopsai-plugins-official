@@ -334,8 +334,9 @@ Remove a hook, server or skill from repo config only when the user approved
 that specific finding. Move a literal secret out of a config file into an
 environment reference (`"${VAR}"`) and list rotation as manual.
 
-Strip hidden Unicode from a tracked file with the bundled script. List first,
-show the list to the user, then apply to an approved file:
+Strip hidden Unicode from a tracked file with the bundled script, run from the
+repository root. List first, show the list to the user, then apply to an
+approved file:
 
 ```bash
 python3 <skill-dir>/scripts/strip_hidden_unicode.py path/to/RULES.md            # lists positions, changes nothing
@@ -343,9 +344,11 @@ python3 <skill-dir>/scripts/strip_hidden_unicode.py path/to/RULES.md --apply    
 ```
 
 It removes the characters the collector reports and nothing else: a zero-width
-joiner inside an emoji sequence and a leading byte-order mark are kept, line
-endings and permission bits are preserved, the write is atomic, and links are
-refused.
+joiner inside an emoji sequence, the tag characters of a flag emoji and a
+leading byte-order mark are kept; line endings are untouched; and the file is
+rewritten in place, so permissions and extended attributes survive. It refuses
+a path outside the working directory or reached through a link, so the path
+that was approved is the file that changes.
 
 Check `git diff` afterwards. User-level config and read-only tokens are
 manual.
