@@ -4,6 +4,7 @@
 # Never point CLAUDE_PLUGIN_DATA or CLAUDE_PLUGIN_ROOT at a real ~/.claude.
 
 setup() {
+  load '../../../scripts/test-support/sandbox-guard'
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$PLUGIN_ROOT/skills/marketplace-scout/scripts/ensure-dashboard.sh"
 

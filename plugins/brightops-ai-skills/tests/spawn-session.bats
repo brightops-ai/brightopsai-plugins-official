@@ -9,6 +9,7 @@
 # server. No spec launches the real `claude` binary.
 
 setup() {
+  load '../../../scripts/test-support/sandbox-guard'
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SKILL_DIR="$PLUGIN_ROOT/skills/sessions/spawn-session"
   LIB="$SKILL_DIR/scripts/lib/session-spawn.sh"

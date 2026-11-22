@@ -9,6 +9,7 @@
 # header. Do not put a gitleaks shim on PATH.
 
 setup() {
+  load '../../../scripts/test-support/sandbox-guard'
   PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCAN="$PLUGIN_ROOT/skills/adversarial-review/scripts/scan-secrets.sh"
 }
