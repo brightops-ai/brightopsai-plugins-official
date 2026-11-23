@@ -102,6 +102,11 @@ rather than numbered.
 
 ### Changed
 
+- `main` is covered by a repository ruleset with an empty bypass list. A
+  change lands only through a pull request whose `Packaging gates` check has
+  passed; direct pushes, force-pushes and deletion of `main` are refused for
+  administrators too. Before this, an administrator's token could push to
+  `main` or merge with the check failing.
 - `.githooks/pre-commit` fails closed: without `gitleaks` on `PATH` the commit
   is blocked instead of going through unscanned.
   `ALLOW_UNSCANNED_PUBLIC_COMMIT=1` is the explicit override for a human who
