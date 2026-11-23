@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Read-only evidence collector for the blast-radius-audit skill.
 
-Prints leads for the eleven checks. What it guarantees, and how:
+Prints leads for the eleven checks, in two parts. The repo part is what
+travels with the repository: the working tree and the repository's settings
+on GitHub. The machine part is what belongs to this machine and user and
+applies to every repository on it: the environment, the home directory,
+user-level agent config, this clone's git configuration and the GitHub token.
+`--scope repo` or `--scope machine` runs one part; the default runs both.
+
+What it guarantees, and how:
 
 * Output is built from names and fixed text, never from file content. A lead
   is a location (`file:line`, `env:NAME`, `~/path`), a lead type, and a note
@@ -32,6 +39,12 @@ Prints leads for the eleven checks. What it guarantees, and how:
   or an `api_host` override; omit `--github` if that matters.
 * A check that could not be examined says so. Missing evidence is reported
   as UNKNOWN or NOT INSPECTED, never as a clean result.
+* A part that is not run is not read. With `--scope repo` the collector opens
+  no file and lists no directory outside the repository and prints no
+  environment variable. With `--scope machine` it does not scan the working
+  tree: it opens a file there only when the environment names one
+  (`KUBECONFIG`, `AWS_CONFIG_FILE`, `BASH_ENV`). `git` runs either way and
+  reads its own configuration.
 
 Limits worth knowing: leads are pattern matches (tests, docs and fixtures
 included), configuration is read as text rather than parsed as YAML or HCL,
@@ -39,7 +52,7 @@ and file and variable NAMES are shown as they are.
 
 Standard library only; runs on Python 3.9+.
 
-    collect.py --repo <path> [--github] [--only 1,3] [--json]
+    collect.py --repo <path> [--scope repo|machine] [--github] [--only 1,3] [--json]
     collect.py --keys <file>        key names of one config file, no values
 """
 
@@ -47,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import contextlib
 import fnmatch
 import ipaddress
 import json
@@ -89,6 +103,52 @@ CHECKS = {
     10: "Agent permission modes and safety nets that do not load",
     11: "Tools that send money or messages",
 }
+
+# Every lead belongs to one of two parts. "repo" travels with the repository:
+# anyone who clones it, and CI, inherits it, and a pull request can fix most of
+# it. "machine" belongs to this machine and user: every repository here
+# inherits it, and every fix is a manual step.
+SCOPES = ("repo", "machine")
+SCOPE_HEADINGS = {
+    "repo": "REPO: the working tree and this repository's settings on GitHub",
+    "machine": "MACHINE: this shell's environment, the home directory, user-level agent config, "
+               "this clone's git configuration and the GitHub token",
+}
+# Section titles per part. Checks 3, 4 and 9 are about files in the tree and have no machine part.
+PART_TITLES = {
+    "repo": {
+        1: "Test/dev/preview config pointing at a non-local database",
+        2: "Secrets and env files in the working tree",
+        3: "Recursive deletes with a computed target",
+        4: "Infrastructure one command can destroy",
+        5: "Rules in the repo that exist only as prose",
+        6: "GitHub: protection of the default branch",
+        7: "Placeholder and zero-byte files",
+        8: "Repo-level MCP servers, hooks, skills, install scripts and hidden Unicode",
+        9: "CI that runs an agent on untrusted input",
+        10: "Project-level agent permission settings",
+        11: "Code and repo-level servers that send money or messages",
+    },
+    "machine": {
+        1: "A database URL exported in this shell",
+        2: "Credentials this shell can read",
+        5: "User-level rules and what enforces them on this machine",
+        6: "GitHub: what this machine's token can do",
+        7: "Whether the repository sits in a cloud-synced folder",
+        8: "User-level MCP servers, hooks, plugins and skills",
+        10: "Agent permission modes and safety nets that do not load",
+        11: "User-level servers that can send money or messages",
+    },
+}
+# Fallback only: every step names its part. A location outside the tree is the
+# machine's: the environment, a home or absolute path, gh's login, this clone's
+# git configuration.
+MACHINE_LOC = re.compile(r"^(?:env(?::|$)|~(?:/|$)|/|[A-Za-z]:[\\/]|gh auth$|\.git(?:/|$))")
+
+
+def scope_of(loc: str) -> str:
+    return "machine" if MACHINE_LOC.match(loc) else "repo"
+
 
 SKIP_DIRS = {
     ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv",
@@ -1124,11 +1184,16 @@ def unpinned_reasons(command: str, args: list[str]) -> list[str]:
 
 class Collector:
     def __init__(self, repo: Path, home: Path, environ: dict, github: bool = False,
-                 only: set | None = None, system_paths: bool = True):
+                 only: set | None = None, system_paths: bool = True, scope: set | None = None):
         self.home = Path(home).resolve()
         self.environ = dict(environ)
         self.github = github
         self.only = only or set()
+        self.scope = set(scope or SCOPES)
+        if not self.scope <= set(SCOPES):
+            raise ValueError(f"scope takes {' and '.join(SCOPES)}")
+        self.want_repo, self.want_machine = "repo" in self.scope, "machine" in self.scope
+        self._part: str | None = None  # the part the running step is collecting for
         self.system_paths = system_paths
         self.items: list[dict] = []
         self.notes: list[str] = []
@@ -1145,6 +1210,7 @@ class Collector:
         # Nothing is exempt, this skill's own directory included: an exempt
         # directory is where a planted file would hide.
         self.coverage: dict[int, list[str]] = {}
+        self.coverage_by_part: dict[tuple, list[str]] = {}
         self.steps_run: list[str] = []
         self.github_requests = 0
         self._status_cache: dict[str, str] = {}
@@ -1188,31 +1254,53 @@ class Collector:
         code, out, _ = self._run(self._git_cmd(*args))
         return out.rstrip("\n") if code == 0 else None
 
-    def add(self, check: int, kind: str, loc: str, note: str = "") -> None:
+    @contextlib.contextmanager
+    def within(self, part: str):
+        """Leads and coverage recorded inside belong to this part."""
+        before, self._part = self._part, part
+        try:
+            yield
+        finally:
+            self._part = before
+
+    def sources(self, repo_rels=(), home_rels=()) -> list[tuple[Path, str]]:
+        """Paths to look at, each with its part. A part that is not being run contributes none."""
+        found = [(self.repo / rel, "repo") for rel in repo_rels] if self.want_repo else []
+        return found + ([(self.home / rel, "machine") for rel in home_rels] if self.want_machine else [])
+
+    def add(self, check: int, kind: str, loc: str, note: str = "", scope: str | None = None) -> None:
         if self.only and check not in self.only:
             return
         # One lead, one line: a path or name with a newline in it must not forge a second row.
         home = str(self.home)
         loc = one_line(str(loc).replace(home, "~"))
         note = one_line(redact(str(note).replace(home, "~")))
+        scope = scope or self._part or scope_of(loc)
+        if scope not in self.scope:
+            return
         anchored = re.match(r"^(.+?):\d+(?::\d+)?$", loc)
         if anchored:
-            per_file = (check, kind, anchored.group(1))
+            per_file = (scope, check, kind, anchored.group(1))
             self._file_counts[per_file] = self._file_counts.get(per_file, 0) + 1
             if self._file_counts[per_file] > MAX_PER_FILE:
                 return
-        key = (check, kind)
+        key = (scope, check, kind)
         self._counts[key] = self._counts.get(key, 0) + 1
         if self._counts[key] <= MAX_PER_KIND:
             # redact() is a second layer only: notes are built from names and
             # fixed text, never from file content.
-            self.items.append({"check": check, "kind": kind, "loc": loc, "note": note})
+            self.items.append({"scope": scope, "check": check, "kind": kind, "loc": loc, "note": note})
 
-    def cover(self, check: int, text: str) -> None:
+    def cover(self, check: int, text: str, scope: str | None = None) -> None:
         """Record what was examined, so a clean check reads differently from one not run."""
-        if self.only and check not in self.only:
+        scope = scope or self._part
+        if scope is None:
+            raise ValueError("cover() needs a part: call it inside within(), or pass scope")
+        if scope not in self.scope or (self.only and check not in self.only):
             return
-        self.coverage.setdefault(check, []).append(one_line(redact(str(text).replace(str(self.home), "~"))))
+        line = one_line(redact(str(text).replace(str(self.home), "~")))
+        self.coverage.setdefault(check, []).append(line)
+        self.coverage_by_part.setdefault((scope, check), []).append(line)
 
     def show(self, path: Path | str) -> str:
         """Display form of a path: repo-relative, else ~-relative, else as given."""
@@ -1673,6 +1761,9 @@ class Collector:
                 code, _, _ = self._run(self._git_cmd("check-ignore", "-q", "--", probe))
                 verdicts.append(f"{probe}: " + {0: "ignored", 1: "NOT IGNORED"}.get(code, "unknown"))
             self.add(2, "gitignore-coverage", ".gitignore", "; ".join(verdicts))
+
+    def remote_urls(self) -> None:
+        """A credential in a remote URL is stored in this clone's git configuration, not in the tree."""
         remotes = self._git("remote", "-v") or ""
         for line in remotes.splitlines():
             if re.search(r"://[^/\s@]+@", line) and not re.search(r"://git@", line):
@@ -1815,37 +1906,42 @@ class Collector:
 
     # -- check 5 -----------------------------------------------------------
 
-    def rule_files(self) -> list[Path]:
+    def rule_files(self) -> list[tuple[Path, str]]:
+        """Agent instruction files, each with its part: those in the tree, then the user-level ones."""
         found = []
-        for name in self.files():
-            base = name.rsplit("/", 1)[-1]
-            if base in RULE_FILE_NAMES or any(marker in f"/{name}" for marker in RULE_DIR_MARKERS):
-                found.append(self.repo / name)
-        local = self.repo / "CLAUDE.local.md"
-        if local.is_file() and local not in found:
-            found.append(local)
-        for rel in (".claude/CLAUDE.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".gemini/GEMINI.md"):
-            if (self.home / rel).is_file():
-                found.append(self.home / rel)
-        for rel in (".claude/rules", ".cursor/rules"):
-            directory = self.home / rel
-            if directory.is_dir():
-                found.extend(sorted(p for p in directory.rglob("*") if p.is_file())[:50])
+        if self.want_repo:
+            for name in self.files():
+                base = name.rsplit("/", 1)[-1]
+                if base in RULE_FILE_NAMES or any(marker in f"/{name}" for marker in RULE_DIR_MARKERS):
+                    found.append((self.repo / name, "repo"))
+            local = self.repo / "CLAUDE.local.md"
+            if local.is_file() and (local, "repo") not in found:
+                found.append((local, "repo"))
+        if self.want_machine:
+            for rel in (".claude/CLAUDE.md", ".codex/AGENTS.md", ".agents/AGENTS.md", ".gemini/GEMINI.md"):
+                if (self.home / rel).is_file():
+                    found.append((self.home / rel, "machine"))
+            for rel in (".claude/rules", ".cursor/rules"):
+                directory = self.home / rel
+                if directory.is_dir():
+                    found.extend((p, "machine") for p in sorted(p for p in directory.rglob("*") if p.is_file())[:50])
         return found
 
     def prose_rules(self) -> None:
-        self.cover(5, f"{len(self.rule_files())} agent instruction files (repo and user level)")
-        for path in self.rule_files():
+        files = self.rule_files()
+        for part, where in (("repo", "in the repository"), ("machine", "at user level")):
+            self.cover(5, f"{sum(1 for _, owner in files if owner == part)} agent instruction files {where}", part)
+        for path, part in files:
             text = self.text(path)
             if text is None:
                 continue
             lines = [n for n, line in enumerate(text.splitlines(), 1) if RULE_LINE.search(line)]
             shown = ", ".join(str(n) for n in lines[:30]) + (" ..." if len(lines) > 30 else "")
             self.add(5, "rule-file", self.show(path),
-                     f"{len(lines)} imperative lines" + (f" at lines {shown}" if lines else ""))
+                     f"{len(lines)} imperative lines" + (f" at lines {shown}" if lines else ""), scope=part)
 
     def enforcement(self) -> None:
-        for path in self._claude_settings_files():
+        for path, part in self._claude_settings_files():
             data = self.load_json(path)
             if not isinstance(data, dict):
                 continue
@@ -1860,47 +1956,55 @@ class Collector:
             sandbox = data.get("sandbox")
             if isinstance(sandbox, dict):
                 note += f"; sandbox.enabled: {sandbox.get('enabled') is True}"
-            self.add(5, "enforcement", self.show(path), note)
-        hooks_path = self._git("config", "--get", "core.hooksPath")
+            self.add(5, "enforcement", self.show(path), note, scope=part)
         present = [d for d in (".githooks", ".husky") if (self.repo / d).is_dir()]
         present += [f for f in (".pre-commit-config.yaml", "lefthook.yml", "lefthook.yaml") if (self.repo / f).is_file()]
-        active = []
-        git_hooks = self.repo / ".git" / "hooks"
-        if git_hooks.is_dir():
-            active = sorted(p.name for p in git_hooks.iterdir() if p.is_file() and not p.name.endswith(".sample"))
-        if self.is_git:
+        if self.want_machine and self.is_git:
+            # Which hooks run is set in this clone's git configuration, so it is a fact about the machine.
+            hooks_path = self._git("config", "--get", "core.hooksPath")
+            active = []
+            git_hooks = self.repo / ".git" / "hooks"
+            if git_hooks.is_dir():
+                active = sorted(p.name for p in git_hooks.iterdir() if p.is_file() and not p.name.endswith(".sample"))
             note = f"core.hooksPath: {safe_name(hooks_path) if hooks_path else 'unset'}; "
             note += f"hook config in repo: {', '.join(present) or 'none'}"
             note += f"; active .git/hooks: {safe_names(active) or 'none'}"
             if present and not hooks_path and not active:
                 note += " -- HOOK CONFIG PRESENT BUT NOTHING ACTIVE IN THIS CLONE"
-            self.add(5, "enforcement", ".git", note)
-        owners = [p for p in ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS") if (self.repo / p).is_file()]
-        self.add(5, "enforcement", "CODEOWNERS", ", ".join(owners) if owners else "absent")
-        wanted = re.compile(r"(?i)test|deploy|migrat|reset|clean|destroy|seed|release|publish|drop")
-        makefile = self.text("Makefile") or ""
-        targets = sorted({t for t in re.findall(r"^([A-Za-z0-9_.-]+):(?!=)", makefile, re.M) if wanted.search(t)})
-        if targets:
-            self.add(5, "named-commands", "Makefile", ", ".join(targets[:25]))
-        package = self.load_json(self.repo / "package.json")
-        if isinstance(package, dict) and isinstance(package.get("scripts"), dict):
-            names = sorted(k for k in package["scripts"] if wanted.search(str(k)))
-            if names:
-                self.add(5, "named-commands", "package.json", safe_names(names, 25))
+            self.add(5, "enforcement", ".git", note, scope="machine")
+        if not self.want_repo:
+            return
+        with self.within("repo"):
+            if present:
+                self.add(5, "enforcement", present[0], f"hook config in the repo: {', '.join(present)}; a clone "
+                         "runs it only once activated there, which the machine part reports")
+            owners = [p for p in ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS") if (self.repo / p).is_file()]
+            self.add(5, "enforcement", "CODEOWNERS", ", ".join(owners) if owners else "absent")
+            wanted = re.compile(r"(?i)test|deploy|migrat|reset|clean|destroy|seed|release|publish|drop")
+            makefile = self.text("Makefile") or ""
+            targets = sorted({t for t in re.findall(r"^([A-Za-z0-9_.-]+):(?!=)", makefile, re.M) if wanted.search(t)})
+            if targets:
+                self.add(5, "named-commands", "Makefile", ", ".join(targets[:25]))
+            package = self.load_json(self.repo / "package.json")
+            if isinstance(package, dict) and isinstance(package.get("scripts"), dict):
+                names = sorted(k for k in package["scripts"] if wanted.search(str(k)))
+                if names:
+                    self.add(5, "named-commands", "package.json", safe_names(names, 25))
 
-    def _claude_settings_files(self) -> list[Path]:
-        paths = [self.repo / rel for rel in CLAUDE_SETTINGS_REPO] + [self.home / rel for rel in CLAUDE_SETTINGS_HOME]
-        if self.system_paths:
-            paths += [Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
-                      Path("/etc/claude-code/managed-settings.json")]
-        return [p for p in paths if p.is_file()]
+    def _claude_settings_files(self) -> list[tuple[Path, str]]:
+        paths = self.sources(CLAUDE_SETTINGS_REPO, CLAUDE_SETTINGS_HOME)
+        if self.system_paths and self.want_machine:
+            paths += [(Path("/Library/Application Support/ClaudeCode/managed-settings.json"), "machine"),
+                      (Path("/etc/claude-code/managed-settings.json"), "machine")]
+        return [(path, part) for path, part in paths if path.is_file()]
 
     # -- check 6 -----------------------------------------------------------
 
-    def github_checks(self) -> None:
+    def _github_target(self) -> tuple[str, str, str] | None:
+        """The repository on github.com that this clone's origin names, and its default branch."""
         if not self.is_git:
             self.add(6, "not-checked", ".", "not a git repository")
-            return
+            return None
         url = self._git("remote", "get-url", "origin") or ""
         branch = self._git("symbolic-ref", "--short", "refs/remotes/origin/HEAD") or ""
         branch = branch.split("/", 1)[-1]
@@ -1909,28 +2013,53 @@ class Collector:
         if not slug:
             self.add(6, "not-checked", ".git/config", "origin is absent or not a github.com remote: check the "
                      "host's branch rules by hand")
-            return
+            return None
         owner, repo = slug
         self.add(6, "remote", ".git/config", f"origin: github.com/{owner}/{repo}; default branch: "
                  + (branch or "not recorded in this clone (no origin/HEAD)"))
+        return owner, repo, branch
+
+    def github_checks(self) -> None:
+        target = None
+        if self.want_repo:
+            with self.within("repo"):
+                target = self._github_target()
+        # The repo part needs a repository on github.com. The machine part needs only gh's login.
+        parts = [part for part in SCOPES if part in self.scope and (part == "machine" or target)]
+        if not parts:
+            return
+        named = f"{target[0]}/{target[1]}" if target else "gh auth"
+
+        def not_checked(note: str, repo_loc: str = named) -> None:
+            for part in parts:
+                self.add(6, "not-checked", repo_loc if part == "repo" else "gh auth", note, scope=part)
+
         if not self.github:
-            self.add(6, "not-checked", f"{owner}/{repo}",
-                     "GitHub was not queried (run again with --github for read-only API calls)")
+            not_checked("GitHub was not queried (run again with --github for read-only API calls)")
             return
         if not shutil.which("gh", path=self.environ.get("PATH")):
-            self.add(6, "not-checked", f"{owner}/{repo}", "gh CLI not installed")
+            not_checked("gh CLI not installed")
             return
         # --no-refresh: looking must not rotate a stored token. --active: one account, the one gh would use.
         self.github_requests += 1
         code, out, err = self._run(["gh", "auth", "status", "--hostname", "github.com", "--active", "--no-refresh"])
         block = (out + err).splitlines()
         if code != 0 or not any("Logged in" in line for line in block):
-            self.add(6, "not-checked", "gh auth", "gh is not signed in to github.com (or its status could not be "
-                     "read): token scopes and branch protection are UNKNOWN")
+            not_checked("gh is not signed in to github.com (or its status could not be "
+                        "read): token scopes and branch protection are UNKNOWN", "gh auth")
             return
+        if self.want_machine:
+            with self.within("machine"):
+                self._github_token(block)
+        if target:
+            with self.within("repo"):
+                self._github_repository(*target)
+
+    def _github_token(self, block: list[str]) -> None:
+        """What gh's own status output says about the token. The token itself is never fetched."""
         account = next((m.group(1) for line in block for m in [re.search(r"account\s+([\w-]{1,60})", line)] if m), "?")
         scopes = sorted(set(re.findall(r"'([\w:]{1,40})'", " ".join(line for line in block if "scopes" in line))))
-        # gh prints the token masked ("gho_****"); its prefix names the type. The token itself is never fetched.
+        # gh prints the token masked ("gho_****"); its prefix names the type.
         prefix = next((m.group(1) for line in block
                        for m in [re.search(r"Token:\s*(github_pat_|gh[a-z]_)", line)] if m), "")
         kind = {"ghp_": "classic personal access token", "gho_": "OAuth token",
@@ -1947,6 +2076,10 @@ class Collector:
         ) if scope in scopes]
         if reach:
             self.add(6, "gh-token-reach", "gh auth", "; ".join(reach))
+        self.cover(6, "gh's stored login for github.com, from `gh auth status`; no API request")
+
+    def _github_repository(self, owner: str, repo: str, branch: str) -> None:
+        """Read-only GET requests about the repository, its default branch and its owner."""
         info = self._gh_json(f"repos/{owner}/{repo}")
         held: list = []
         if isinstance(info, dict):
@@ -2017,6 +2150,15 @@ class Collector:
     # -- check 7 -----------------------------------------------------------
 
     def cloud_sync(self) -> None:
+        if self.want_machine:
+            with self.within("machine"):
+                self._sync_roots()
+        if self.want_repo:
+            with self.within("repo"):
+                self._placeholders()
+
+    def _sync_roots(self) -> None:
+        """Where this checkout sits on the machine: inside a folder a sync client mirrors, or not."""
         home = self.home
         roots = [(home / "Library" / "Mobile Documents", "iCloud Drive")]
         storage = home / "Library" / "CloudStorage"
@@ -2049,6 +2191,10 @@ class Collector:
                         if os.path.lexists(mirrored)
                         else f"repo is under ~/{name}; iCloud Desktop & Documents not detected (heuristic)")
             self.add(7, "synced-folder", ".", note)
+        self.cover(7, f"{len(roots)} sync roots compared with where the repository sits (iCloud Drive, Dropbox, "
+                      "OneDrive, Google Drive, Box)")
+
+    def _placeholders(self) -> None:
         empty, placeholders, examined, meant_empty, special = [], [], 0, 0, 0
         for rel in self.walk():
             base = rel.rsplit("/", 1)[-1]
@@ -2102,7 +2248,7 @@ class Collector:
                         found += [("this project", name, spec) for name, spec in servers.items() if isinstance(spec, dict)]
         return found
 
-    def _describe_server(self, loc: str, scope: str, name: str, spec: dict) -> None:
+    def _describe_server(self, loc: str, applies_to: str, name: str, spec: dict) -> None:
         command, args = spec.get("command"), spec.get("args") or []
         if isinstance(command, list):
             command, args = (command[0] if command else ""), list(command[1:]) + list(args)
@@ -2138,60 +2284,72 @@ class Collector:
                             and (SECRET_NAME.search(str(k)) or shape_label(v) or looks_random(v))]
         if literal:
             traits.append(f"LITERAL SECRET stored in config for: {safe_names(sorted(literal))}")
-        label = safe_name(name) + (f" ({scope})" if scope else "")
+        label = safe_name(name) + (f" ({applies_to})" if applies_to else "")
         self.add(8, "mcp-server", loc, f"{label}: {'; '.join(traits) or 'no launch details'}")
         if SENDS_HINT.search(f"{name} {os.path.basename(str(command or ''))} {host}"):
             self.add(11, "mcp-server-can-send", loc, f"{safe_name(name)}: name suggests it can send money or "
                      "messages; look for a cap, an allowlist and a confirmation step")
 
     def agent_config(self) -> None:
-        configs = [self.repo / rel for rel in MCP_CONFIGS_REPO] + [self.home / rel for rel in MCP_CONFIGS_HOME]
-        self._unicode_files = 0
+        configs = self.sources(MCP_CONFIGS_REPO, MCP_CONFIGS_HOME)
+        codex = self.sources([".codex/config.toml"], [".codex/config.toml"])
+        self._unicode_files = dict.fromkeys(SCOPES, 0)
         seen = set()
-        for path in configs:
+        for path, part in configs:
             if path in seen or not path.is_file():
                 continue
             seen.add(path)
-            data = self.load_json(path)
-            loc = self.show(path)
-            if data is None:
-                self.add(8, "config-not-parsed", loc, "present but not read: invalid JSON, or a link that leads "
-                         "out of the repository. NOT INSPECTED")
-            for scope, name, spec in self._servers(data):
-                self._describe_server(loc, scope, name, spec)
-            if isinstance(data, dict):
-                self._claude_extras(loc, data)
-            self._hidden_unicode(path)
-        for path in (self.repo / ".codex" / "config.toml", self.home / ".codex" / "config.toml"):
-            text = self.text(path)
-            if text is None:
-                if os.path.lexists(path):
-                    self.add(8, "config-not-parsed", self.show(path), "present but not read: unreadable, or a link "
-                             "that leads out of the repository. NOT INSPECTED")
-                continue
-            tables = parse_toml_tables(text)
-            for header, values in tables.items():
-                found = re.match(r"^mcp_servers\.\"?([^\".]+)\"?$", header)
-                if found:
-                    spec = dict(values)
-                    env = tables.get(header + ".env")
-                    if isinstance(env, dict) and env:
-                        spec["env"] = env
-                    self._describe_server(self.show(path), "", found.group(1), spec)
-            notify = tables.get("", {}).get("notify")
-            if notify:
-                self.add(8, "hook", self.show(path), f"notify: {command_summary(notify)}")
-        self._plugins()
+            with self.within(part):
+                data = self.load_json(path)
+                loc = self.show(path)
+                if data is None:
+                    self.add(8, "config-not-parsed", loc, "present but not read: invalid JSON, or a link that leads "
+                             "out of the repository. NOT INSPECTED")
+                for label, name, spec in self._servers(data):
+                    self._describe_server(loc, label, name, spec)
+                if isinstance(data, dict):
+                    self._claude_extras(loc, data)
+                self._hidden_unicode(path)
+        for path, part in codex:
+            with self.within(part):
+                text = self.text(path)
+                if text is None:
+                    if os.path.lexists(path):
+                        self.add(8, "config-not-parsed", self.show(path), "present but not read: unreadable, or a "
+                                 "link that leads out of the repository. NOT INSPECTED")
+                    continue
+                tables = parse_toml_tables(text)
+                for header, values in tables.items():
+                    found = re.match(r"^mcp_servers\.\"?([^\".]+)\"?$", header)
+                    if found:
+                        spec = dict(values)
+                        env = tables.get(header + ".env")
+                        if isinstance(env, dict) and env:
+                            spec["env"] = env
+                        self._describe_server(self.show(path), "", found.group(1), spec)
+                notify = tables.get("", {}).get("notify")
+                if notify:
+                    self.add(8, "hook", self.show(path), f"notify: {command_summary(notify)}")
+        if self.want_machine:
+            with self.within("machine"):
+                self._plugins()
         self._skills()
-        self._install_scripts()
-        for path in self.rule_files():
-            self._hidden_unicode(path)
-        for name in self.files():
-            # Everything an agent loads as instructions: skills and their references, commands, prompts.
-            if name.endswith("SKILL.md") or "/skills/" in f"/{name}" and name.endswith(DOC_SUFFIXES):
-                self._hidden_unicode(self.repo / name)
-        self.cover(8, f"{len(seen)} agent config files found of {len(configs) + 2} known locations; "
-                      f"{self._unicode_files} instruction, skill and config files scanned for hidden Unicode")
+        for path, part in self.rule_files():
+            with self.within(part):
+                self._hidden_unicode(path)
+        if self.want_repo:
+            with self.within("repo"):
+                self._install_scripts()
+                for name in self.files():
+                    # Everything an agent loads as instructions: skills and their references, commands, prompts.
+                    if name.endswith("SKILL.md") or "/skills/" in f"/{name}" and name.endswith(DOC_SUFFIXES):
+                        self._hidden_unicode(self.repo / name)
+        for part in SCOPES:
+            found = sum(1 for path, owner in configs if owner == part and path in seen)
+            known = sum(1 for _, owner in configs + codex if owner == part)
+            self.cover(8, f"{found} agent config files found of {known} known locations; "
+                          f"{self._unicode_files[part]} instruction, skill and config files scanned for hidden Unicode",
+                       part)
 
     def _claude_extras(self, loc: str, data: dict) -> None:
         hooks = data.get("hooks")
@@ -2260,36 +2418,40 @@ class Collector:
                          + (f"; SHIPS {' and '.join(ships)}" if ships else ""))
 
     def _skills(self) -> None:
-        roots = [self.repo / rel for rel in SKILL_ROOTS_REPO] + [self.home / rel for rel in SKILL_ROOTS_HOME]
-        for root in roots:
+        for root, part in self.sources(SKILL_ROOTS_REPO, SKILL_ROOTS_HOME):
             if not root.is_dir():
                 continue
-            try:
-                root.relative_to(self.repo)
-                if not root.resolve().is_relative_to(self.repo):
-                    self.add(8, "skills", self.show(root), "this directory is a link out of the repository: NOT INSPECTED")
-                    continue
-            except ValueError:
-                pass  # a user-level skills directory; links there are the user's own
-            names, scripted, linked, escaped = [], 0, 0, 0
-            in_repo = root.is_relative_to(self.repo)
-            for skill_md in sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/*/SKILL.md")) + sorted(root.glob("*/*/*/SKILL.md")):
-                directory = skill_md.parent
-                if any(part.startswith(".") for part in directory.relative_to(root).parts):
-                    continue
-                if in_repo and not directory.resolve().is_relative_to(self.repo):
-                    escaped += 1  # reached through a link that leaves the repository: not named, not probed
-                    continue
-                names.append(directory.name)
-                scripted += (directory / "scripts").is_dir()
-                linked += directory.is_symlink()
-                self._hidden_unicode(skill_md)
-            if names:
-                self.add(8, "skills", self.show(root),
-                         f"{len(names)} skills ({scripted} bundle scripts, {linked} are symlinks): {safe_names(names, 30)}")
-            if escaped:
-                self.add(8, "skills", self.show(root), f"{escaped} entries are reached through a link out of the "
-                         "repository: NOT INSPECTED")
+            with self.within(part):
+                self._skills_in(root)
+
+    def _skills_in(self, root: Path) -> None:
+        """One skills directory. The caller has set the part."""
+        try:
+            root.relative_to(self.repo)
+            if not root.resolve().is_relative_to(self.repo):
+                self.add(8, "skills", self.show(root), "this directory is a link out of the repository: NOT INSPECTED")
+                return
+        except ValueError:
+            pass  # a user-level skills directory; links there are the user's own
+        names, scripted, linked, escaped = [], 0, 0, 0
+        in_repo = root.is_relative_to(self.repo)
+        for skill_md in sorted(root.glob("*/SKILL.md")) + sorted(root.glob("*/*/SKILL.md")) + sorted(root.glob("*/*/*/SKILL.md")):
+            directory = skill_md.parent
+            if any(part.startswith(".") for part in directory.relative_to(root).parts):
+                continue
+            if in_repo and not directory.resolve().is_relative_to(self.repo):
+                escaped += 1  # reached through a link that leaves the repository: not named, not probed
+                continue
+            names.append(directory.name)
+            scripted += (directory / "scripts").is_dir()
+            linked += directory.is_symlink()
+            self._hidden_unicode(skill_md)
+        if names:
+            self.add(8, "skills", self.show(root),
+                     f"{len(names)} skills ({scripted} bundle scripts, {linked} are symlinks): {safe_names(names, 30)}")
+        if escaped:
+            self.add(8, "skills", self.show(root), f"{escaped} entries are reached through a link out of the "
+                     "repository: NOT INSPECTED")
 
     def _install_scripts(self) -> None:
         lifecycle = ("preinstall", "install", "postinstall", "prepare", "prepublish", "prepack")
@@ -2335,7 +2497,7 @@ class Collector:
         text = self.text(path, MAX_CONFIG_BYTES)
         if text is None:
             return
-        self._unicode_files += 1
+        self._unicode_files[self._part or scope_of(loc)] += 1
         hits = []
         for lineno, line in enumerate(text.splitlines(), 1):
             hits += [(lineno, col, cp) for col, cp in hidden_columns(line)
@@ -2440,7 +2602,8 @@ class Collector:
     def agent_modes(self) -> None:
         broad = re.compile(r"^(?:Bash|Bash\(\*\)|\*|Bash\((?:rm|sudo|git push|curl|wget|chmod|chown|dd|kill|terraform"
                            r"|kubectl|aws|gcloud|az|psql|mysql|docker|npm publish|gh|ssh|eval|bash|sh|python|node)\b.*\))$")
-        for path in self._claude_settings_files():
+        settings = self._claude_settings_files()
+        for path, part in settings:
             data = self.load_json(path)
             if not isinstance(data, dict):
                 continue
@@ -2462,14 +2625,10 @@ class Collector:
             sandbox = data.get("sandbox")
             note += (f"; sandbox.enabled: {sandbox.get('enabled') is True}" if isinstance(sandbox, dict)
                      else "; no sandbox block")
-            self.add(10, "agent-mode", self.show(path), note)
-        state = self.load_json(self.home / ".claude.json")
-        if isinstance(state, dict) and state.get("bypassPermissionsModeAccepted") is True:
-            self.add(10, "agent-mode", "~/.claude.json", "bypass-permissions mode has been accepted on this machine")
-        others = [self.home / rel for rel in OTHER_AGENT_SETTINGS_HOME]
-        others += [self.repo / ".codex" / "config.toml", self.repo / ".gemini" / "settings.json",
-                   self.repo / ".vscode" / "settings.json", self.repo / ".cursor" / "cli.json"]
-        for path in others:
+            self.add(10, "agent-mode", self.show(path), note, scope=part)
+        others = self.sources([".codex/config.toml", ".gemini/settings.json", ".vscode/settings.json",
+                               ".cursor/cli.json"], OTHER_AGENT_SETTINGS_HOME)
+        for path, part in others:
             for lineno, line in enumerate((self.text(path, MAX_CONFIG_BYTES) or "").splitlines(), 1):
                 if line.lstrip().startswith(("#", "//")):
                     continue
@@ -2477,7 +2636,22 @@ class Collector:
                 if found and AGENT_SETTING.search(found.group(1)):
                     value = (found.group(2) or "").lower()
                     shown = value if value in SETTING_WORDS else "(a value; read the line)"
-                    self.add(10, "agent-setting", f"{self.show(path)}:{lineno}", f"{found.group(1)} = {shown}")
+                    self.add(10, "agent-setting", f"{self.show(path)}:{lineno}", f"{found.group(1)} = {shown}",
+                             scope=part)
+
+        def counted(part: str) -> str:
+            return (f"{sum(1 for _, owner in settings if owner == part)} Claude Code settings files; "
+                    f"{sum(1 for path, owner in others if owner == part and path.is_file())} other agent settings files")
+
+        self.cover(10, counted("repo"), "repo")
+        if self.want_machine:
+            with self.within("machine"):
+                self._shell_startup(counted("machine"))
+
+    def _shell_startup(self, counted: str) -> None:
+        state = self.load_json(self.home / ".claude.json")
+        if isinstance(state, dict) and state.get("bypassPermissionsModeAccepted") is True:
+            self.add(10, "agent-mode", "~/.claude.json", "bypass-permissions mode has been accepted on this machine")
         # Which startup files a non-interactive shell loads decides whether a
         # safety net exists for an agent. This is read from the files; no shell
         # is started, because starting one would run those files.
@@ -2490,9 +2664,8 @@ class Collector:
                            r"|aws|gcloud|dropdb)\s*(?:=|\(\))")
         alias_name = re.compile(r"^\s*alias\s+(?:-g\s+)?([\w.-]{1,40})=")
         present = [self.show(path) for path, _ in rc_paths if path.is_file()]
-        self.cover(10, f"shell startup files read: {', '.join(present) or 'none found'}; "
-                       f"{len(self._claude_settings_files())} Claude Code settings files; "
-                       f"{sum(1 for p in others if p.is_file())} other agent settings files; no shell was started")
+        self.cover(10, f"shell startup files read: {', '.join(present) or 'none found'}; {counted}; "
+                       "no shell was started")
         for path, loads_for_agents in rc_paths:
             for lineno, line in enumerate((self.text(path) or "").splitlines(), 1):
                 if line.lstrip().startswith("#"):
@@ -2515,20 +2688,27 @@ class Collector:
     # -- driver ------------------------------------------------------------
 
     def run(self) -> None:
-        # (checks a step contributes to, step). A step outside --only is not run at all.
+        # (checks a step contributes to, the part it collects for, step). A step
+        # outside --only or --scope is not run at all. A step with one part
+        # records everything under it; a step marked "both" reads each part's
+        # sources only when that part is being run, and names the part itself.
+        repo, machine, both = "repo", "machine", None
         steps = [
-            ({1, 2}, self.env_files), ({1, 2, 3, 4, 5, 8, 11}, self.scan_tracked_text),
-            ({1, 2}, self.environment), ({2}, self.credential_files), ({2}, self.tracked_sensitive_files),
-            ({3}, self.shell_scripts), ({3}, self.symlinks), ({4}, self.infrastructure),
-            ({5}, self.prose_rules), ({5}, self.enforcement), ({6}, self.github_checks),
-            ({7}, self.cloud_sync), ({2, 8, 11}, self.agent_config), ({9}, self.ci), ({10}, self.agent_modes),
+            ({1, 2}, repo, self.env_files), ({1, 2, 3, 4, 5, 8, 11}, repo, self.scan_tracked_text),
+            ({1, 2}, machine, self.environment), ({2}, machine, self.credential_files),
+            ({2}, repo, self.tracked_sensitive_files), ({2}, machine, self.remote_urls),
+            ({3}, repo, self.shell_scripts), ({3}, repo, self.symlinks), ({4}, repo, self.infrastructure),
+            ({5}, both, self.prose_rules), ({5}, both, self.enforcement), ({6}, both, self.github_checks),
+            ({7}, both, self.cloud_sync), ({2, 8, 11}, both, self.agent_config), ({9}, repo, self.ci),
+            ({10}, both, self.agent_modes),
         ]
-        for checks, step in steps:
-            if self.only and not checks & self.only:
+        for checks, part, step in steps:
+            if (self.only and not checks & self.only) or (part and part not in self.scope):
                 continue
             self.steps_run.append(step.__name__)
             try:
-                step()
+                with self.within(part):
+                    step()
             except Exception as error:  # noqa: BLE001 - one broken parser must not end the audit
                 # The message is withheld on purpose: it can quote file content.
                 self.notes.append(f"collector step '{step.__name__}' failed ({type(error).__name__}); "
@@ -2541,27 +2721,39 @@ class Collector:
             f"repo: {one_line(self.repo.name)}"
             f" | git: {'yes' if self.is_git else 'no'} | GitHub queried: "
             + (f"yes, {self.github_requests} read-only gh calls attempted" if self.github_requests else "no"),
-            f"directories not scanned: {', '.join(sorted(SKIP_DIRS))}",
+            "scope: " + " and ".join(part for part in SCOPES if part in self.scope)
+            + "".join(f"; the {part} part was NOT RUN" for part in SCOPES if part not in self.scope),
+        ]
+        if self.want_repo:
+            out.append(f"directories not scanned: {', '.join(sorted(SKIP_DIRS))}")
+        out += [
             "UPPERCASE marks a trait to look at first. It is a pattern match like the rest, not a verdict.",
         ]
         out += [f"note: {one_line(note)}" for note in self.notes]
-        for check, title in CHECKS.items():
-            if self.only and check not in self.only:
+        for part in SCOPES:
+            if part not in self.scope:
                 continue
-            out += ["", f"## {check}. {title}"]
-            if self.coverage.get(check):
-                out.append("examined: " + "; ".join(dict.fromkeys(self.coverage[check])))
-            rows = [item for item in self.items if item["check"] == check]
-            if not rows:
-                out.append("(no leads from the collector; the manual part of this check still applies)")
-            for item in rows:
-                out.append(f"- {item['loc']} | {item['kind']} | {item['note']}".rstrip(" |"))
-            for (number, kind), count in sorted(self._counts.items()):
-                if number == check and count > MAX_PER_KIND:
-                    out.append(f"- ... {count - MAX_PER_KIND} more '{kind}' leads not shown; search the repo for the rest")
-            for (number, kind, name), count in sorted(self._file_counts.items()):
-                if number == check and count > MAX_PER_FILE:
-                    out.append(f"- {name} | {kind} | ... {count - MAX_PER_FILE} more in this file not shown")
+            out += ["", f"# {SCOPE_HEADINGS[part]}"]
+            for check in CHECKS:
+                if self.only and check not in self.only:
+                    continue
+                rows = [item for item in self.items if item["check"] == check and item["scope"] == part]
+                if check not in PART_TITLES[part] and not rows:
+                    continue  # this check has no such part
+                out += ["", f"## {check}. {PART_TITLES[part].get(check, CHECKS[check])}"]
+                examined = self.coverage_by_part.get((part, check))
+                if examined:
+                    out.append("examined: " + "; ".join(dict.fromkeys(examined)))
+                if not rows:
+                    out.append("(no leads from the collector; the manual part of this check still applies)")
+                for item in rows:
+                    out.append(f"- {item['loc']} | {item['kind']} | {item['note']}".rstrip(" |"))
+                for (owner, number, kind), count in sorted(self._counts.items()):
+                    if (owner, number) == (part, check) and count > MAX_PER_KIND:
+                        out.append(f"- ... {count - MAX_PER_KIND} more '{kind}' leads not shown; search for the rest")
+                for (owner, number, kind, name), count in sorted(self._file_counts.items()):
+                    if (owner, number) == (part, check) and count > MAX_PER_FILE:
+                        out.append(f"- {name} | {kind} | ... {count - MAX_PER_FILE} more in this file not shown")
         return "\n".join(out) + "\n"
 
 
@@ -2572,6 +2764,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--github", action="store_true",
                         help="also make read-only GitHub API calls through gh (token scopes, branch protection)")
     parser.add_argument("--only", default="", help="comma-separated check numbers, e.g. 1,3,8")
+    parser.add_argument("--scope", choices=("all",) + SCOPES, default="all",
+                        help="repo: the working tree and this repository's GitHub settings; machine: the "
+                             "environment, home directory, user-level agent config and GitHub token; "
+                             "all (default): both")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     parser.add_argument("--keys", metavar="FILE", help="print the key names of one env, JSON or TOML file "
                         "(never its values) and exit")
@@ -2589,11 +2785,15 @@ def main(argv: list[str] | None = None) -> int:
     if not repo.is_dir():
         parser.error(f"--repo is not a directory: {args.repo}")
     home = Path(args.home) if args.home else Path.home()
-    collector = Collector(repo, home, os.environ, github=args.github, only=only, system_paths=args.home is None)
+    scope = set(SCOPES) if args.scope == "all" else {args.scope}
+    collector = Collector(repo, home, os.environ, github=args.github, only=only, system_paths=args.home is None,
+                          scope=scope)
     collector.run()
     if args.json:
-        json.dump({"notes": collector.notes, "examined": collector.coverage, "leads": collector.items},
-                  sys.stdout, indent=1)
+        examined = {part: {str(check): lines for (owner, check), lines in sorted(collector.coverage_by_part.items())
+                           if owner == part} for part in SCOPES if part in scope}
+        json.dump({"scope": [part for part in SCOPES if part in scope], "notes": collector.notes,
+                   "examined": examined, "leads": collector.items}, sys.stdout, indent=1)
         sys.stdout.write("\n")
     else:
         sys.stdout.write(collector.render())

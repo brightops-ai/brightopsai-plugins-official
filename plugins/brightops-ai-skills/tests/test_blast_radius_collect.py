@@ -38,6 +38,34 @@ CANARIES = [
 ]
 
 
+# What this process opens and lists, recorded only while a test asks for it. An
+# audit hook cannot be removed once added, so it stays installed and idle.
+_TOUCHED: list | None = None
+
+
+def _record_file_access(event: str, args: tuple) -> None:
+    if _TOUCHED is not None and event in ("open", "os.listdir", "os.scandir") and args:
+        target = args[0]
+        if isinstance(target, bytes):
+            target = os.fsdecode(target)
+        if isinstance(target, (str, os.PathLike)):
+            _TOUCHED.append(os.path.abspath(os.fspath(target)))
+
+
+sys.addaudithook(_record_file_access)
+
+
+def _touched_while(action) -> list:
+    """Every path the process opened or listed while `action` ran. Child programs are not seen."""
+    global _TOUCHED
+    _TOUCHED = []
+    try:
+        action()
+        return list(_TOUCHED)
+    finally:
+        _TOUCHED = None
+
+
 def _load_collector():
     root = Path(__file__).resolve().parents[1]
     path = root / "skills" / "safety" / "blast-radius-audit" / "scripts" / "collect.py"
@@ -216,7 +244,7 @@ class CollectorFixtureTests(unittest.TestCase):
             for needle in [MARK] + CANARIES:
                 self.assertNotIn(needle, done.stdout, f"{needle} with {extra}")
             if extra:
-                self.assertEqual(sorted(json.loads(done.stdout)), ["examined", "leads", "notes"])
+                self.assertEqual(sorted(json.loads(done.stdout)), ["examined", "leads", "notes", "scope"])
 
     def test_only_git_is_ever_started(self) -> None:
         started = []
@@ -395,6 +423,124 @@ class CollectorFixtureTests(unittest.TestCase):
         collector.run()
         self.assertEqual(collector.steps_run, ["github_checks"])
         self.assertLessEqual(set(collector.coverage), {6})
+
+    # -- the two parts ------------------------------------------------------
+
+    def scoped(self, *parts: str):
+        collector = self.mod.Collector(self.repo, self.home, self.environ, system_paths=False, scope=set(parts))
+        collector.run()
+        self.assertEqual([n for n in collector.notes if "failed" in n], [])
+        return collector
+
+    @staticmethod
+    def keyed(collector) -> set:
+        return {(i["scope"], i["check"], i["kind"], i["loc"], i["note"]) for i in collector.items}
+
+    def test_every_lead_belongs_to_one_part(self) -> None:
+        self.assertEqual({i["scope"] for i in self.collector.items}, {"repo", "machine"})
+        for item in self.collector.items:
+            outside = item["loc"].startswith(("env:", "~/", "/")) or item["loc"] in ("env", ".git", "gh auth")
+            if outside:
+                self.assertEqual(item["scope"], "machine", item)
+        part = {(i["check"], i["kind"], i["loc"]): i["scope"] for i in self.collector.items}
+        for key, expected in {
+            (1, "db-target", ".env.test:1"): "repo", (1, "db-target", "env:DATABASE_URL"): "machine",
+            (2, "env-file", ".env.test"): "repo", (2, "credential-file", "~/.aws/credentials"): "machine",
+            (2, "credential-in-remote-url", ".git/config"): "machine", (5, "rule-file", "AGENTS.md"): "repo",
+            (5, "enforcement", ".git"): "machine", (5, "enforcement", "CODEOWNERS"): "repo",
+            (6, "remote", ".git/config"): "repo", (6, "not-checked", "acme/widgets"): "repo",
+            (6, "not-checked", "gh auth"): "machine", (7, "synced-folder", "."): "machine",
+            (7, "zero-byte-file", "empty.txt"): "repo", (8, "mcp-server", ".mcp.json"): "repo",
+            (8, "mcp-server", "~/.claude.json"): "machine", (8, "skills", "~/.claude/skills"): "machine",
+            (10, "agent-mode", ".claude/settings.json"): "repo", (10, "shell-safety-net", "~/.zshrc:1"): "machine",
+            (11, "mcp-server-can-send", ".mcp.json"): "repo",
+        }.items():
+            self.assertEqual(part.get(key), expected, key)
+        for check in (3, 4, 9):
+            self.assertEqual({i["scope"] for i in self.collector.items if i["check"] == check}, {"repo"}, check)
+
+    def test_the_two_parts_add_up_to_the_whole(self) -> None:
+        repo, machine = self.scoped("repo"), self.scoped("machine")
+        self.assertEqual({i["scope"] for i in repo.items}, {"repo"})
+        self.assertEqual({i["scope"] for i in machine.items}, {"machine"})
+        self.assertEqual(self.keyed(repo) | self.keyed(machine), self.keyed(self.collector))
+        self.assertEqual(self.keyed(repo) & self.keyed(machine), set())
+
+    def test_repo_scope_touches_nothing_under_home_and_prints_no_environment(self) -> None:
+        holder = {}
+        touched = _touched_while(lambda: holder.update(got=self.scoped("repo")))
+        home, repo = str(self.home) + os.sep, str(self.repo) + os.sep
+        self.assertEqual([path for path in touched if (path + os.sep).startswith(home)], [])
+        # Nothing outside the repository at all, apart from Python loading its own
+        # modules and the null device each child program gets as its input.
+        python = tuple(os.path.realpath(p) + os.sep for p in {sys.prefix, sys.base_prefix, sys.exec_prefix})
+        elsewhere = [path for path in touched if path != os.devnull and not (path + os.sep).startswith(repo)
+                     and not (os.path.realpath(path) + os.sep).startswith(python)]
+        self.assertEqual(elsewhere, [])
+        self.assertTrue(any(path.startswith(str(self.repo)) for path in touched), "the recorder saw nothing at all")
+        got = holder["got"]
+        text = got.render() + json.dumps([got.items, got.notes, got.coverage])
+        for needle in ("~/", "env:DATABASE_URL", "env:AWS_PROFILE", "| env-var", "prod-admin", "MY_SERVICE_TOKEN",
+                       "prod-cluster", ".git/config | credential-in-remote-url"):
+            self.assertFalse(needle in text, needle)
+        for step in ("environment", "credential_files", "remote_urls"):
+            self.assertNotIn(step, got.steps_run)
+        self.assertIn("the machine part was NOT RUN", got.render())
+        self.assertNotIn("# MACHINE", got.render())
+
+    def test_machine_scope_reads_no_file_in_the_tree(self) -> None:
+        holder = {}
+        touched = _touched_while(lambda: holder.update(got=self.scoped("machine")))
+        repo, git_dir = str(self.repo) + os.sep, str(self.repo / ".git") + os.sep
+        in_tree = [path for path in touched if (path + os.sep).startswith(repo) and not (path + os.sep).startswith(git_dir)]
+        self.assertEqual(in_tree, [])
+        self.assertTrue(any(path.startswith(str(self.home)) for path in touched), "the recorder saw nothing at all")
+        got = holder["got"]
+        self.assertIsNone(got._files, "the tree was listed")
+        for step in ("env_files", "scan_tracked_text", "tracked_sensitive_files", "shell_scripts", "symlinks",
+                     "infrastructure", "ci"):
+            self.assertNotIn(step, got.steps_run)
+        text = got.render()
+        self.assertIn("the repo part was NOT RUN", text)
+        self.assertNotIn("# REPO", text)
+        for absent in ("## 3.", "## 4.", "## 9."):
+            self.assertNotIn(absent, text)
+        self.assertNotIn(MARK, text)
+
+    def test_each_part_has_its_own_section_and_coverage(self) -> None:
+        repo_at, machine_at = self.text.index("\n# REPO: "), self.text.index("\n# MACHINE: ")
+        self.assertLess(repo_at, machine_at)
+        repo_text, machine_text = self.text[repo_at:machine_at], self.text[machine_at:]
+        for number in range(1, 12):
+            self.assertIn(f"\n## {number}. ", repo_text)
+        for number in (1, 2, 5, 6, 7, 8, 10, 11):
+            self.assertIn(f"\n## {number}. ", machine_text)
+        for number in (3, 4, 9):
+            self.assertNotIn(f"\n## {number}. ", machine_text)
+        self.assertIn("env:DATABASE_URL | db-target", machine_text)
+        self.assertNotIn("env:DATABASE_URL", repo_text)
+        self.assertIn(".env.test:1 | db-target", repo_text)
+        self.assertNotIn(".env.test", machine_text)
+        self.assertIn("scope: repo and machine", self.text)
+        for part, check in (("repo", 5), ("machine", 5), ("repo", 8), ("machine", 8), ("repo", 10), ("machine", 10),
+                            ("repo", 7), ("machine", 7), ("machine", 2), ("repo", 2)):
+            self.assertTrue(self.collector.coverage_by_part.get((part, check)), (part, check))
+
+    def test_scope_option_on_the_command_line(self) -> None:
+        script = Path(self.mod.__file__)
+        base = [sys.executable, str(script), "--repo", str(self.repo), "--home", str(self.home)]
+        done = subprocess.run(base + ["--scope", "repo", "--json"], env=self.environ, capture_output=True, text=True, check=True)
+        data = json.loads(done.stdout)
+        self.assertEqual(data["scope"], ["repo"])
+        self.assertEqual(sorted(data["examined"]), ["repo"])
+        self.assertEqual({lead["scope"] for lead in data["leads"]}, {"repo"})
+        done = subprocess.run(base + ["--scope", "machine", "--json"], env=self.environ, capture_output=True, text=True, check=True)
+        data = json.loads(done.stdout)
+        self.assertEqual(data["scope"], ["machine"])
+        self.assertEqual({lead["scope"] for lead in data["leads"]}, {"machine"})
+        self.assertNotIn(MARK, done.stdout)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.main(["--scope", "everything"])
 
 
 class TargetedFixtureTests(unittest.TestCase):
@@ -816,7 +962,7 @@ class TargetedFixtureTests(unittest.TestCase):
         calls = Path(tmp.name) / "calls"
         base_env = {"PATH": "{home}/bin:" + os.environ.get("PATH", ""), "GH_CALLS": str(calls)}
 
-        def run(extra: dict):
+        def run(extra: dict, scope: set | None = None):
             got_holder = {}
 
             def hook(repo, home):
@@ -831,7 +977,7 @@ class TargetedFixtureTests(unittest.TestCase):
             home.mkdir()
             hook(repo, home)
             env = {k: v.replace("{home}", str(home)) for k, v in dict(base_env, **extra).items()}
-            collector = self.mod.Collector(repo, home, env, github=True, only={6}, system_paths=False)
+            collector = self.mod.Collector(repo, home, env, github=True, only={6}, system_paths=False, scope=scope)
             collector.run()
             return collector
 
@@ -850,6 +996,22 @@ class TargetedFixtureTests(unittest.TestCase):
         self.assertEqual(calls.read_text().splitlines(), ["auth status --hostname github.com --active --no-refresh"])
         self.assertTrue(any("UNKNOWN" in row for row in self.rows(got, "not-checked")))
         self.assertEqual(self.rows(got, "gh-token"), [])
+
+        # The token belongs to the machine part and needs no API request.
+        calls.write_text("")
+        got = run({}, {"machine"})
+        self.assertEqual(calls.read_text().splitlines(), ["auth status --hostname github.com --active --no-refresh"])
+        self.assertEqual({i["kind"] for i in got.items}, {"gh-token", "gh-token-reach"})
+        self.assertEqual({i["scope"] for i in got.items}, {"machine"})
+
+        # The repository's protection belongs to the repo part; the token's type and scopes are not reported there.
+        calls.write_text("")
+        got = run({}, {"repo"})
+        self.assertEqual(len(calls.read_text().splitlines()), 5)
+        self.assertEqual(self.rows(got, "gh-token") + self.rows(got, "gh-token-reach"), [])
+        self.assertEqual({i["scope"] for i in got.items}, {"repo"})
+        for kind in ("remote", "repo", "branch-protection", "branch-rulesets", "default-branch-verdict"):
+            self.assertTrue(self.rows(got, kind), kind)
 
     def test_host_list_is_as_remote_as_its_most_remote_member(self) -> None:
         self.assertEqual(self.mod.classify_host("localhost,db.example.com"), "non-local")
@@ -1083,6 +1245,22 @@ class PureFunctionTests(unittest.TestCase):
         self.assertTrue(hidden(0x202E, ord("a")))
         self.assertFalse(hidden(0x200D, 0x1F468))
         self.assertTrue(hidden(0x200D, ord("a")))
+
+    def test_scope_of_a_location(self) -> None:
+        for loc in ("env:AWS_PROFILE", "env", "~", "~/.zshrc:2", "/etc/claude-code/managed-settings.json",
+                    "C:/Users/someone/.aws/config", "gh auth", ".git", ".git/config"):
+            self.assertEqual(self.mod.scope_of(loc), "machine", loc)
+        for loc in (".github/workflows/ci.yml:3", ".gitignore", ".githooks", ".env", "a/b.py:1", "~$draft.docx",
+                    "environment.yml", "acme/widgets@main", "org:acme", "."):
+            self.assertEqual(self.mod.scope_of(loc), "repo", loc)
+
+    def test_cover_refuses_to_guess_a_part(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            collector = self.mod.Collector(Path(tmp), Path(tmp), {"PATH": os.environ.get("PATH", "")}, system_paths=False)
+            with self.assertRaises(ValueError):
+                collector.cover(1, "something")
+            with self.assertRaises(ValueError):
+                self.mod.Collector(Path(tmp), Path(tmp), {}, scope={"everything"})
 
     def test_main_rejects_unknown_check_number(self) -> None:
         with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):

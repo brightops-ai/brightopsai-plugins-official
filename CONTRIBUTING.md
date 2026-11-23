@@ -285,7 +285,10 @@ plugins/brightops-ai-skills/tests/run.sh
 
 Builds a throwaway repository and a throwaway home directory with planted
 hazards, then asserts the leads and that no planted secret reaches the
-output. It never reads the real home directory. Needs `git`.
+output. It never reads the real home directory. It also asserts the split
+between the two parts: every lead belongs to one, the parts add up to the
+whole, and a one-part run touches nothing that belongs to the other. Needs
+`git`.
 
 ```bash
 cd plugins/brightops-ai-skills && python3 -m unittest discover -s tests -t .
