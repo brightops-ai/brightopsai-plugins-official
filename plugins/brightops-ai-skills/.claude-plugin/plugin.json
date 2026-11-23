@@ -1,7 +1,7 @@
 {
   "name": "brightops-ai-skills",
   "displayName": "BrightOps AI Skills",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "BrightOps AI workflow skills for Claude Code: prompt shaping from rough input, scheduled memory consolidation over past sessions, spawning verified Claude Code sessions with a starter brief, and auditing a repo and dev setup for agent blast radius.",
   "author": {
     "name": "BrightOps AI"

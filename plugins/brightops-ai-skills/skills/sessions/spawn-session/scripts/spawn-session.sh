@@ -33,14 +33,24 @@ PROJECTS_DIR="${SPAWN_PROJECTS_DIR:-$HOME/.claude/projects}"
 # healthy session can be slow. Inspecting early and failing late is the point.
 INSPECT_AFTER="${SPAWN_INSPECT_AFTER:-30}"
 
+# How long the look before an Enter keeps looking for the input box once a
+# paste is in it. Right after a paste the CLI draws a hint where its status
+# line was, for about eight seconds; the box is usually recognised through
+# that by the paste it holds, and this is the allowance for when it is not.
+SETTLE_SECONDS="${SPAWN_SETTLE_SECONDS:-12}"
+
 # The CLI's own configuration file, where workspace trust is recorded.
 CONFIG_FILE="${SPAWN_CONFIG_FILE:-$HOME/.claude.json}"
 TRUST_TOOL="$SCRIPT_DIR/lib/trust-config.py"
 BLOCKER_TABLE="$SCRIPT_DIR/startup-blockers.tsv"
+READY_TABLE="$SCRIPT_DIR/ready-prompts.tsv"
 
 # The CLI release this skill's dialog patterns were verified against. Advisory
 # only — see version_verdict.
 PINNED_CLI_VERSION="2.1.259"
+# The CLI release the prompt patterns in the ready table were taken from. A
+# separate fact from the pin above, and advisory in the same way.
+READY_CLI_VERSION="2.1.330"
 CLI_BIN="${SPAWN_CLI_BIN:-claude}"
 
 # Exit codes. Each names a distinct outcome a caller may need to act on
@@ -51,8 +61,18 @@ readonly EXIT_BRIDGE_DEAD=3
 readonly EXIT_NO_PROCESS=4
 readonly EXIT_UNCONFIRMED=5
 
+# The size given to a session this launcher creates. Without one the size is
+# whatever the server's default is, and a pane too short for the line under
+# the input box cannot be told to be ready. A client that attaches later
+# resizes the window to itself as usual.
+readonly SESSION_COLUMNS=120
+readonly SESSION_ROWS=40
+
 NAME=""
 DIR=""
+DIR_PHYSICAL=""
+GIT_ROOT=""
+EXACT=""
 POSTURE=""
 PRE_LAUNCH=""
 PROMPT=""
@@ -62,6 +82,22 @@ BRIEF_DELIVERED=0
 TRUST_FOLDER=0
 TRUST_GRANTED=""
 BLOCKER=""
+BLOCKER_ROWS=""
+READY_ROWS=""
+# What the last look at the pane found: ready, blocked, waiting, or gone (the
+# pane looks ready and the CLI process is no longer there); and, for waiting,
+# why (clipped, no-mode-line or nothing).
+GATE="waiting"
+GATE_NOTE=""
+# The multiplexer's own status when a send failed.
+MUX_RC=0
+# How far the handshake got on a verified run: not_sent, not_submitted (pasted,
+# Enter withheld) or sent. Empty when no handshake is attempted at all.
+HANDSHAKE=""
+# How far the brief got when it stopped short of delivered: empty, or
+# not_submitted.
+BRIEF_HELD=""
+NOTED=0
 RESUME=0
 SOCKET=""
 DRY_RUN=0
@@ -73,7 +109,9 @@ usage() {
   cat <<'USAGE'
 usage: spawn-session.sh <name> [options]
 
-  -C, --dir <dir>        directory to launch in (default: current directory)
+  -C, --dir <dir>        directory to launch in (default: current directory);
+                         refused when its path holds a control character or
+                         is not valid UTF-8
   -p, --prompt <text>    starter brief, delivered once the session is confirmed
   -f, --prompt-file <p>  starter brief read from a file ('-' for standard input)
   -b, --bypass           launch with permissions bypassed (default: acceptEdits);
@@ -205,7 +243,12 @@ session_id_for() {
 transcript_for() {
   local sid="$1"
   [[ -n "$sid" ]] || return 0
-  find "$PROJECTS_DIR" -type f -name "$sid.jsonl" 2>/dev/null | head -1
+  # `|| true` for the reason given at ack_line_in. The directory does not
+  # exist until the CLI has written its first transcript on this machine, and
+  # `find` fails on a missing directory; under `set -o pipefail` that failure
+  # would end the run mid-wait with no output, where "no transcript yet" is
+  # the ordinary answer.
+  find "$PROJECTS_DIR" -type f -name "$sid.jsonl" 2>/dev/null | head -1 || true
 }
 
 # spawn_nonce
@@ -224,29 +267,135 @@ spawn_nonce() {
   printf '%s\n' "$n"
 }
 
+# look [pasted-text]
+#
+# Looks at the pane once and sets GATE (ready, blocked or waiting) and, when
+# blocked, BLOCKER. One capture decides both, so the dialog that is reported
+# is the one that was seen.
+#
+# Given the text the launcher has just pasted, the look is the one before its
+# Enter, and the box may also be recognised by showing that paste.
+#
+# A capture that fails says nothing about the pane, whatever it printed
+# before failing: readiness is unknown, which is not ready.
+look() {
+  local pane verdict
+  GATE="waiting"
+  GATE_NOTE=""
+  BLOCKER=""
+  # Read with a sentinel so the blank rows at the foot of the pane survive:
+  # they are how a box on the very last row is told from one with room under
+  # it. A bare substitution would drop them.
+  pane="$(tm capture-pane -p -J -t "=$NAME:" 2>/dev/null && printf x)" || return 0
+  pane="${pane%x}"
+  pane="${pane%$'\n'}"
+  verdict="$(pane_verdict "$BLOCKER_ROWS" "$READY_ROWS" "$pane" "${1:-}")"
+  GATE="${verdict%%$'\t'*}"
+  case "$GATE" in
+    blocked) BLOCKER="${verdict#*$'\t'}" ;;
+    waiting) [[ "$verdict" == *$'\t'* ]] && GATE_NOTE="${verdict#*$'\t'}" ;;
+    ready)
+      # The box counts only while the CLI is there to own it. A CLI that has
+      # exited leaves its last frame on the pane, box and mode line and all,
+      # with the shell's prompt under it; a paste sent then is typed into the
+      # shell and run line by line.
+      [[ -n "$(claude_pid_in "$NAME")" ]] || GATE="gone" ;;
+  esac
+  return 0
+}
+
+# look_settled <seconds> [pasted-text]
+#
+# Returns 0 once the pane shows the input box. A look that finds nothing
+# recognisable is repeated, five times a second for the time given, because a
+# capture can land while the interface is redrawing; a known dialog ends it
+# at once. The pasted text is passed on to each look.
+look_settled() {
+  local limit=$(( $1 * 5 )) tries=0
+  (( limit >= 1 )) || limit=1
+  while true; do
+    look "${2:-}"
+    [[ "$GATE" == "ready" ]] && return 0
+    [[ "$GATE" == "blocked" || "$GATE" == "gone" ]] && return 1
+    tries=$(( tries + 1 ))
+    (( tries >= limit )) && return 1
+    sleep 0.2
+  done
+}
+
 # deliver_text <text>
 #
-# Send text to the session as a paste, then submit it.
+# Send text to the session as a paste, then submit it. Returns
+#
+#   0  both went
+#   1  nothing was sent: the input box was not there for the paste
+#   2  the paste went and Enter was held back: the box was gone by then
+#   3  the multiplexer failed before or at the paste; nothing was delivered
+#   4  the multiplexer failed at the Enter; the paste went
+#
+# and, for 3 and 4, leaves the multiplexer's status in MUX_RC.
 #
 # Typed input would submit at the first newline, truncating anything
 # multi-line to its first line and delivering the remainder as separate
 # messages. A paste is handled as one block, so newlines inside it are text
 # rather than submissions, and exactly one submission follows.
+#
+# The paste and the Enter are two separate things sent to the pane, and each
+# is preceded by its own look: the input box has to be there for both. What
+# is on the pane can still change between a look and the send that follows
+# it. That window is one multiplexer call wide and cannot be closed from
+# here, so a send is held back when the box is seen to be gone, not
+# guaranteed never to reach anything else.
+#
+# Every multiplexer call is checked here by hand. The caller tests this
+# function's status, which switches errexit off for everything inside it, so
+# an unchecked failure would be stepped over: a paste that failed followed by
+# an Enter all the same, and a report of a delivery that did not happen.
 deliver_text() {
   local text="$1"
   local buf="spawn-session-$$"
   local tmp
-  tmp="$(mktemp)"
+  MUX_RC=0
+  tmp="$(mktemp)" || { MUX_RC=1; return 3; }
+  # The multiplexer reads the path it loads from as a format, as it does the
+  # directory of a new session. A temporary directory with `#` in its name
+  # would have it load some other file, and paste that. /tmp has none.
+  if [[ "$tmp" == *"#"* ]]; then
+    rm -f "$tmp"
+    tmp="$(mktemp /tmp/spawn-session.XXXXXX)" || { MUX_RC=1; return 3; }
+  fi
   printf '%s' "$text" > "$tmp"
 
-  tm load-buffer -b "$buf" "$tmp"
-  tm paste-buffer -p -d -b "$buf" -t "=$NAME:"
+  # Loading fills the multiplexer's own buffer and sends the pane nothing, so
+  # it is done first and the look is the last thing before the paste.
+  tm load-buffer -b "$buf" "$tmp" || MUX_RC=$?
   rm -f "$tmp"
+  (( MUX_RC == 0 )) || return 3
+
+  if ! look_settled 1; then
+    tm delete-buffer -b "$buf" 2>/dev/null || true
+    return 1
+  fi
+  if ! tm paste-buffer -p -d -b "$buf" -t "=$NAME:"; then
+    MUX_RC=$?
+    (( MUX_RC != 0 )) || MUX_RC=1
+    tm delete-buffer -b "$buf" 2>/dev/null || true
+    return 3
+  fi
 
   # Let the paste be taken up before submitting; submitting into a composer
   # that has not finished receiving loses the tail.
   sleep 0.5
-  tm send-keys -t "=$NAME:" Enter
+  # The box now holds the paste, and the CLI may have put a hint where the
+  # mode line was. This look knows what was pasted and takes the box showing
+  # it as the box; failing that, it waits for the mode line to come back. It
+  # still stops at once for a dialog.
+  look_settled "$SETTLE_SECONDS" "$text" || return 2
+  if ! tm send-keys -t "=$NAME:" Enter; then
+    MUX_RC=$?
+    (( MUX_RC != 0 )) || MUX_RC=1
+    return 4
+  fi
 }
 
 # ack_line_in <transcript> <nonce>
@@ -271,12 +420,59 @@ git_root_of() {
   git -C "$1" rev-parse --show-toplevel 2>/dev/null || true
 }
 
+# logical_dir <dir>
+#
+# Echoes the directory as an absolute path, symbolic links kept as named.
+logical_dir() {
+  # CDPATH is cleared so a relative name is looked up here and nowhere else;
+  # with it set, cd may go somewhere else and print where it went.
+  (CDPATH="" && cd -- "$1" 2>/dev/null && pwd)
+}
+
 # physical_dir <dir>
 #
 # Echoes the directory with symbolic links resolved, which is the form the
 # repository root is reported in.
 physical_dir() {
-  (cd "$1" && pwd -P)
+  (CDPATH="" && cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+# kernel_dir <dir>
+#
+# Echoes where the name leads when every symbolic link is followed before
+# every `..`, which is how the kernel reads it and how `[[ -d ]]` just did.
+# logical_dir reads `link/..` as the directory holding the link; the kernel
+# reads it as the parent of whatever the link points to. The launcher uses
+# the first, as it always has, and checks the second too, so a name cannot be
+# accepted for a place the argument does not lead to by either reading.
+kernel_dir() {
+  (CDPATH="" && cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+
+# exact <command...>
+#
+# Runs the command and sets EXACT to the line it printed, less the one newline
+# that ends it. Fails, with EXACT empty, if the command fails.
+#
+# Every path here is read through this rather than a bare command
+# substitution. A substitution drops all trailing newlines, so a directory
+# whose name ends in one comes back as a different, shorter path: its sibling.
+# The sentinel keeps them, and the check that refuses such a directory can
+# then see what it is refusing.
+exact() {
+  EXACT="$("$@" && printf x)" || { EXACT=""; return 1; }
+  EXACT="${EXACT%x}"
+  EXACT="${EXACT%$'\n'}"
+}
+
+# refuse_control_in <subject> <path>
+#
+# Refuses, as usage, a path holding a control character or a byte that is
+# not UTF-8. Called before the path is used for anything: a trust lookup, a
+# trust record, the multiplexer.
+refuse_control_in() {
+  has_control "$2" || return 0
+  die "$1 has a control character, or a byte that is not valid UTF-8, in its path, written out here as text: '$2'. Refused: a path with one in it is not carried intact. A newline at the end is dropped when the path is resolved, which names a different directory for the session to start in and for trust to be recorded against. Rename the directory, or launch somewhere else."
 }
 
 # have_trust_tool
@@ -342,16 +538,80 @@ installed_cli_version() {
   "$CLI_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true
 }
 
-# find_blocker <session>
+# load_tables
 #
-# Echoes "id<TAB>what<TAB>remedy" if the pane shows a known startup dialog.
-find_blocker() {
-  local pane table
-  pane="$(tm capture-pane -p -J -t "=$1:" 2>/dev/null || true)"
-  [[ -n "$pane" ]] || return 1
-  [[ -r "$BLOCKER_TABLE" ]] || return 1
-  table="$(cat "$BLOCKER_TABLE")"
-  blocker_for "$table" "$pane"
+# Reads the dialog table and the prompt table once, so a look costs one
+# multiplexer call and nothing else. A table that cannot be read contributes
+# no rows: no ready table means "never ready", not "always ready".
+load_tables() {
+  if [[ -r "$BLOCKER_TABLE" ]]; then
+    BLOCKER_ROWS="$(cat "$BLOCKER_TABLE")"
+  fi
+  if [[ -r "$READY_TABLE" ]]; then
+    READY_ROWS="$(cat "$READY_TABLE")"
+  fi
+}
+
+# drift_note <patterns> <cli-version> <how-they-relate>
+#
+# Echoes the advisory for a CLI other than the one a table's patterns come
+# from, or nothing.
+drift_note() {
+  local installed verdict
+  installed="$(installed_cli_version)"
+  verdict="$(version_verdict "$installed" "$2")"
+  if [[ "$verdict" == "drift" ]]; then
+    echo "           (CLI $installed differs from $2, which these"
+    echo "            $1 were $3 — wording may have moved)"
+  fi
+}
+
+# still_waiting_note <waited>
+#
+# Says something once, at the inspection mark, rather than sitting silent to
+# the ceiling: a first turn can legitimately be slow, and a caller needs to
+# tell "still starting" from "stuck" without waiting for the timeout. Speaks
+# from the last look.
+still_waiting_note() {
+  local waited="$1"
+  (( NOTED )) && return 0
+  (( waited >= INSPECT_AFTER )) || return 0
+  NOTED=1
+
+  if [[ -n "$BLOCKER" ]]; then
+    echo "spawn-session: '$NAME' is held at a startup dialog (${BLOCKER%%$'\t'*}); still waiting" >&2
+  elif [[ "$HANDSHAKE" == "sent" ]]; then
+    echo "spawn-session: '$NAME' has not answered after ${waited}s, nothing obviously blocking it; still waiting" >&2
+  else
+    echo "spawn-session: '$NAME' has not shown its input prompt after ${waited}s, and no known dialog; nothing has been sent to it; still waiting" >&2
+  fi
+}
+
+# held_back <identity>
+#
+# Echoes what a run that stopped short did and did not send. Said from what
+# happened: a paste that went out is reported as a paste, including when the
+# Enter after it was held back.
+held_back() {
+  local identity="$1"
+  case "$HANDSHAKE" in
+    not_sent)
+      echo "  nothing was sent to it." ;;
+    not_submitted)
+      echo "  the handshake was pasted, and Enter was not sent: the input prompt"
+      echo "  was gone by then. The paste may have reached what replaced it."
+      echo "  Clear the session's input box before using --resume." ;;
+    sent)
+      [[ -n "$BRIEF" && -n "$identity" ]] || return 0
+      if [[ "$BRIEF_HELD" == "not_submitted" ]]; then
+        echo "  identity was confirmed. The brief was pasted, and Enter was not"
+        echo "  sent: the input prompt was gone by then. The paste may have"
+        echo "  reached what replaced it. Clear the input box before --resume."
+      else
+        echo "  identity was confirmed. The brief was not sent: the input prompt"
+        echo "  was gone by then."
+      fi ;;
+  esac
 }
 
 # report_blocker <blocker-row>
@@ -365,14 +625,7 @@ report_blocker() {
   echo "  blocked  $id"
   echo "           $what"
   echo "           $remedy"
-
-  local installed verdict
-  installed="$(installed_cli_version)"
-  verdict="$(version_verdict "$installed" "$PINNED_CLI_VERSION")"
-  if [[ "$verdict" == "drift" ]]; then
-    echo "           (CLI $installed differs from $PINNED_CLI_VERSION, which these"
-    echo "            dialog patterns were verified against — wording may have moved)"
-  fi
+  drift_note "dialog patterns" "$PINNED_CLI_VERSION" "verified against"
 }
 
 report() {
@@ -386,7 +639,14 @@ report() {
     printf 'verdict\t%s\n' "$verdict"
     printf 'pid\t%s\n' "$pid"
     [[ -n "$identity" ]] && printf 'identity\t%s\n' "$identity"
-    printf 'brief\t%s\n' "$( (( BRIEF_DELIVERED )) && echo delivered || echo none )"
+    if (( BRIEF_DELIVERED )); then
+      printf 'brief\tdelivered\n'
+    else
+      printf 'brief\t%s\n' "${BRIEF_HELD:-none}"
+    fi
+    # On every run that verifies: how far the handshake got. With not_sent,
+    # nothing at all was sent to the session.
+    [[ -n "$HANDSHAKE" ]] && printf 'handshake\t%s\n' "$HANDSHAKE"
     [[ -n "$url" ]] && printf 'url\t%s\n' "$url"
     return 0
   fi
@@ -411,8 +671,41 @@ report() {
     unconfirmed)
       echo "  identity unconfirmed — the session did not answer in time."
       echo "           It is still running and has been left alone." ;;
+    not_ready)
+      if [[ "$GATE_NOTE" == "clipped" ]]; then
+        echo "  the pane is too small to show the mode line under the input box,"
+        echo "  so the launcher cannot tell that the prompt is ready."
+        held_back "$identity"
+        echo "  It is still running and has been left alone. Make the pane taller"
+        echo "  (attach from a larger terminal: tmux attach -t \"=$NAME\"), then"
+        echo "  re-run with --resume."
+      else
+        if [[ "$HANDSHAKE" == "not_sent" ]]; then
+          echo "  identity unconfirmed — the input prompt never appeared, so the"
+          echo "           handshake was not sent."
+        else
+          echo "  the input prompt is not showing, and no known dialog is."
+        fi
+        held_back "$identity"
+        echo "  It is still running and has been left alone. Look at it"
+        echo "  (tmux attach -t \"=$NAME\"), then re-run with --resume."
+        echo "  If it is at its prompt, this CLI draws its input box or mode line"
+        echo "  in a way scripts/ready-prompts.tsv does not describe yet."
+        drift_note "prompt patterns" "$READY_CLI_VERSION" "taken from"
+      fi ;;
+    mismatch)
+      echo "  identity mismatch — the session that answered is not the one that"
+      echo "           was launched. Nothing further has been sent to it." ;;
+    mux_error)
+      echo "  the multiplexer failed part-way through a delivery."
+      held_back "$identity" ;;
     blocked)
-      echo "  the session never got as far as reading its input."
+      if [[ -n "$identity" ]]; then
+        echo "  a startup dialog came up after the session identified itself."
+      else
+        echo "  the session never got as far as reading its input."
+      fi
+      held_back "$identity"
       report_blocker "$BLOCKER" ;;
   esac
 
@@ -425,6 +718,57 @@ report() {
     ok)                 echo "  identity confirmed" ;;
     posture_unverified) echo "  identity confirmed (the session could not report its posture)" ;;
   esac
+  return 0
+}
+
+# exit_if_gone
+#
+# Ends the run as "never started" if no CLI process is left in the session.
+# Called before any outcome that says the session is running: a CLI that
+# starts and exits at once is seen as a process for a moment, and every later
+# look then finds only the shell it left behind.
+exit_if_gone() {
+  [[ -n "$(claude_pid_in "$NAME")" ]] && return 0
+  report "no_process" "" "" "${1:-}"
+  die "the CLI process in '$NAME' is gone: it started and then exited" "$EXIT_NO_PROCESS"
+}
+
+# stop_short <pid> <identity>
+#
+# Ends a run whose next send was held back, from the last look: a known
+# dialog is a diagnosis with a remedy, anything else is an unknown and is
+# reported as one. Either way the session is left as it is.
+stop_short() {
+  local pid="$1" identity="$2" bridge
+  exit_if_gone "$identity"
+  bridge="$(bridge_id_for "$pid")"
+
+  if [[ -n "$BLOCKER" ]]; then
+    report "blocked" "$pid" "$bridge" "$identity"
+    exit "$EXIT_NO_PROCESS"
+  fi
+
+  # Said on stderr so a caller reading pairs gets it too.
+  if [[ "$GATE_NOTE" == "clipped" ]]; then
+    echo "spawn-session: '$NAME' shows its input box on the last row of its pane, with no room for the mode line under it; make the pane taller, then re-run with --resume" >&2
+  elif [[ "$POSTURE" == "bypass" && "$(ready_row_basis "$READY_ROWS" bypass || true)" == "inferred" ]]; then
+    # The prompt rows are where to look first, and the one for a bypass
+    # launch is the only mode row never seen in a real pane.
+    echo "spawn-session: the 'bypass' row of scripts/ready-prompts.tsv is inferred, not seen in a real pane; if '$NAME' is at its prompt, correct that row first" >&2
+  fi
+  report "not_ready" "$pid" "$bridge" "$identity"
+  exit "$EXIT_UNCONFIRMED"
+}
+
+# mux_failed <what> <pid> <identity>
+#
+# Ends a run whose send the multiplexer refused. An error, not a verdict on
+# the session: the report says what had been delivered by then, and the exit
+# status is the multiplexer's own.
+mux_failed() {
+  local what="$1" pid="$2" identity="$3"
+  report "mux_error" "$pid" "$(bridge_id_for "$pid")" "$identity"
+  die "the multiplexer failed to $what in '$NAME' (status $MUX_RC); nothing further was sent" "$MUX_RC"
 }
 
 main() {
@@ -458,9 +802,28 @@ main() {
       ;;
   esac
 
+  # The directory, settled before it is used for anything. Checked as given
+  # and again as resolved: the argument can be clean while the directory it
+  # names is not, reached by a relative path or through a symbolic link.
   DIR="${DIR:-$PWD}"
+  refuse_control_in "the directory" "$DIR"
   [[ -d "$DIR" ]] || die "no such directory: $DIR"
-  DIR="$(cd "$DIR" && pwd)"
+  exact kernel_dir "$DIR" || die "cannot enter directory: $DIR"
+  refuse_control_in "the location the directory resolves to" "$EXACT"
+  exact logical_dir "$DIR" || die "cannot enter directory: $DIR"
+  DIR="$EXACT"
+  refuse_control_in "the directory" "$DIR"
+  exact physical_dir "$DIR" || die "cannot resolve directory: $DIR"
+  DIR_PHYSICAL="$EXACT"
+  refuse_control_in "the location the directory resolves to" "$DIR_PHYSICAL"
+  # The repository root is what trust is recorded under, so it is read the
+  # same way and held to the same rule. Only needed where trust can be
+  # looked at.
+  if have_trust_tool; then
+    exact git_root_of "$DIR" || true
+    GIT_ROOT="$EXACT"
+    refuse_control_in "the repository that holds the directory" "$GIT_ROOT"
+  fi
 
   local launch_line
   launch_line="$(spawn_launch_command "$NAME" "$POSTURE" "$PRE_LAUNCH")"
@@ -484,12 +847,12 @@ main() {
     # the CLI's configuration would not be a dry run.
     if have_trust_tool; then
       local dry_root dry_key
-      dry_root="$(git_root_of "$DIR")"
+      dry_root="$GIT_ROOT"
       dry_key="$(trust_key "$DIR" "$dry_root")"
       if config_trusts "$CONFIG_FILE" "$dry_key"; then
         echo "  workspace already trusted ($dry_key)"
       elif (( TRUST_FOLDER )) && trust_grantable "$dry_key" "$HOME"; then
-        if trust_is_wider "$(physical_dir "$DIR")" "$dry_root"; then
+        if trust_is_wider "$DIR_PHYSICAL" "$dry_root"; then
           trust_scope_warning "$DIR" "$dry_root" dry-run >&2
         fi
         echo "  would record workspace trust for $dry_key"
@@ -546,7 +909,7 @@ main() {
   # simulating input, so the choice is made explicitly, in advance, by a flag.
   if have_trust_tool; then
     local git_root key
-    git_root="$(git_root_of "$DIR")"
+    git_root="$GIT_ROOT"
     key="$(trust_key "$DIR" "$git_root")"
     if ! config_trusts "$CONFIG_FILE" "$key"; then
       if (( TRUST_FOLDER )); then
@@ -555,7 +918,7 @@ main() {
         # Said before the write, not after: the grant covers more than the
         # directory that was named, and that is the last moment a caller
         # reading this can still stop it.
-        if trust_is_wider "$(physical_dir "$DIR")" "$git_root"; then
+        if trust_is_wider "$DIR_PHYSICAL" "$git_root"; then
           trust_scope_warning "$DIR" "$git_root" >&2
         fi
         grant_trust "$CONFIG_FILE" "$key" || die "could not record workspace trust"
@@ -592,8 +955,13 @@ main() {
     # The warning above says what this is about to do. If the multiplexer
     # then refuses, say that too: left alone, the last word on stderr would be
     # a launch that never happened. The exit status stays the multiplexer's.
+    # The directory is given with every `#` doubled. The multiplexer reads
+    # that argument as a format, so a directory named `a-#{session_name}`
+    # would be expanded into some other path, which it then fails to enter,
+    # and the session would start in the home directory instead.
     local launch_rc=0
-    tm new-session -d -s "$NAME" -c "$DIR" || launch_rc=$?
+    tm new-session -d -s "$NAME" -c "${DIR//#/##}" \
+      -x "$SESSION_COLUMNS" -y "$SESSION_ROWS" || launch_rc=$?
     if (( launch_rc )); then
       die "the multiplexer could not create session '$NAME'; nothing was launched" "$launch_rc"
     fi
@@ -611,6 +979,10 @@ main() {
     exit "$EXIT_OK"
   fi
 
+  # From here on the run reports how far the handshake got, on every path.
+  HANDSHAKE="not_sent"
+  load_tables
+
   local waited=0 pid=""
   while (( waited < TIMEOUT )); do
     pid="$(claude_pid_in "$NAME")"
@@ -624,44 +996,63 @@ main() {
     die "no CLI process appeared in '$NAME' within ${TIMEOUT}s" "$EXIT_NO_PROCESS"
   fi
 
-  # ── identity ──────────────────────────────────────────────────────────
+  # ── readiness, then identity ──────────────────────────────────────────
   #
-  # Ask the session who it is before sending it anything else. Until this
-  # answers, the handshake is the only thing that has been delivered — so a
-  # handshake that reached the wrong pane costs a stray line, where a brief
-  # would have landed in someone else's conversation.
-  local sid=""
-  while (( waited < TIMEOUT )); do
-    sid="$(session_id_for "$pid")"
-    [[ -n "$sid" ]] && break
+  # Look before sending. A process existing says nothing about what it is
+  # showing: a session held at a startup dialog has a live process too, and
+  # anything pasted and submitted then is typed at the dialog. So nothing is
+  # sent until the pane shows the input box, and if that never happens the
+  # run ends having sent nothing.
+  #
+  # Then ask the session who it is before sending it anything else. Until
+  # that answers, the handshake is the only thing that has been delivered —
+  # so a handshake that reached the wrong pane costs a stray line, where a
+  # brief would have landed in someone else's conversation.
+  local sid="" nonce sent_rc=1
+  nonce="$(spawn_nonce)"
+  while true; do
+    [[ -n "$sid" ]] || sid="$(session_id_for "$pid")"
+    look
+    if [[ "$GATE" == "ready" ]]; then
+      sent_rc=0
+      deliver_text "$(handshake_text "$nonce")" || sent_rc=$?
+      # Anything but "held back before the paste" ends this: only that one
+      # leaves the pane as it was, to be tried again.
+      (( sent_rc == 1 )) || break
+    fi
+    # No process, no point in waiting for its prompt.
+    [[ "$GATE" == "gone" ]] && break
+    # The look comes before the clock is checked, so the outcome at the
+    # deadline is chosen from what the pane shows then, not a second ago.
+    (( waited < TIMEOUT )) || break
+    still_waiting_note "$waited"
     sleep 1
     (( waited += 1 ))
   done
 
-  local nonce
-  nonce="$(spawn_nonce)"
-  deliver_text "$(handshake_text "$nonce")"
+  case "$sent_rc" in
+    0) HANDSHAKE="sent" ;;
+    1) stop_short "$pid" "" ;;
+    2) HANDSHAKE="not_submitted"
+       stop_short "$pid" "" ;;
+    4) HANDSHAKE="not_submitted"
+       mux_failed "submit the handshake" "$pid" "" ;;
+    *) mux_failed "paste the handshake" "$pid" "" ;;
+  esac
 
-  local transcript="" ack="" noted=0
-  while (( waited < TIMEOUT )); do
+  local transcript="" ack=""
+  while true; do
+    [[ -n "$sid" ]] || sid="$(session_id_for "$pid")"
     [[ -n "$transcript" ]] || transcript="$(transcript_for "$sid")"
     if [[ -n "$transcript" ]]; then
       ack="$(ack_line_in "$transcript" "$nonce")"
       [[ -n "$ack" ]] && break
     fi
-    # Say something at the inspection mark rather than sitting silent to the
-    # ceiling: a first turn can legitimately be slow, and a caller needs to
-    # tell "still starting" from "stuck" without waiting for the timeout.
-    if (( ! noted )) && (( waited >= INSPECT_AFTER )); then
-      local early
-      early="$(find_blocker "$NAME" || true)"
-      if [[ -n "$early" ]]; then
-        echo "spawn-session: '$NAME' is held at a startup dialog (${early%%$'\t'*}); still waiting" >&2
-      else
-        echo "spawn-session: '$NAME' has not answered after ${waited}s, nothing obviously blocking it; still waiting" >&2
-      fi
-      noted=1
+    (( waited < TIMEOUT )) || break
+    if (( ! NOTED )) && (( waited >= INSPECT_AFTER )); then
+      look
     fi
+    still_waiting_note "$waited"
     sleep 1
     (( waited += 1 ))
   done
@@ -670,10 +1061,11 @@ main() {
   bridge="$(bridge_id_for "$pid")"
 
   if [[ -z "$ack" ]]; then
+    exit_if_gone
     # No answer. Before reporting a bare timeout, look at the pane: if a known
     # startup dialog is holding the session, that is a diagnosis rather than an
     # unknown, and it has a remedy the caller can act on.
-    BLOCKER="$(find_blocker "$NAME" || true)"
+    look
     if [[ -n "$BLOCKER" ]]; then
       report "blocked" "$pid" "$bridge" ""
       exit "$EXIT_NO_PROCESS"
@@ -691,6 +1083,11 @@ main() {
   got_posture="$(parse_ack posture "$ack" || true)"
   identity="$(ack_verdict "$DIR" "$got_dir" "${POSTURE:-acceptEdits}" "$got_posture")"
 
+  # A mismatch is reported like every other ending of a verified run, so a
+  # caller reading pairs learns that the handshake went and what came back.
+  case "$identity" in
+    mismatch_cwd|mismatch_posture) report "mismatch" "$pid" "$bridge" "$identity" ;;
+  esac
   case "$identity" in
     mismatch_cwd)
       die "'$NAME' answered from a different directory ($got_dir, expected $DIR): this is not the session that was launched. Nothing further has been sent to it." ;;
@@ -699,11 +1096,22 @@ main() {
   esac
 
   # Identity is settled; only now does anything the caller wrote get sent.
+  # The brief is two more sends, and each is looked at like the handshake's.
   if [[ -n "$BRIEF" ]]; then
-    deliver_text "$BRIEF"
-    BRIEF_DELIVERED=1
+    local brief_rc=0
+    deliver_text "$BRIEF" || brief_rc=$?
+    case "$brief_rc" in
+      0) BRIEF_DELIVERED=1 ;;
+      1) stop_short "$pid" "$identity" ;;
+      2) BRIEF_HELD="not_submitted"
+         stop_short "$pid" "$identity" ;;
+      4) BRIEF_HELD="not_submitted"
+         mux_failed "submit the brief" "$pid" "$identity" ;;
+      *) mux_failed "paste the brief" "$pid" "$identity" ;;
+    esac
   fi
 
+  exit_if_gone "$identity"
   local verdict
   verdict="$(spawn_verdict "$pid" "$bridge")"
   report "$verdict" "$pid" "$bridge" "$identity"

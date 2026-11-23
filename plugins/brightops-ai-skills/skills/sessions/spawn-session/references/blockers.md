@@ -1,8 +1,9 @@
 # Startup dialogs, and why none of them is answered automatically
 
 A newly launched session can be held before it reads anything, by a dialog that
-expects a person. This skill identifies which one, reports the configuration
-entry that settles it, and sends nothing.
+expects a person. This skill identifies which one and reports the
+configuration entry that settles it. It never answers the dialog, and it
+holds back input whenever the CLI's input box is not what the pane shows.
 
 ## The rule
 
@@ -48,6 +49,46 @@ setting that was never the problem.
 
 Order matters. The first matching row wins, so more specific dialogs belong
 above more general ones.
+
+Where the wording is decides what it means. With no input box on the pane, a
+row's wording anywhere on the pane names the dialog. With an input box, the
+wording counts from the box's top rule down to the foot of the pane, whatever
+its line looks like, and above the box it is earlier output and is ignored.
+
+A session seen at a dialog is sent nothing. The launcher looks before each
+thing it sends, not after, so the usual diagnosis is made with no input having
+reached the dialog. The exception is a dialog that comes up between a look
+and the send that follows it: `protocol.md` (What this guarantees, and what
+it does not).
+
+## The status-line table
+
+`scripts/ready-prompts.tsv` is the other half of that check. The launcher
+recognises the input box by its shape: the last rule on the pane, the nearest
+rule above it, and the prompt glyph under that one. It then requires a mode
+line somewhere under the box. The table lists how a mode line begins: the
+mode symbol, the mode, and `on` (`⏵⏵ accept edits on`, `⏸ plan mode on`). The
+prompt glyph alone is not evidence, because the same glyph marks the focused
+option in a dialog.
+
+Four columns: `id`, the literal `pattern`, `basis`, and `where`.
+
+- `basis` is `seen` for a row read from a real pane and `inferred` for one
+  that was not. The rows marked `seen` were drawn by CLI 2.1.330 in a
+  credential-free sandbox. The `bypass` row is inferred: starting the CLI
+  with permissions bypassed to look at it is refused in this repository. A
+  bypass launch that ends not ready says so on stderr and names that row.
+- `where` is `under` for a mode line and `inside` for the one row that is
+  not: `[Pasted text #`, the start of the marker the CLI folds a long paste
+  into. That row is used only at the look before an Enter, when the CLI has
+  replaced the mode line with a hint and the paste in the box is the
+  evidence. See `protocol.md` (One look before each send).
+
+If a session is plainly at its prompt and the launcher reports it not ready,
+capture the pane (`tmux capture-pane -p -J -t "=<name>:"`) and compare it
+with the shape above. A mode line with different wording needs a row. A paste
+folded into a different marker needs the `inside` row changed. A box drawn
+differently needs a change to the launcher, not to the table.
 
 ## Adding a row
 

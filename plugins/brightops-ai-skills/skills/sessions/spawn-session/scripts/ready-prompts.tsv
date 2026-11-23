@@ -1,0 +1,68 @@
+# The mode line the CLI draws under its input box.
+#
+# The launcher sends nothing to a session until the pane shows the input box
+# with one of these lines somewhere under it:
+#
+#     ────────────────────────       a rule
+#     ❯                              the input, opened by the prompt glyph
+#     ────────────────────────       a rule, the last one on the pane
+#       a status line of the user's  any number of lines
+#       ⏵⏵ accept edits on …         the mode line: a row of this table
+#
+# The box is recognised by its shape. This table is the second half of the
+# evidence: a line under the box has to be a mode line. Text that only
+# appears somewhere on the pane is not evidence: a dialog can quote a mode
+# line and a shell can echo one.
+#
+# Columns, tab-separated:
+#   id       short name
+#   pattern  how the line begins, mode symbol included
+#   basis    seen      drawn by the real CLI in a pane, and read from it
+#            inferred  built by the same rule as the rows that were seen, or
+#                      taken from another release, and not seen
+#   where    under     a mode line, under the box
+#            inside    how the CLI marks a folded paste, inside the box
+#
+# A line matches a row when it starts with the pattern. A narrow pane cuts
+# the line short ("⏵⏵ accept edits" at 20 columns, "⏵⏵" at 12), and a cut
+# line matches when what is left is the start of the pattern and holds at
+# least the symbol. Blank lines and lines starting with # are ignored.
+#
+# The rows marked seen were drawn by CLI 2.1.330, started in a pseudo-terminal
+# with no credentials and a temporary home directory, at 100 columns; the
+# accept-edits row also at 40, 25, 20, 16 and 12, replayed through tmux 3.3a.
+#
+# The bypass row is inferred. Starting the CLI with permissions bypassed to
+# look at it is refused in this repository, on purpose. In that release the
+# mode's title is "Bypass Permissions", its symbol is the one accept-edits
+# uses, and every seen row is the symbol, the title in lower case, and "on".
+# If a session launched with --bypass is at its prompt and the launcher says
+# the prompt never appeared, this is the row to correct.
+#
+# The shortcuts row is inferred too. 2.1.330 was seen to draw that hint only
+# after the mode ("⏸ manual mode on · ? for shortcuts"), at 100 and 40
+# columns, never at the start of the line; releases that drew no mode for the
+# default one began the line with it.
+#
+# A user's own status line is drawn between the box and the mode line. It was
+# seen with one, three and six lines, and with a line opening with the prompt
+# glyph; the mode line was the last line each time. Its length and wording do
+# not matter here.
+#
+# The row marked inside is not a mode line. Once the launcher has pasted,
+# the CLI folds a paste of five lines or more, or one very long line, into
+# "[Pasted text #1 +10 lines]" (or "[Pasted text #1]"), and for about eight
+# seconds draws "paste again to expand" where the mode line was. The look
+# before an Enter therefore also accepts a box that shows the paste: this
+# marker, or the start of the text itself when the CLI shows a short paste
+# as it is. Seen in 2.1.330 at 80, 40 and 20 columns, with and without a
+# status line of the user's own. It plays no part before a paste.
+
+accept-edits	⏵⏵ accept edits on	seen	under
+bypass	⏵⏵ bypass permissions on	inferred	under
+plan	⏸ plan mode on	seen	under
+auto	⏵⏵ auto mode on	seen	under
+dont-ask	⏵⏵ don't ask on	seen	under
+manual	⏸ manual mode on	seen	under
+shortcuts	? for shortcuts	inferred	under
+pasted-text	[Pasted text #	seen	inside

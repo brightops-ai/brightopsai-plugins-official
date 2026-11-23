@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-22
+
+### Fixed
+
+- `spawn-session`: the handshake was pasted and submitted before the pane was
+  looked at, so a session held at a startup dialog received input. The
+  launcher now sends only to the CLI's input box, and looks at the pane
+  before each thing it sends: the handshake's paste, its Enter, the brief's
+  paste, its Enter. A session seen at a dialog is diagnosed (exit 4) and sent
+  nothing further. The pane can still change between a look and the send that
+  follows it, so a dialog that comes up in that instant can receive that one
+  paste or Enter.
+- `spawn-session`: a directory whose name ended in a newline resolved to its
+  sibling, which was then trusted by `--trust-folder` and used as the working
+  directory. A directory whose path holds a control character, or is not
+  valid UTF-8, is now refused as usage (exit 2), before the trust
+  configuration is read or written, in a dry run too. The argument is checked
+  as given, as the kernel resolves it, and as the shell resolves it, so `.`,
+  a symbolic link and `link/..` are covered.
+- `spawn-session`: a directory whose name holds tmux format syntax, such as
+  `a-#{session_name}`, started the session in the home directory while trust
+  was recorded for the directory named. The directory is now passed to tmux
+  so that it is not expanded.
+- `spawn-session`: a byte that is not valid UTF-8 in a directory or session
+  name was printed raw in refusals and warnings. It is rendered as text
+  (`\x9b`).
+- `spawn-session`: when the CLI's transcript directory did not exist yet, as
+  on a machine's first session, a verified launch ended with status 1 and no
+  output while waiting for the reply. It now waits and reports as usual.
+
+### Changed
+
+- `spawn-session`: when the input box is not showing and no known dialog is,
+  the run ends with exit 5 and the new verdict `not_ready`, having held back
+  whatever came next. It previously sent the handshake regardless.
+- `spawn-session`: `--porcelain` adds a `handshake` pair to every run that
+  verifies: `not_sent`, `not_submitted` (pasted, Enter held back) or `sent`.
+  `brief` gains the value `not_submitted`, and `verdict` gains `not_ready`,
+  `mismatch` and `mux_error`. An acknowledgement from the wrong session now
+  prints its report before the exit 2. A run with `--no-verify` is unchanged.
+- `spawn-session`: a tmux command that fails during a delivery ends the run
+  with tmux's own status after a report of what had been delivered. A CLI
+  that starts and exits at once is reported as never started (exit 4), where
+  it could be reported as running.
+- `spawn-session`: a session the launcher creates is 120 columns by 40 rows
+  until a client attaches, instead of the tmux server's default size.
+- `spawn-session`: a launch in a directory with a control character in its
+  path used to go ahead, with the name rendered as text in the warning. It is
+  now refused; rename the directory or launch elsewhere. On Linux the same
+  applies to a name that is not valid UTF-8, which used to be carried
+  through.
+- `spawn-session`: the mode lines the launcher accepts under the input box
+  are listed in `scripts/ready-prompts.tsv`, each marked `seen` (read from a
+  real CLI 2.1.330 pane) or `inferred`. The row for a `--bypass` session is
+  inferred; a bypass launch that ends not ready names it on stderr.
+
 ## [1.5.1] - 2026-11-22
 
 ### Fixed
