@@ -77,10 +77,10 @@ does not guarantee: `references/protocol.md`.
 ## How it works, and why it is worth knowing
 
 Nothing is sent until the launcher has **looked at the pane** and found the
-CLI's input box at the foot of it: a rule, the prompt line, a rule, and a
-status line under them. Status-line wording anywhere else on the pane does not
-count, and neither does a running process. If the box never appears, the run
-ends having sent nothing.
+CLI's input box: a rule, the prompt line, a rule, and the mode line somewhere
+under them. Mode-line wording anywhere else on the pane does not count, and
+neither does a running process. If the box never appears, the run ends having
+sent nothing.
 
 The launcher looks again before each thing it sends: the handshake's paste,
 its Enter, the brief's paste, its Enter. When the box is gone, that send and
@@ -140,14 +140,19 @@ silence, and at the ceiling it distinguishes three situations:
   `--resume` to deliver the brief into the same session. Re-running without
   `--resume` is refused: the name is taken.
 - **Not ready (exit 5).** The input box is not showing and no known dialog
-  is: the pane is still starting, or shows something the launcher does not
-  recognise.
+  is: the pane is still starting, shows something the launcher does not
+  recognise, or is too short to show the line under the box.
 - **Unconfirmed (exit 5).** The handshake was sent and not answered, with
   nothing recognisable in the way. The session may simply be slow.
 
 In all three the session is left running. The report says what was sent:
 nothing, a paste without its Enter, or the handshake without the brief. Look
 at the session before doing anything: `tmux attach -t "=<name>"`.
+
+Two endings are not about the session. Exit 4 with "the CLI process is gone"
+means the CLI started and exited. Any other status with "the multiplexer
+failed" is tmux refusing a command part-way through; the report before it
+says what had been delivered.
 
 Never respond to any of them by killing and re-spawning. A session that came up
 holds a real conversation, and destroying it to tidy up an unknown throws that

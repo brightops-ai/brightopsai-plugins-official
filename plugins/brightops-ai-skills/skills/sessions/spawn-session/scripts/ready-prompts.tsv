@@ -1,25 +1,26 @@
-# The status line the CLI draws under its input box.
+# The mode line the CLI draws under its input box.
 #
-# The launcher sends nothing to a session until the pane ends in the input
-# box with one of these lines under it:
+# The launcher sends nothing to a session until the pane shows the input box
+# with one of these lines somewhere under it:
 #
 #     ────────────────────────       a rule
 #     ❯                              the input, opened by the prompt glyph
-#     ────────────────────────       a rule
-#       ⏵⏵ accept edits on …         the status line: a row of this table
+#     ────────────────────────       a rule, the last one on the pane
+#       a status line of the user's  any number of lines
+#       ⏵⏵ accept edits on …         the mode line: a row of this table
 #
-# The box is recognised by its shape and by being at the foot of the pane.
-# This table is the second half of the evidence: the line under the box has
-# to be a status line. Text that only appears somewhere on the pane is not
-# evidence: a dialog can quote a status line and a shell can echo one.
+# The box is recognised by its shape. This table is the second half of the
+# evidence: a line under the box has to be a mode line. Text that only
+# appears somewhere on the pane is not evidence: a dialog can quote a mode
+# line and a shell can echo one.
 #
 # Columns, tab-separated:
 #   id       short name
-#   pattern  how the status line begins, mode symbol included
+#   pattern  how the line begins, mode symbol included
 #   basis    seen      drawn by the real CLI in a pane, and read from it
 #            inferred  built by the same rule as the rows that were seen, or
 #                      taken from another release, and not seen
-#   where    under     a status line, under the box
+#   where    under     a mode line, under the box
 #            inside    how the CLI marks a folded paste, inside the box
 #
 # A line matches a row when it starts with the pattern. A narrow pane cuts
@@ -43,10 +44,12 @@
 # columns, never at the start of the line; releases that drew no mode for the
 # default one began the line with it.
 #
-# A user's own status line is drawn between the box and the mode line, one
-# line or several, so the mode line is the last of up to five lines there.
+# A user's own status line is drawn between the box and the mode line. It was
+# seen with one, three and six lines, and with a line opening with the prompt
+# glyph; the mode line was the last line each time. Its length and wording do
+# not matter here.
 #
-# The row marked inside is not a status line. Once the launcher has pasted,
+# The row marked inside is not a mode line. Once the launcher has pasted,
 # the CLI folds a paste of five lines or more, or one very long line, into
 # "[Pasted text #1 +10 lines]" (or "[Pasted text #1]"), and for about eight
 # seconds draws "paste again to expand" where the mode line was. The look
