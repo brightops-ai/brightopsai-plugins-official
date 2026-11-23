@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-23
+
+### Changed
+
+- `blast-radius-audit` is split into two parts that run together or
+  separately. The repo part is what travels with the repository: the working
+  tree and the repository's settings on GitHub. The machine part is what every
+  repository on the machine inherits: the environment, the home directory,
+  user-level agent config, this clone's git configuration and the GitHub
+  token. Both run by default, so an audit that names no part covers what it
+  did before. No check's criteria changed.
+- The collector takes `--scope repo` or `--scope machine`, prints its leads
+  under a `# REPO` and a `# MACHINE` heading, and tags each lead with its part.
+  A part that is not run is not read: `--scope repo` opens no file and lists
+  no directory outside the repository and prints no environment variable;
+  `--scope machine` does not scan the working tree. With `--github`, the
+  machine part reads the token's type and scopes from `gh auth status` and
+  makes no API request; the repo part makes the GET requests about the
+  repository.
+- `--json` output changed shape: each lead has a `scope`, `examined` is keyed
+  by part and then by check, and a top-level `scope` lists the parts that ran.
+- `references/checks.md` is replaced by `references/checks-repo.md`,
+  `references/checks-machine.md` and `references/reading-safely.md`, so a
+  one-part audit loads one part's reference. The steps for machine findings
+  moved out of `references/fixes.md` into the machine reference.
+- The report numbers repo findings `R1…` and machine findings `M1…`, ranks
+  each part on its own, and collects every step outside the repo under "Your
+  steps". Only repo findings can be approved for fixing.
+
+### Added
+
+- A repo-part `enforcement` lead that names the hook configuration the
+  repository carries. Whether a clone has it active stays a machine lead.
+
 ## [1.5.2] - 2026-11-22
 
 ### Fixed

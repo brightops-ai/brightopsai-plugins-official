@@ -33,7 +33,7 @@ inside Claude Code:
 | `/brightops-ai-skills:session-analysis` | Distil session transcripts into candidate episodes for a chosen purpose. Runs forked. User-invoked. |
 | `/brightops-ai-skills:send-result` | Deliver a run summary to a configured destination (a file by default, or a command). Never infers a destination. User-invoked. |
 | `/brightops-ai-skills:spawn-session` | Start a named Claude Code session in tmux, confirm it by a handshake token, then paste a starter brief. User-invoked. |
-| `/brightops-ai-skills:blast-radius-audit` | Audit a repo and the dev machine for ways an agent or script could do irreversible damage: production databases in test config, readable production credentials, unguarded recursive deletes, unprotected infrastructure and branches, unpinned MCP servers and hooks, CI agents on untrusted input, bypass modes, uncapped money or message tools. Reports findings ranked by blast radius without printing secret values, then waits for approval before applying in-repo fixes. Model-invocable. |
+| `/brightops-ai-skills:blast-radius-audit` | Audit a repo and the dev machine for ways an agent or script could do irreversible damage, as a repo part and a machine part that run together or separately: production databases in test config, readable production credentials, unguarded recursive deletes, unprotected infrastructure and branches, unpinned MCP servers and hooks, CI agents on untrusted input, bypass modes, uncapped money or message tools. Reports findings ranked by blast radius without printing secret values, then waits for approval before applying in-repo fixes. Model-invocable. |
 
 ## Prerequisites
 

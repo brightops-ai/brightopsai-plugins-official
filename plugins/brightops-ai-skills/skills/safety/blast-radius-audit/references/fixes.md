@@ -4,6 +4,10 @@ Read this when applying approved fixes. Each pattern is a starting point to
 adapt to the repo's language and conventions, not text to paste. Fixes outside
 the repo root are never applied; they are written up as manual steps.
 
+The patterns are for repo findings, numbered as the checks are. Machine
+findings have no pattern here because none is ever applied: the step to give
+the user is under each check in `checks-machine.md`.
+
 ## Contents
 
 - [The warning format](#the-warning-format)
@@ -17,7 +21,7 @@ the repo root are never applied; they are written up as manual steps.
 - [7. Copy-then-delete in synced folders](#7-copy-then-delete-in-synced-folders)
 - [8. MCP servers, hooks, hidden Unicode](#8-mcp-servers-hooks-hidden-unicode)
 - [9. CI agent jobs](#9-ci-agent-jobs)
-- [10. Agent modes (mostly manual)](#10-agent-modes-mostly-manual)
+- [10. Agent modes](#10-agent-modes)
 - [11. Caps on money and messages](#11-caps-on-money-and-messages)
 
 ## The warning format
@@ -301,12 +305,11 @@ Write these as steps for the user; do not run them.
   ruleset targeting the default branch, with "Require a pull request before
   merging" (at least 1 approval), "Block force pushes" and "Restrict
   deletions", and no bypass for admins.
-- Replace the token: create a fine-grained personal access token limited to
-  this repository with only the permissions in use (typically Contents and
-  Pull requests: read and write), then `gh auth login` with it and revoke the
-  old one.
 - In the org: Settings -> Member privileges -> Repository creation -> untick
   Public.
+
+Replacing an over-scoped token is a machine finding; its step is in
+`checks-machine.md`, check 6.
 
 ## 7. Copy-then-delete in synced folders
 
@@ -327,7 +330,8 @@ rm -- "$src"
 ```
 
 A size check alone passes for a cloud placeholder that reports the full size;
-compare content. Moving the repo out of the synced folder is manual.
+compare content. Moving the repo out of the synced folder is a machine finding
+(`checks-machine.md`, check 7).
 
 ## 8. MCP servers, hooks, hidden Unicode
 
@@ -367,7 +371,7 @@ containing `..`, one reached through a link, or a file with other hard links.
 The path that was approved is then the only file that changes.
 
 Check `git diff` afterwards. User-level config and read-only tokens are
-manual.
+machine findings (`checks-machine.md`, check 8).
 
 ## 9. CI agent jobs
 
@@ -409,20 +413,14 @@ jobs:
 Verify with a YAML parse and, if available, `actionlint`. Do not trigger the
 workflow.
 
-## 10. Agent modes (mostly manual)
+## 10. Agent modes
 
-In repo: project-level deny rules and script guards from sections 3 and 5.
+In repo: project-level deny rules and script guards from sections 3 and 5, and
+removing a broad allow rule or a bypass default from project settings when
+that finding was approved.
 
-Manual steps to write up, per agent in use:
-
-- Claude Code: remove bypass aliases from shell startup files; set
-  `"permissions": {"disableBypassPermissionsMode": "disable"}` and
-  `"sandbox": {"enabled": true}` in user settings; narrow broad allow rules.
-- Codex: `approval_policy` other than `never`; `sandbox_mode` set to
-  `workspace-write`, not `danger-full-access`.
-- Replace shell aliases used as safety nets (`alias rm='rm -i'`) with guards
-  in scripts or agent deny rules: an alias is loaded by interactive shells
-  only, and `bash -c 'type -t rm'` shows what an agent actually gets.
+User-level modes, bypass aliases and shell safety nets are machine findings;
+the steps per agent are in `checks-machine.md`, check 10.
 
 ## 11. Caps on money and messages
 
