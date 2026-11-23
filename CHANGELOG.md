@@ -11,6 +11,14 @@ rather than numbered.
 
 ## [Unreleased]
 
+### Changed
+
+- `main` is covered by a repository ruleset with an empty bypass list. A
+  change lands only through a pull request whose `Packaging gates` check has
+  passed; direct pushes, force-pushes and deletion of `main` are refused for
+  administrators too. Before this, an administrator's token could push to
+  `main` or merge with the check failing.
+
 ### Fixed
 
 - `scripts/install-hooks.sh` reports the hooks active only when both

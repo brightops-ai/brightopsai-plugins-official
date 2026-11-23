@@ -329,6 +329,11 @@ requests and pushes to `main`: plugin validate, the marketplace
 consistency check, unit tests, shellcheck, a gitleaks tree scan, and
 eval index completeness. Behavioural evals (`evals/run.sh`) stay manual.
 
+A repository ruleset makes the `Packaging gates` check required on `main`.
+A pull request cannot merge until the check has passed on its head commit,
+and nobody, administrators included, can push to `main` directly,
+force-push it or delete it. Wait for the check; there is no override.
+
 Run the same commands locally from the repository root before opening a
 pull request that touches a plugin manifest, the marketplace registry, the
 README plugin table, a plugin `README.md`, or that adds a skill — and when
