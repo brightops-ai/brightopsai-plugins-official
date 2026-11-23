@@ -2179,11 +2179,17 @@ submitted() {
 # looked_before_every <pattern>
 #
 # Fails unless each multiplexer call matching the pattern comes straight
-# after a look at the pane, with no other call between the two.
+# after a look, with no other call between the two. A look that finds the box
+# is two calls: the capture of the pane, then the check that the CLI process
+# is still in it.
 looked_before_every() {
   awk -v pat="$1" '
     /^mux: / {
-      if ($0 ~ pat) { seen = 1; if (prev !~ / capture-pane /) { print "no look before: " $0; bad = 1 } }
+      if ($0 ~ pat) {
+        seen = 1
+        if (prev !~ / list-panes / || before !~ / capture-pane /) { print "no look before: " $0; bad = 1 }
+      }
+      before = prev
       prev = $0
     }
     END { if (!seen) { print "nothing matched " pat; bad = 1 } exit bad }' "$TRACE"
@@ -2865,13 +2871,79 @@ $STATUS")" = "ready" ]
   lacks "$(cat "$OUT")" "not_ready"
   has "$(cat "$ERR")" "the CLI process in 'zz-spawn-exited' is gone"
 
-  # The same after a handshake that went out and was never answered.
+  # The same after a handshake that went out and was never answered: the
+  # process is there for each look of the delivery and gone after it.
   pane_prompt
-  MUX_PROCESS_GONE_AFTER=1 MUX_HAS_SESSION=0 \
+  MUX_PROCESS_GONE_AFTER=4 MUX_HAS_SESSION=0 \
     run spawn_stub "zz-spawn-exited" --dir "$WORK" --timeout 2 --resume --porcelain
   [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
   has "$(cat "$OUT")" $'verdict\tno_process'
   has "$(cat "$OUT")" $'handshake\tsent'
+}
+
+@test "a box the CLI left behind when it exited is sent nothing" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  # The CLI's last frame, still on the pane, with the shell's prompt under
+  # it. To look at, the box and its mode line are there. A handshake pasted
+  # now would be typed into the shell and run line by line.
+  printf '%s\n' "$BOX" "$STATUS" "❯ " > "$PANE"
+
+  # The process is there when the session is picked up and gone by the look
+  # before the paste: nothing is sent at all.
+  MUX_PROCESS_GONE_AFTER=1 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-left" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "0" ] || { echo "pasted into a pane whose CLI had exited:"; cat "$TRACE"; return 1; }
+  [ "$(sent send-keys)" = "0" ]
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'handshake\tnot_sent'
+  has "$(cat "$OUT")" $'brief\tnone'
+  has "$(cat "$ERR")" "the CLI process in 'zz-spawn-left' is gone"
+}
+
+@test "a CLI that exits part-way through a delivery gets nothing more" {
+  stub_setup
+  pretrust "$WORK"
+  stub_cli_running
+  printf '%s\n' "$BOX" "$STATUS" "❯ " > "$PANE"
+
+  # It goes between the paste and the Enter: the paste went and is reported,
+  # the Enter is not sent.
+  MUX_PROCESS_GONE_AFTER=3 MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-left" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ]
+  [ "$(sent send-keys)" = "0" ] || { echo "Enter sent after the CLI had exited:"; cat "$TRACE"; return 1; }
+  [ ! -s "$RECEIVED" ]
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'handshake\tnot_submitted'
+
+  # It goes after the session has identified itself, before the brief: the
+  # handshake is reported as sent, the identity as confirmed, and the brief
+  # is not pasted.
+  : > "$TRANSCRIPT"
+  MUX_PROCESS_GONE_AFTER=4 MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-left" --dir "$WORK" --timeout 5 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 4 ] || { echo "exit $status"; cat "$TRACE"; cat "$OUT"; return 1; }
+  [ "$(sent paste-buffer)" = "1" ] || { echo "the brief was pasted after the CLI had exited:"; cat "$TRACE"; return 1; }
+  [ "$(submitted)" = "1" ]
+  lacks "$(cat "$RECEIVED")" "BRIEF-TEXT"
+  has "$(cat "$OUT")" $'verdict\tno_process'
+  has "$(cat "$OUT")" $'identity\tok'
+  has "$(cat "$OUT")" $'handshake\tsent'
+  has "$(cat "$OUT")" $'brief\tnone'
+
+  # With the process there, the same pane is the box, as it has to be: what
+  # may follow the mode line is not for the launcher to say.
+  : > "$TRANSCRIPT"
+  : > "$RECEIVED"
+  MUX_ANSWER_TO="$TRANSCRIPT" MUX_ANSWER_CWD="$WORK" MUX_HAS_SESSION=0 \
+    run spawn_stub "zz-spawn-left" --dir "$WORK" --timeout 10 --resume --porcelain --prompt "BRIEF-TEXT"
+  [ "$status" -eq 0 ] || { cat "$TRACE"; cat "$OUT"; return 1; }
+  has "$(cat "$RECEIVED")" "BRIEF-TEXT"
 }
 
 @test "the outcome at the deadline is chosen from a look taken then" {

@@ -84,8 +84,9 @@ TRUST_GRANTED=""
 BLOCKER=""
 BLOCKER_ROWS=""
 READY_ROWS=""
-# What the last look at the pane found: ready, blocked or waiting; and, for
-# waiting, why (clipped, no-mode-line or nothing).
+# What the last look at the pane found: ready, blocked, waiting, or gone (the
+# pane looks ready and the CLI process is no longer there); and, for waiting,
+# why (clipped, no-mode-line or nothing).
 GATE="waiting"
 GATE_NOTE=""
 # The multiplexer's own status when a send failed.
@@ -293,6 +294,12 @@ look() {
   case "$GATE" in
     blocked) BLOCKER="${verdict#*$'\t'}" ;;
     waiting) [[ "$verdict" == *$'\t'* ]] && GATE_NOTE="${verdict#*$'\t'}" ;;
+    ready)
+      # The box counts only while the CLI is there to own it. A CLI that has
+      # exited leaves its last frame on the pane, box and mode line and all,
+      # with the shell's prompt under it; a paste sent then is typed into the
+      # shell and run line by line.
+      [[ -n "$(claude_pid_in "$NAME")" ]] || GATE="gone" ;;
   esac
   return 0
 }
@@ -309,7 +316,7 @@ look_settled() {
   while true; do
     look "${2:-}"
     [[ "$GATE" == "ready" ]] && return 0
-    [[ "$GATE" == "blocked" ]] && return 1
+    [[ "$GATE" == "blocked" || "$GATE" == "gone" ]] && return 1
     tries=$(( tries + 1 ))
     (( tries >= limit )) && return 1
     sleep 0.2
@@ -722,7 +729,7 @@ report() {
 # look then finds only the shell it left behind.
 exit_if_gone() {
   [[ -n "$(claude_pid_in "$NAME")" ]] && return 0
-  report "no_process" "" "" ""
+  report "no_process" "" "" "${1:-}"
   die "the CLI process in '$NAME' is gone: it started and then exited" "$EXIT_NO_PROCESS"
 }
 
@@ -733,7 +740,7 @@ exit_if_gone() {
 # reported as one. Either way the session is left as it is.
 stop_short() {
   local pid="$1" identity="$2" bridge
-  exit_if_gone
+  exit_if_gone "$identity"
   bridge="$(bridge_id_for "$pid")"
 
   if [[ -n "$BLOCKER" ]]; then
@@ -1013,6 +1020,8 @@ main() {
       # leaves the pane as it was, to be tried again.
       (( sent_rc == 1 )) || break
     fi
+    # No process, no point in waiting for its prompt.
+    [[ "$GATE" == "gone" ]] && break
     # The look comes before the clock is checked, so the outcome at the
     # deadline is chosen from what the pane shows then, not a second ago.
     (( waited < TIMEOUT )) || break
@@ -1102,7 +1111,7 @@ main() {
     esac
   fi
 
-  exit_if_gone
+  exit_if_gone "$identity"
   local verdict
   verdict="$(spawn_verdict "$pid" "$bridge")"
   report "$verdict" "$pid" "$bridge" "$identity"

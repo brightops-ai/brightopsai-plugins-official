@@ -106,6 +106,13 @@ back and the run ends. A look that finds nothing recognisable is repeated for
 a second first, because a capture can land while the CLI is redrawing; a
 known dialog ends it at once.
 
+A look counts as ready only while the CLI process is still in the session. A
+CLI that has exited leaves its last frame on the pane, box and mode line
+included, with the shell's prompt under it, and a paste sent then would be
+typed into the shell. When the process is gone, nothing is sent and the run
+ends as never started (exit 4), with the pairs saying what had been delivered
+before it went.
+
 Every tmux command in a delivery is checked. If one fails, the paste's Enter
 and everything after it are not sent, and the run ends with tmux's own status
 after a report of what had been delivered.
@@ -123,6 +130,9 @@ ever answered. Three things are outside that:
   showing a copy of the input box with a mode line under it is the box as far
   as looking can tell, and input is sent to it. So is a dialog no table row
   describes, if it is drawn with a box and a mode line still on the pane.
+- **A CLI that is suspended, not gone.** The process check finds a stopped
+  CLI as readily as a running one. If the CLI is suspended and its last frame
+  is still on the pane above a live shell, input goes to that shell.
 - **A directory that changes after it is checked.** If the directory is
   removed, or replaced by a symbolic link, between the launcher's checks and
   tmux creating the session, the session starts wherever tmux then puts it.
